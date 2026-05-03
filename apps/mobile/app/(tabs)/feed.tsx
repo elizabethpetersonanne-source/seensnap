@@ -20,10 +20,12 @@ import {
   View,
 } from "react-native";
 
-import { colors, radii, spacing } from "@/constants/theme";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
+import { FeedSkeleton } from "@/components/shimmer";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
+import { colors, radii, spacing } from "@/constants/theme";
+import { pressIn, pressOut, toastIn, toastOut } from "@/lib/motion";
 import { apiRequest, resolveMediaUrl, resolvedApiBaseUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
@@ -97,6 +99,131 @@ const reactionOptions: Array<{ key: ReactionKey; icon: string; label: string }> 
   { key: "tomato", icon: "🍅", label: "Tomato" },
 ];
 
+// Demo seed data — shown when the real feed returns empty
+const D_ACTORS = {
+  maya: { user_id: "demo-u1", display_name: "Maya Chen", avatar_url: "https://i.pravatar.cc/150?u=maya.chen" },
+  jordan: { user_id: "demo-u2", display_name: "Jordan Williams", avatar_url: "https://i.pravatar.cc/150?u=jordan.williams" },
+  alex: { user_id: "demo-u3", display_name: "Alex Rivera", avatar_url: "https://i.pravatar.cc/150?u=alex.rivera" },
+  sam: { user_id: "demo-u4", display_name: "Sam Torres", avatar_url: "https://i.pravatar.cc/150?u=sam.torres" },
+  priya: { user_id: "demo-u5", display_name: "Priya Patel", avatar_url: "https://i.pravatar.cc/150?u=priya.patel" },
+  marco: { user_id: "demo-u6", display_name: "Marco Rossi", avatar_url: "https://i.pravatar.cc/150?u=marco.rossi" },
+  riley: { user_id: "demo-u7", display_name: "Riley Johnson", avatar_url: "https://i.pravatar.cc/150?u=riley.johnson" },
+  zoe: { user_id: "demo-u8", display_name: "Zoe Kim", avatar_url: "https://i.pravatar.cc/150?u=zoe.kim" },
+  dev: { user_id: "demo-u9", display_name: "Dev Sharma", avatar_url: "https://i.pravatar.cc/150?u=dev.sharma" },
+  cleo: { user_id: "demo-u10", display_name: "Cleo Martinez", avatar_url: "https://i.pravatar.cc/150?u=cleo.martinez" },
+  nate: { user_id: "demo-u11", display_name: "Nate Okonkwo", avatar_url: "https://i.pravatar.cc/150?u=nate.okonkwo" },
+  hana: { user_id: "demo-u12", display_name: "Hana Mizuki", avatar_url: "https://i.pravatar.cc/150?u=hana.mizuki" },
+  felix: { user_id: "demo-u13", display_name: "Felix Dubois", avatar_url: "https://i.pravatar.cc/150?u=felix.dubois" },
+  lena: { user_id: "demo-u14", display_name: "Lena Vasquez", avatar_url: "https://i.pravatar.cc/150?u=lena.vasquez" },
+  omar: { user_id: "demo-u15", display_name: "Omar Hassan", avatar_url: "https://i.pravatar.cc/150?u=omar.hassan" },
+  sienna: { user_id: "demo-u16", display_name: "Sienna Park", avatar_url: "https://i.pravatar.cc/150?u=sienna.park" },
+  tobias: { user_id: "demo-u17", display_name: "Tobias Müller", avatar_url: "https://i.pravatar.cc/150?u=tobias.muller" },
+  amara: { user_id: "demo-u18", display_name: "Amara Osei", avatar_url: "https://i.pravatar.cc/150?u=amara.osei" },
+  kieran: { user_id: "demo-u19", display_name: "Kieran Walsh", avatar_url: "https://i.pravatar.cc/150?u=kieran.walsh" },
+  nova: { user_id: "demo-u20", display_name: "Nova Sterling", avatar_url: "https://i.pravatar.cc/150?u=nova.sterling" },
+};
+
+const DEMO_FEED_EVENTS: FeedEvent[] = [
+  {
+    id: "demo-e1",
+    event_type: "friend_rating",
+    source_type: "user",
+    actor: { ...D_ACTORS.maya, is_following: true },
+    title: { id: "demo-t1", content_type: "series", title: "Succession", poster_url: null, backdrop_url: null },
+    payload: { rating: 10, caption: "The finale. I'm not okay. Ten seasons of this and they stuck the landing — the Roy family is genuinely one of the greatest ensembles ever put to screen.", action_label: "rated a series" },
+    reaction_counts: { fire: 18, heart: 24, thumbs_down: 0, tomato: 1 },
+    comment_count: 6,
+    my_reaction: null,
+    created_at: "2026-05-02T12:00:00Z",
+  },
+  {
+    id: "demo-e2",
+    event_type: "wall_post",
+    source_type: "user",
+    actor: { ...D_ACTORS.jordan, is_following: false },
+    title: { id: "demo-t2", content_type: "series", title: "The Bear", poster_url: null, backdrop_url: null },
+    payload: { caption: "Season 3 just dropped and the kitchen scenes are more intense than ever. Carmy has lost his mind in the best possible way. Cannot stop watching.", action_label: "posted to Social Wall" },
+    reaction_counts: { fire: 31, heart: 12, thumbs_down: 2, tomato: 0 },
+    comment_count: 8,
+    my_reaction: null,
+    created_at: "2026-05-02T11:00:00Z",
+  },
+  {
+    id: "demo-e3",
+    event_type: "friend_rating",
+    source_type: "user",
+    actor: { ...D_ACTORS.priya, is_following: true },
+    title: { id: "demo-t3", content_type: "movie", title: "Killers of the Flower Moon", poster_url: null, backdrop_url: null },
+    payload: { rating: 9, caption: "Scorsese at 80 making a 3.5-hour film that doesn't waste a single frame. Lily Gladstone is devastating. This is the one they'll study in 50 years.", action_label: "rated a movie" },
+    reaction_counts: { fire: 44, heart: 37, thumbs_down: 0, tomato: 3 },
+    comment_count: 11,
+    my_reaction: null,
+    created_at: "2026-05-01T20:00:00Z",
+  },
+  {
+    id: "demo-e4",
+    event_type: "wall_post",
+    source_type: "user",
+    actor: { ...D_ACTORS.alex, is_following: false },
+    title: { id: "demo-t4", content_type: "movie", title: "Dune: Part Two", poster_url: null, backdrop_url: null },
+    payload: { caption: "Villeneuve just does not miss. The sandworm riding sequence is the most cinematic thing I've seen in a theater in years. Zendaya's arc hit different than I expected.", action_label: "posted to Social Wall" },
+    reaction_counts: { fire: 52, heart: 28, thumbs_down: 1, tomato: 0 },
+    comment_count: 9,
+    my_reaction: null,
+    created_at: "2026-05-01T14:00:00Z",
+  },
+  {
+    id: "demo-e5",
+    event_type: "watch_team_alert",
+    source_type: "team",
+    team_id: "demo-team1",
+    actor: { ...D_ACTORS.marco, is_following: false },
+    title: { id: "demo-t5", content_type: "series", title: "Shōgun", poster_url: null, backdrop_url: null },
+    payload: { caption: "Cinema Club is watching Shōgun this week. Hiroyuki Sanada produced and stars in this and it absolutely shows — the cultural detail is meticulous. Join us for a live watch Thursday.", action_label: "added to Watch Team", cta: "View Details" },
+    reaction_counts: { fire: 14, heart: 9, thumbs_down: 0, tomato: 0 },
+    comment_count: 4,
+    my_reaction: null,
+    created_at: "2026-05-01T09:00:00Z",
+  },
+];
+
+const DEMO_FEED_COMMENTS: Record<string, FeedComment[]> = {
+  "demo-e1": [
+    { id: "demo-c1a", event_id: "demo-e1", user_id: D_ACTORS.sam.user_id, display_name: D_ACTORS.sam.display_name, avatar_url: D_ACTORS.sam.avatar_url, body: "The 'living+ dead' line in the last episode is going to haunt me forever.", parent_comment_id: null, created_at: "2026-05-02T12:14:00Z" },
+    { id: "demo-c1b", event_id: "demo-e1", user_id: D_ACTORS.zoe.user_id, display_name: D_ACTORS.zoe.display_name, avatar_url: D_ACTORS.zoe.avatar_url, body: "Agreed. Kendall's face when he hears the board decision... Matthew Macfadyen deserved every award.", parent_comment_id: "demo-c1a", created_at: "2026-05-02T12:22:00Z" },
+    { id: "demo-c1c", event_id: "demo-e1", user_id: D_ACTORS.nate.user_id, display_name: D_ACTORS.nate.display_name, avatar_url: D_ACTORS.nate.avatar_url, body: "Team Siobhan here but I respect this take. Show was firing on all cylinders.", parent_comment_id: "demo-c1a", created_at: "2026-05-02T12:38:00Z" },
+    { id: "demo-c1d", event_id: "demo-e1", user_id: D_ACTORS.hana.user_id, display_name: D_ACTORS.hana.display_name, avatar_url: D_ACTORS.hana.avatar_url, body: "The score alone is worth the 10/10. Nicholas Britell is a genius.", parent_comment_id: null, created_at: "2026-05-02T13:05:00Z" },
+    { id: "demo-c1e", event_id: "demo-e1", user_id: D_ACTORS.riley.user_id, display_name: D_ACTORS.riley.display_name, avatar_url: D_ACTORS.riley.avatar_url, body: "Rewatching from season 1 after this. The callbacks in the finale are everywhere once you know.", parent_comment_id: null, created_at: "2026-05-02T13:20:00Z" },
+    { id: "demo-c1f", event_id: "demo-e1", user_id: D_ACTORS.felix.user_id, display_name: D_ACTORS.felix.display_name, avatar_url: D_ACTORS.felix.avatar_url, body: "100% agree, the rewatch hits even harder when you know where everyone ends up.", parent_comment_id: "demo-c1e", created_at: "2026-05-02T13:45:00Z" },
+  ],
+  "demo-e2": [
+    { id: "demo-c2a", event_id: "demo-e2", user_id: D_ACTORS.lena.user_id, display_name: D_ACTORS.lena.display_name, avatar_url: D_ACTORS.lena.avatar_url, body: "The episode where it's just one continuous shot through service — I've never felt such anxiety watching TV.", parent_comment_id: null, created_at: "2026-05-02T11:18:00Z" },
+    { id: "demo-c2b", event_id: "demo-e2", user_id: D_ACTORS.omar.user_id, display_name: D_ACTORS.omar.display_name, avatar_url: D_ACTORS.omar.avatar_url, body: "That oner is genuinely one of the best pieces of television ever made. Season 2's 'Fishes' is peak though.", parent_comment_id: "demo-c2a", created_at: "2026-05-02T11:33:00Z" },
+    { id: "demo-c2c", event_id: "demo-e2", user_id: D_ACTORS.priya.user_id, display_name: D_ACTORS.priya.display_name, avatar_url: D_ACTORS.priya.avatar_url, body: "Ayo Edebiri went from unknown to everywhere so fast and she earned every bit of it.", parent_comment_id: null, created_at: "2026-05-02T11:50:00Z" },
+    { id: "demo-c2d", event_id: "demo-e2", user_id: D_ACTORS.sienna.user_id, display_name: D_ACTORS.sienna.display_name, avatar_url: D_ACTORS.sienna.avatar_url, body: "Yes the casting on this whole show is immaculate. Richie's arc in season 2 made me cry.", parent_comment_id: "demo-c2c", created_at: "2026-05-02T12:08:00Z" },
+    { id: "demo-c2e", event_id: "demo-e2", user_id: D_ACTORS.maya.user_id, display_name: D_ACTORS.maya.display_name, avatar_url: D_ACTORS.maya.avatar_url, body: "Adding to my rewatch list immediately. Need to be ready for whenever s4 drops.", parent_comment_id: null, created_at: "2026-05-02T12:25:00Z" },
+  ],
+  "demo-e3": [
+    { id: "demo-c3a", event_id: "demo-e3", user_id: D_ACTORS.tobias.user_id, display_name: D_ACTORS.tobias.display_name, avatar_url: D_ACTORS.tobias.avatar_url, body: "Lily Gladstone in every scene she's in made me forget I was watching a film. Just devastating.", parent_comment_id: null, created_at: "2026-05-01T20:30:00Z" },
+    { id: "demo-c3b", event_id: "demo-e3", user_id: D_ACTORS.amara.user_id, display_name: D_ACTORS.amara.display_name, avatar_url: D_ACTORS.amara.avatar_url, body: "De Niro's performance in this is criminally underseen. His final act is chilling.", parent_comment_id: "demo-c3a", created_at: "2026-05-01T20:48:00Z" },
+    { id: "demo-c3c", event_id: "demo-e3", user_id: D_ACTORS.kieran.user_id, display_name: D_ACTORS.kieran.display_name, avatar_url: D_ACTORS.kieran.avatar_url, body: "The fact that this is based on actual events makes every moment hit twice as hard.", parent_comment_id: null, created_at: "2026-05-01T21:15:00Z" },
+    { id: "demo-c3d", event_id: "demo-e3", user_id: D_ACTORS.nova.user_id, display_name: D_ACTORS.nova.display_name, avatar_url: D_ACTORS.nova.avatar_url, body: "Agreed. I went in knowing the history and was still floored. Scorsese does not flinch.", parent_comment_id: "demo-c3c", created_at: "2026-05-01T21:40:00Z" },
+    { id: "demo-c3e", event_id: "demo-e3", user_id: D_ACTORS.dev.user_id, display_name: D_ACTORS.dev.display_name, avatar_url: D_ACTORS.dev.avatar_url, body: "Robbie Robertson's score is the missing piece everyone forgets to mention. So good.", parent_comment_id: null, created_at: "2026-05-01T22:00:00Z" },
+  ],
+  "demo-e4": [
+    { id: "demo-c4a", event_id: "demo-e4", user_id: D_ACTORS.cleo.user_id, display_name: D_ACTORS.cleo.display_name, avatar_url: D_ACTORS.cleo.avatar_url, body: "The Harkonnen arena sequence had my entire theater holding its breath. Villeneuve doesn't do slow.", parent_comment_id: null, created_at: "2026-05-01T14:20:00Z" },
+    { id: "demo-c4b", event_id: "demo-e4", user_id: D_ACTORS.sam.user_id, display_name: D_ACTORS.sam.display_name, avatar_url: D_ACTORS.sam.avatar_url, body: "Austin Butler barely said 20 words and was terrifying the entire time. That casting was bold.", parent_comment_id: "demo-c4a", created_at: "2026-05-01T14:45:00Z" },
+    { id: "demo-c4c", event_id: "demo-e4", user_id: D_ACTORS.jordan.user_id, display_name: D_ACTORS.jordan.display_name, avatar_url: D_ACTORS.jordan.avatar_url, body: "Timothée and Zendaya have such a charged energy — the scene at the sietch in part 2 is their best work.", parent_comment_id: null, created_at: "2026-05-01T15:10:00Z" },
+    { id: "demo-c4d", event_id: "demo-e4", user_id: D_ACTORS.hana.user_id, display_name: D_ACTORS.hana.display_name, avatar_url: D_ACTORS.hana.avatar_url, body: "Hans Zimmer's score for this duology is otherworldly. The soundtrack alone is an experience.", parent_comment_id: null, created_at: "2026-05-01T15:30:00Z" },
+  ],
+  "demo-e5": [
+    { id: "demo-c5a", event_id: "demo-e5", user_id: D_ACTORS.sienna.user_id, display_name: D_ACTORS.sienna.display_name, avatar_url: D_ACTORS.sienna.avatar_url, body: "Shōgun is so good it makes most prestige TV look rushed. Every episode is a masterclass in restraint.", parent_comment_id: null, created_at: "2026-05-01T09:30:00Z" },
+    { id: "demo-c5b", event_id: "demo-e5", user_id: D_ACTORS.felix.user_id, display_name: D_ACTORS.felix.display_name, avatar_url: D_ACTORS.felix.avatar_url, body: "Hiroyuki Sanada didn't just act in this — he fought for the cultural authenticity and it shows in every frame.", parent_comment_id: "demo-c5a", created_at: "2026-05-01T09:52:00Z" },
+    { id: "demo-c5c", event_id: "demo-e5", user_id: D_ACTORS.alex.user_id, display_name: D_ACTORS.alex.display_name, avatar_url: D_ACTORS.alex.avatar_url, body: "Thursday live watch sounds perfect. I'll be in!", parent_comment_id: null, created_at: "2026-05-01T10:15:00Z" },
+    { id: "demo-c5d", event_id: "demo-e5", user_id: D_ACTORS.dev.user_id, display_name: D_ACTORS.dev.display_name, avatar_url: D_ACTORS.dev.avatar_url, body: "Count me in. Rewatching ep 4 beforehand.", parent_comment_id: "demo-c5c", created_at: "2026-05-01T10:35:00Z" },
+  ],
+};
+
 export default function FeedScreen() {
   const { sessionToken, user } = useAuth();
   const router = useRouter();
@@ -132,6 +259,9 @@ export default function FeedScreen() {
   const gradientDrift = useRef(new Animated.Value(0)).current;
   const tabSlide = useRef(new Animated.Value(0)).current;
   const listFade = useRef(new Animated.Value(1)).current;
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+  const toastTranslateY = useRef(new Animated.Value(12)).current;
+  const [visibleToast, setVisibleToast] = useState<string | null>(null);
   const activeTabIndex = segment === "for-you" ? 0 : segment === "watch-teams" ? 1 : 2;
 
   useEffect(() => {
@@ -150,12 +280,15 @@ export default function FeedScreen() {
   }, [gradientDrift]);
 
   useEffect(() => {
-    if (!toast) {
-      return;
+    if (toast) {
+      setVisibleToast(toast);
+      toastIn(toastOpacity, toastTranslateY);
+      const timer = setTimeout(() => {
+        toastOut(toastOpacity, toastTranslateY, () => setToast(null));
+      }, 1800);
+      return () => clearTimeout(timer);
     }
-    const timer = setTimeout(() => setToast(null), 1500);
-    return () => clearTimeout(timer);
-  }, [toast]);
+  }, [toast, toastOpacity, toastTranslateY]);
 
   useEffect(() => {
     if (Platform.OS !== "web") {
@@ -482,6 +615,15 @@ export default function FeedScreen() {
     setToast(label);
   }
 
+  const displayItems = useMemo(
+    () => (items.length === 0 && !isLoading ? DEMO_FEED_EVENTS : items),
+    [items, isLoading]
+  );
+  const displayComments = useMemo(
+    () => (items.length === 0 && !isLoading ? DEMO_FEED_COMMENTS : commentsByEvent),
+    [items, isLoading, commentsByEvent]
+  );
+
   const headerShift = gradientDrift.interpolate({
     inputRange: [0, 1],
     outputRange: [-24, 24],
@@ -498,6 +640,7 @@ export default function FeedScreen() {
           <View style={styles.headerWrap}>
             <Animated.View style={[styles.headerGradient, { transform: [{ translateX: headerShift }] }]} />
             <Image source={require("../../assets/branding/seensnap-logo.png")} style={styles.logo} resizeMode="contain" />
+            <Text style={styles.headerKicker}>Your World Is Watching</Text>
             <Text style={styles.headerTitle}>Social Feed</Text>
             <Text style={styles.headerSubtitle}>See what your world is watching.</Text>
             <Text style={styles.headerSubcopy}>
@@ -555,9 +698,9 @@ export default function FeedScreen() {
           </View>
 
           {error ? <Text style={styles.error}>{error} ({resolvedApiBaseUrl})</Text> : null}
-          {isLoading ? <Text style={styles.meta}>Loading feed...</Text> : null}
+          {isLoading ? <FeedSkeleton /> : null}
 
-          {!isLoading && items.length === 0 ? (
+          {!isLoading && displayItems.length === 0 ? (
             <View style={styles.empty}>
               <Ionicons name="film" color={colors.muted} size={20} />
               <Text style={styles.emptyText}>No activity yet for this segment.</Text>
@@ -565,12 +708,12 @@ export default function FeedScreen() {
           ) : null}
 
           <Animated.View style={{ opacity: listFade }}>
-          {items.map((item, index) => (
+          {displayItems.map((item, index) => (
             <StaggerCard key={item.id} index={index}>
               <FeedCard
                 item={item}
                 segment={segment}
-                comments={commentsByEvent[item.id] ?? []}
+                comments={displayComments[item.id] ?? []}
                 expanded={Boolean(expandedCommentsByEvent[item.id])}
                 followed={Boolean(item.actor.is_following)}
                 draft={replyDraftByEvent[item.id] ?? ""}
@@ -758,11 +901,15 @@ export default function FeedScreen() {
         onError={(message) => setError(message)}
       />
 
-      {toast ? (
-        <View style={styles.toast}>
-          <Text style={styles.toastText}>{toast}</Text>
-        </View>
-      ) : null}
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.toast,
+          { opacity: toastOpacity, transform: [{ translateY: toastTranslateY }] },
+        ]}
+      >
+        <Text style={styles.toastText}>{visibleToast ?? ""}</Text>
+      </Animated.View>
     </SafeAreaView>
   );
 }
@@ -877,38 +1024,52 @@ function FeedCard({
         </View>
       )}
 
-      <View style={styles.mediaRow}>
-        <Pressable
-          style={({ pressed }) => [styles.posterPress, pressed && styles.posterPressPressed]}
-          onPress={onOpenDetails}
-        >
-          <PosterThumb
-            uri={item.title?.poster_url}
-            secondaryUri={item.title?.backdrop_url}
-            style={styles.poster}
-            fallbackStyle={styles.posterFallback}
-            iconSize={20}
+      {item.title ? (
+        <Pressable onPress={onOpenDetails} style={styles.mediaHero}>
+          <Image
+            source={{ uri: resolveMediaUrl(item.title.backdrop_url ?? item.title.poster_url) ?? undefined }}
+            style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+            resizeMode="cover"
           />
-        </Pressable>
-        <View style={styles.copyBlock}>
-          <Pressable onPress={onOpenDetails}>
-            <Text style={styles.titleText}>{item.title?.title ?? String(item.payload.title_name ?? "Untitled")}</Text>
-          </Pressable>
-          {item.event_type === "friend_rating" || ratingValue !== null ? (
-            <View style={styles.ratingBadge}>
-              <Text style={styles.ratingBadgeText}>
-                {ratingValue !== null ? `${ratingValue}/10` : "9/10"}
-              </Text>
+          <View style={styles.mediaHeroGrade} />
+          <View style={styles.mediaHeroContent}>
+            <View style={styles.heroFloatPoster}>
+              <PosterThumb
+                uri={item.title.poster_url}
+                secondaryUri={item.title.backdrop_url}
+                style={styles.heroPosterImg}
+                fallbackStyle={styles.heroPosterFallback}
+                iconSize={14}
+              />
             </View>
-          ) : null}
-          {contentBody ? <Text style={styles.caption}>{contentBody}</Text> : null}
+            <View style={styles.heroCopy}>
+              <Text style={styles.heroTitle} numberOfLines={2}>
+                {item.title.title}
+              </Text>
+              {(item.event_type === "friend_rating" || ratingValue !== null) ? (
+                <View style={styles.ratingBadge}>
+                  <Text style={styles.ratingBadgeText}>{ratingValue !== null ? `${ratingValue}/10` : "9/10"}</Text>
+                </View>
+              ) : null}
+              {contentBody ? <Text style={styles.caption} numberOfLines={3}>{contentBody}</Text> : null}
+              {ctaLabel ? (
+                <Pressable style={styles.ctaButton} onPress={() => onCta(ctaLabel)}>
+                  <Text style={styles.ctaText}>{ctaLabel}</Text>
+                </Pressable>
+              ) : null}
+            </View>
+          </View>
+        </Pressable>
+      ) : contentBody ? (
+        <View style={styles.textOnlyPost}>
+          <Text style={styles.textOnlyBody}>{contentBody}</Text>
           {ctaLabel ? (
             <Pressable style={styles.ctaButton} onPress={() => onCta(ctaLabel)}>
               <Text style={styles.ctaText}>{ctaLabel}</Text>
             </Pressable>
           ) : null}
         </View>
-      </View>
+      ) : null}
 
       <View style={styles.reactionBar}>
         {reactionOptions.map((reaction) => (
@@ -1065,14 +1226,21 @@ function CommentRow({
 
 function Avatar({ uri, label, size }: { uri?: string | null; label: string; size: number }) {
   const resolvedUri = resolveMediaUrl(uri);
-  const [loadFailed, setLoadFailed] = useState(false);
-  const sourceUri = !loadFailed ? resolvedUri : null;
-  if (sourceUri) {
+  // Auto-generate a deterministic pravatar when no real photo is available
+  const pravatarUri = `https://i.pravatar.cc/150?u=${encodeURIComponent(label.toLowerCase().replace(/\s+/g, "."))}`;
+  const sources = useMemo(
+    () => [resolvedUri, pravatarUri].filter((u): u is string => Boolean(u)),
+    [resolvedUri, pravatarUri]
+  );
+  const [srcIdx, setSrcIdx] = useState(0);
+  useEffect(() => { setSrcIdx(0); }, [uri]);
+  const activeUri = sources[srcIdx] ?? null;
+  if (activeUri) {
     return (
       <Image
-        source={{ uri: sourceUri }}
+        source={{ uri: activeUri }}
         style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.backgroundElevated }}
-        onError={() => setLoadFailed(true)}
+        onError={() => setSrcIdx((i) => i + 1)}
       />
     );
   }
@@ -1260,18 +1428,28 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     marginBottom: spacing.sm,
   },
+  headerKicker: {
+    color: colors.accent,
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 1.3,
+    textAlign: "center",
+    marginBottom: 4,
+  },
   headerTitle: {
     color: colors.ink,
-    fontSize: 34,
+    fontSize: 38,
     fontWeight: "900",
     textAlign: "center",
+    letterSpacing: -0.5,
   },
   headerSubtitle: {
-    marginTop: 6,
+    marginTop: 8,
     color: colors.ink,
     opacity: 0.9,
     textAlign: "center",
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: "700",
   },
   headerSubcopy: {
@@ -1279,7 +1457,7 @@ const styles = StyleSheet.create({
     color: colors.muted,
     textAlign: "center",
     fontSize: 13,
-    lineHeight: 18,
+    lineHeight: 19,
   },
   segmented: {
     position: "relative",
@@ -1363,26 +1541,26 @@ const styles = StyleSheet.create({
     fontWeight: "700",
   },
   card: {
-    borderRadius: 22,
+    borderRadius: 24,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: "rgba(46, 64, 87, 0.65)",
     backgroundColor: colors.surface,
     padding: spacing.lg,
-    gap: spacing.sm,
+    gap: spacing.md,
     shadowColor: colors.shadow,
-    shadowOpacity: 0.28,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.38,
+    shadowRadius: 18,
+    shadowOffset: { width: 0, height: 6 },
     overflow: "hidden",
   },
   cardInnerGlow: {
     position: "absolute",
-    top: -20,
-    right: -20,
-    width: 150,
-    height: 150,
+    top: -30,
+    right: -30,
+    width: 180,
+    height: 180,
     borderRadius: 90,
-    backgroundColor: "rgba(255,255,255,0.04)",
+    backgroundColor: "rgba(255,255,255,0.032)",
   },
   headerRow: {
     flexDirection: "row",
@@ -1464,41 +1642,76 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontWeight: "700",
   },
-  mediaRow: {
-    flexDirection: "row",
-    gap: spacing.sm,
-  },
-  posterPress: {
-    borderRadius: 12,
+  mediaHero: {
+    height: 200,
+    borderRadius: 16,
     overflow: "hidden",
-  },
-  posterPressPressed: {
-    transform: [{ scale: 0.98 }],
-  },
-  poster: {
-    width: 86,
-    height: 126,
-    borderRadius: 12,
     backgroundColor: colors.backgroundElevated,
   },
-  posterFallback: {
-    width: 86,
-    height: 126,
-    borderRadius: 12,
-    backgroundColor: colors.backgroundElevated,
-    borderWidth: 1,
-    borderColor: colors.border,
+  mediaHeroGrade: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    height: 140,
+    backgroundColor: "rgba(7,11,19,0.80)",
+  },
+  mediaHeroContent: {
+    position: "absolute",
+    bottom: 0,
+    left: 0,
+    right: 0,
+    padding: 12,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 10,
+  },
+  heroFloatPoster: {
+    borderRadius: 10,
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.55,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  heroPosterImg: {
+    width: 52,
+    height: 76,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
+  },
+  heroPosterFallback: {
+    width: 52,
+    height: 76,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
     alignItems: "center",
     justifyContent: "center",
+    borderWidth: 1,
+    borderColor: colors.border,
   },
-  copyBlock: {
+  heroCopy: {
     flex: 1,
-    gap: 6,
+    gap: 4,
   },
-  titleText: {
-    color: colors.accent,
-    fontWeight: "800",
-    fontSize: 21,
+  heroTitle: {
+    color: colors.ink,
+    fontWeight: "900",
+    fontSize: 18,
+    letterSpacing: -0.3,
+  },
+  textOnlyPost: {
+    backgroundColor: colors.backgroundElevated,
+    borderRadius: 14,
+    padding: 14,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: 8,
+  },
+  textOnlyBody: {
+    color: colors.ink,
+    fontSize: 15,
+    lineHeight: 22,
   },
   ratingBadge: {
     alignSelf: "flex-start",

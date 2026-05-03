@@ -17,7 +17,7 @@ import {
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 
-import { Screen } from "@/components/screen";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, radii, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
@@ -254,31 +254,39 @@ export default function ProfileScreen() {
   }
 
   return (
-    <Screen title="My Profile" subtitle="Manage your identity and see your public posting history.">
+    <SafeAreaView style={styles.safeArea}>
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
         {isLoading ? <ActivityIndicator color={colors.accent} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
         {profile ? (
           <>
-            <View style={styles.card}>
-              <Avatar uri={profile.avatar_url} label={profile.display_name} size={68} />
-              <View style={styles.identity}>
-                <Text style={styles.name}>{profile.display_name}</Text>
-                <Text style={styles.username}>@{profile.username}</Text>
-                <Text style={styles.email}>{profile.email}</Text>
+            <View style={styles.profileHero}>
+              <View style={styles.profileHeroGlow} />
+              <View style={styles.profileAvatarWrap}>
+                <Avatar uri={profile.avatar_url} label={profile.display_name} size={80} />
+              </View>
+              <Text style={styles.profileName}>{profile.display_name}</Text>
+              <Text style={styles.profileHandle}>@{profile.username}</Text>
+              {profile.bio?.trim() ? <Text style={styles.profileBio}>{profile.bio}</Text> : null}
+              <View style={styles.profileStatsRow}>
+                <View style={styles.profileStat}>
+                  <Text style={styles.profileStatNumber}>{posts.length}</Text>
+                  <Text style={styles.profileStatLabel}>Posts</Text>
+                </View>
+                <View style={styles.profileStatDivider} />
+                <View style={styles.profileStat}>
+                  <Text style={styles.profileStatNumber}>{preferences.connected_streaming_services.length}</Text>
+                  <Text style={styles.profileStatLabel}>Services</Text>
+                </View>
               </View>
               <Pressable style={styles.editButton} onPress={openEditModal}>
+                <Ionicons name="pencil-outline" size={13} color={colors.accent} />
                 <Text style={styles.editButtonText}>Edit Profile</Text>
               </Pressable>
             </View>
 
             <View style={styles.bioCard}>
-              <Text style={styles.sectionLabel}>Bio</Text>
-              <Text style={styles.bioText}>{profile.bio?.trim() ? profile.bio : "No bio yet."}</Text>
-              <Text style={styles.bioMeta}>Welcome back, {firstName}.</Text>
-            </View>
-
-            <View style={styles.bioCard}>
+              <Text style={styles.sectionKicker}>Your Subscriptions</Text>
               <Text style={styles.sectionLabel}>Streaming Services</Text>
               <Text style={styles.bioText}>
                 Select the platforms you subscribe to so SeenSnap can show where you can watch instantly.
@@ -303,7 +311,10 @@ export default function ProfileScreen() {
             </View>
 
             <View style={styles.postsHeader}>
-              <Text style={styles.sectionLabel}>Public Posts</Text>
+              <View>
+                <Text style={styles.sectionKicker}>Your Wall</Text>
+                <Text style={styles.sectionLabel}>Public Posts</Text>
+              </View>
               <Text style={styles.postsCount}>{posts.length}</Text>
             </View>
             {posts.length === 0 ? (
@@ -437,7 +448,7 @@ export default function ProfileScreen() {
           <Text style={styles.toastText}>{toast}</Text>
         </View>
       ) : null}
-    </Screen>
+    </SafeAreaView>
   );
 }
 
@@ -479,41 +490,84 @@ function relativeTime(dateString: string) {
 }
 
 const styles = StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: colors.background },
   content: {
     gap: spacing.md,
     paddingBottom: spacing.xxl,
+    paddingHorizontal: spacing.lg,
   },
   error: {
     color: colors.danger,
     fontSize: 13,
   },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: radii.md,
-    borderColor: colors.border,
+  profileHero: {
+    borderRadius: 24,
     borderWidth: 1,
-    padding: spacing.md,
-    flexDirection: "row",
+    borderColor: "rgba(46,64,87,0.65)",
+    backgroundColor: colors.surface,
+    padding: spacing.lg,
     alignItems: "center",
-    gap: spacing.md,
+    gap: spacing.sm,
+    overflow: "hidden",
+    marginTop: spacing.sm,
   },
-  identity: {
-    flex: 1,
+  profileHeroGlow: {
+    position: "absolute",
+    top: -60,
+    width: 240,
+    height: 240,
+    borderRadius: 120,
+    backgroundColor: "rgba(244,196,48,0.065)",
   },
-  name: {
+  profileAvatarWrap: {
+    marginBottom: 4,
+  },
+  profileName: {
     color: colors.ink,
-    fontWeight: "800",
-    fontSize: 18,
+    fontWeight: "900",
+    fontSize: 24,
+    letterSpacing: -0.5,
   },
-  username: {
-    marginTop: 2,
+  profileHandle: {
     color: colors.muted,
+    fontSize: 14,
     fontWeight: "600",
   },
-  email: {
+  profileBio: {
+    color: colors.ink,
+    fontSize: 13,
+    lineHeight: 19,
+    textAlign: "center",
+    paddingHorizontal: 20,
     marginTop: 4,
+  },
+  profileStatsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 20,
+    marginTop: 8,
+    marginBottom: 4,
+  },
+  profileStat: {
+    alignItems: "center",
+    gap: 2,
+  },
+  profileStatNumber: {
+    color: colors.ink,
+    fontWeight: "900",
+    fontSize: 20,
+  },
+  profileStatLabel: {
     color: colors.muted,
-    fontSize: 12,
+    fontSize: 11,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    letterSpacing: 0.8,
+  },
+  profileStatDivider: {
+    width: 1,
+    height: 32,
+    backgroundColor: colors.border,
   },
   editButton: {
     borderRadius: radii.pill,
@@ -521,6 +575,9 @@ const styles = StyleSheet.create({
     borderColor: colors.accent,
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
   },
   editButtonText: {
     color: colors.accent,
@@ -534,6 +591,14 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     padding: spacing.md,
     gap: 8,
+  },
+  sectionKicker: {
+    color: colors.accent,
+    fontSize: 11,
+    fontWeight: "800",
+    textTransform: "uppercase",
+    letterSpacing: 1.3,
+    marginBottom: 2,
   },
   sectionLabel: {
     color: colors.ink,

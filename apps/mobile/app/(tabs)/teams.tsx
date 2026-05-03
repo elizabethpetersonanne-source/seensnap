@@ -17,7 +17,7 @@ import {
 } from "react-native";
 import { useFocusEffect } from "@react-navigation/native";
 
-import { Screen } from "@/components/screen";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
@@ -608,11 +608,13 @@ export default function TeamsScreen() {
   }
 
   return (
-    <Screen
-      title="Watch Teams"
-      subtitle="Your private spaces for shared watchlists, rankings, hot takes, and team chaos."
-    >
+    <SafeAreaView style={styles.safeArea}>
       <ScrollView contentContainerStyle={styles.content}>
+        <View style={styles.pageHeader}>
+          <Text style={styles.pageKicker}>Your Crew</Text>
+          <Text style={styles.pageTitle}>Watch Teams</Text>
+          <Text style={styles.pageSub}>Private spaces for shared watchlists, rankings, hot takes, and team chaos.</Text>
+        </View>
         <View style={styles.actionRow}>
           <Pressable style={styles.primaryCta} onPress={() => setShowCreate(true)}>
             <Text style={styles.primaryCtaText}>Create a New Team</Text>
@@ -639,10 +641,12 @@ export default function TeamsScreen() {
               onPress={() => setSelectedTeamId(team.id)}
             >
               <View style={styles.teamCardTop}>
-                <Text style={styles.teamIcon}>{team.icon || "🍿"}</Text>
+                <View style={styles.teamIconWrap}>
+                  <Text style={styles.teamIcon}>{team.icon || "🍿"}</Text>
+                </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.teamName}>{team.name}</Text>
-                  <Text numberOfLines={2} style={styles.teamDesc}>{team.description || "Private watch team"}</Text>
+                  <Text numberOfLines={1} style={styles.teamDesc}>{team.description || "Private watch team"}</Text>
                 </View>
                 {selectedTeam?.id === team.id && canManageTeam ? (
                   <Pressable onPress={() => setShowEditTeam(true)} style={styles.editPill}>
@@ -650,16 +654,15 @@ export default function TeamsScreen() {
                   </Pressable>
                 ) : null}
               </View>
-              <View style={styles.teamMetaRow}>
+              <View style={styles.teamCardBottom}>
+                <View style={styles.avatarRow}>
+                  {team.recent_member_avatars.slice(0, 4).map((avatar, idx) => (
+                    <View key={avatar + idx} style={[styles.miniAvatarWrap, { marginLeft: idx === 0 ? 0 : -8 }]}>
+                      <Avatar uri={avatar} label="U" size={24} />
+                    </View>
+                  ))}
+                </View>
                 <Text style={styles.teamMeta}>{team.member_count} members</Text>
-                <Text numberOfLines={1} style={styles.teamMeta}>{team.latest_activity || "No activity yet"}</Text>
-              </View>
-              <View style={styles.avatarRow}>
-                {team.recent_member_avatars.slice(0, 4).map((avatar, idx) => (
-                  <View key={avatar + idx} style={[styles.miniAvatarWrap, { marginLeft: idx === 0 ? 0 : -8 }]}>
-                    <Avatar uri={avatar} label="U" size={24} />
-                  </View>
-                ))}
               </View>
             </Pressable>
           ))
@@ -667,11 +670,19 @@ export default function TeamsScreen() {
 
         {selectedTeam ? (
           <View style={styles.detailCard}>
-            <View style={styles.detailHeader}>
-              <Text style={styles.detailName}>{selectedTeam.icon || "🍿"} {selectedTeam.name}</Text>
-              <Text style={styles.detailMeta}>{selectedTeam.member_count}/{selectedTeam.max_members} · {selectedTeam.visibility}</Text>
-              <Text style={styles.detailDesc}>{selectedTeam.description || "No description yet."}</Text>
-              <Text style={styles.detailFeedCopy}>{selectedTeam.name} Feed · Recommendations, rankings, reactions, and whatever your group is obsessed with right now.</Text>
+            <View style={styles.detailHero}>
+              <View style={styles.teamHeroIconWrap}>
+                <Text style={styles.teamHeroEmoji}>{selectedTeam.icon || "🍿"}</Text>
+              </View>
+              <View style={{ flex: 1, gap: 3 }}>
+                <Text style={styles.detailName}>{selectedTeam.name}</Text>
+                <Text style={styles.detailMeta}>{selectedTeam.member_count}/{selectedTeam.max_members} · {selectedTeam.visibility}</Text>
+                {selectedTeam.description ? <Text style={styles.detailDesc}>{selectedTeam.description}</Text> : null}
+              </View>
+            </View>
+            <View style={styles.inviteCodeRow}>
+              <Ionicons name="link-outline" size={12} color={colors.accent} />
+              <Text style={styles.inviteCodeText}>Invite: {selectedTeam.invite_code}</Text>
             </View>
 
             <View style={styles.quickRow}>
@@ -726,7 +737,7 @@ export default function TeamsScreen() {
                   <View key={item.id} style={styles.feedCard}>
                     {item.content_title_id && titleById[item.content_title_id] ? (
                       <Pressable
-                        style={styles.teamFeedTitleRow}
+                        style={styles.teamFeedHero}
                         onPress={() =>
                           void openTitleDetails(item.content_title_id!, {
                             id: item.content_title_id!,
@@ -736,8 +747,13 @@ export default function TeamsScreen() {
                           })
                         }
                       >
-                        <PosterThumb uri={titleById[item.content_title_id].poster_url} small />
-                        <Text style={styles.teamFeedTitleText}>{titleById[item.content_title_id].title_name}</Text>
+                        <Image
+                          source={{ uri: resolveMediaUrl(titleById[item.content_title_id].poster_url) ?? undefined }}
+                          style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0 }}
+                          resizeMode="cover"
+                        />
+                        <View style={styles.teamFeedHeroShade} />
+                        <Text style={styles.teamFeedHeroTitle}>{titleById[item.content_title_id].title_name}</Text>
                       </Pressable>
                     ) : null}
                     <View style={styles.feedTop}>
@@ -1050,7 +1066,6 @@ export default function TeamsScreen() {
           setSaveTitleId(detail.id);
           setShowSaveSheet(true);
         }}
-        onPost={() => setToast("Post from title coming next")}
       />
 
       <SaveToListSheet
@@ -1067,7 +1082,7 @@ export default function TeamsScreen() {
       />
 
       {toast ? <View style={styles.toast}><Text style={styles.toastText}>{toast}</Text></View> : null}
-    </Screen>
+    </SafeAreaView>
   );
 }
 
@@ -1165,7 +1180,12 @@ function readableFeedType(type: string) {
 }
 
 const styles = StyleSheet.create({
-  content: { gap: spacing.md, paddingBottom: spacing.xl },
+  safeArea: { flex: 1, backgroundColor: colors.background },
+  content: { gap: spacing.md, paddingBottom: spacing.xl, paddingHorizontal: spacing.lg },
+  pageHeader: { gap: 4, paddingTop: spacing.sm },
+  pageKicker: { color: colors.accent, fontSize: 11, fontWeight: "800", textTransform: "uppercase", letterSpacing: 1.3 },
+  pageTitle: { color: colors.ink, fontSize: 32, fontWeight: "900", letterSpacing: -0.5 },
+  pageSub: { color: colors.muted, fontSize: 13, lineHeight: 18, marginTop: 2 },
   actionRow: { flexDirection: "row", gap: spacing.sm },
   primaryCta: { flex: 1, borderRadius: radii.pill, backgroundColor: colors.accent, paddingVertical: 11, alignItems: "center" },
   primaryCtaDisabled: { opacity: 0.45 },
@@ -1179,22 +1199,26 @@ const styles = StyleSheet.create({
   emptyBody: { color: colors.muted, marginTop: 6, lineHeight: 20 },
   teamCard: { borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md, gap: spacing.xs },
   teamCardActive: { borderColor: colors.accent, backgroundColor: "rgba(244,196,48,0.08)" },
-  teamCardTop: { flexDirection: "row", gap: spacing.sm, alignItems: "flex-start" },
+  teamCardTop: { flexDirection: "row", gap: spacing.sm, alignItems: "center" },
+  teamCardBottom: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginTop: 4 },
+  teamIconWrap: { width: 40, height: 40, borderRadius: 12, backgroundColor: "rgba(244,196,48,0.12)", borderWidth: 1, borderColor: "rgba(244,196,48,0.22)", alignItems: "center", justifyContent: "center" },
   editPill: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundElevated, borderRadius: radii.pill, paddingHorizontal: 10, paddingVertical: 6 },
   editPillText: { color: colors.accent, fontSize: 11, fontWeight: "700" },
   teamIcon: { fontSize: 20 },
   teamName: { color: colors.ink, fontWeight: "900", fontSize: 16 },
-  teamDesc: { color: colors.muted, marginTop: 3, fontSize: 12, lineHeight: 17 },
-  teamMetaRow: { flexDirection: "row", justifyContent: "space-between", gap: spacing.sm },
+  teamDesc: { color: colors.muted, marginTop: 2, fontSize: 12, lineHeight: 17 },
   teamMeta: { color: colors.muted, fontSize: 11 },
-  avatarRow: { flexDirection: "row", marginTop: 4 },
+  avatarRow: { flexDirection: "row" },
   miniAvatarWrap: { borderWidth: 1, borderColor: colors.background, borderRadius: radii.pill },
   detailCard: { borderRadius: radii.lg, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md, gap: spacing.sm },
-  detailHeader: { gap: 4 },
+  detailHero: { flexDirection: "row", alignItems: "flex-start", gap: 12 },
+  teamHeroIconWrap: { width: 52, height: 52, borderRadius: 16, backgroundColor: "rgba(244,196,48,0.12)", borderWidth: 1, borderColor: "rgba(244,196,48,0.28)", alignItems: "center", justifyContent: "center" },
+  teamHeroEmoji: { fontSize: 26 },
+  inviteCodeRow: { flexDirection: "row", alignItems: "center", gap: 6, backgroundColor: "rgba(244,196,48,0.07)", borderRadius: 10, borderWidth: 1, borderColor: "rgba(244,196,48,0.2)", paddingHorizontal: 10, paddingVertical: 7, alignSelf: "flex-start" },
+  inviteCodeText: { color: colors.accent, fontSize: 12, fontWeight: "700", letterSpacing: 0.5 },
   detailName: { color: colors.ink, fontSize: 21, fontWeight: "900" },
   detailMeta: { color: colors.muted, fontSize: 12 },
   detailDesc: { color: colors.muted, fontSize: 13, lineHeight: 20 },
-  detailFeedCopy: { color: colors.muted, fontSize: 12, lineHeight: 18, marginTop: 2 },
   quickRow: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   quickButton: { borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundElevated, paddingVertical: 8, paddingHorizontal: 12 },
   quickButtonText: { color: colors.accent, fontSize: 12, fontWeight: "700" },
@@ -1214,8 +1238,9 @@ const styles = StyleSheet.create({
   feedType: { color: colors.muted, fontSize: 11 },
   feedTime: { color: colors.muted, fontSize: 11 },
   feedBody: { color: colors.ink, lineHeight: 20, fontSize: 13 },
-  teamFeedTitleRow: { flexDirection: "row", alignItems: "center", gap: 8, borderWidth: 1, borderColor: colors.border, borderRadius: 10, padding: 6, backgroundColor: colors.surface },
-  teamFeedTitleText: { color: colors.accent, fontSize: 12, fontWeight: "700" },
+  teamFeedHero: { height: 100, borderRadius: 12, overflow: "hidden", backgroundColor: colors.backgroundElevated, justifyContent: "flex-end", padding: 10 },
+  teamFeedHeroShade: { position: "absolute", bottom: 0, left: 0, right: 0, height: 70, backgroundColor: "rgba(7,11,19,0.75)" },
+  teamFeedHeroTitle: { color: colors.ink, fontWeight: "800", fontSize: 15, letterSpacing: -0.2 },
   reactionStrip: { flexDirection: "row", gap: 8, marginTop: 2, flexWrap: "wrap" },
   reactionChip: { borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 4 },
   reactionChipActive: { borderColor: colors.accent, backgroundColor: "rgba(244,196,48,0.14)" },
