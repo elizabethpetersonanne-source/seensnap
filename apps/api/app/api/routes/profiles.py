@@ -1,11 +1,12 @@
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel
 from sqlalchemy import func, select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
-from app.models.social import FeedEvent
+from app.models.social import FeedEvent, ListShare, Watchlist, WatchlistItem
 from app.models.user import UserProfile
 from app.schemas.user import PublicProfilePostResponse, PublicProfileResponse
 from app.schemas.taste import CompatibilityResponse, TasteProfileResponse
@@ -125,6 +126,69 @@ def get_public_profile_posts(
         )
         for event in events
     ]
+
+
+class PublicProfileListSummary(BaseModel):
+    list_id: UUID
+    name: str
+    description: str | None
+    item_count: int
+    share_token: str
+    preview_posters: list[str]
+
+
+@router.get("/{user_id}/public-lists", response_model=list[PublicProfileListSummary])
+def get_public_profile_lists(
+    user_id: UUID,
+    _current_user: CurrentUser,
+    db: DbSession,
+) -> list[PublicProfileListSummary]:
+    """Return the user's watchlists that have an active public share
+    token. A list becomes discoverable on someone's profile once its
+    owner publishes it (POST /me/watchlist/lists/{id}/share) OR posts
+    it to the social feed (create_social_post auto-mints a token).
+    """
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+
+    # Latest non-revoked share per watchlist, owned by this user.
+    share_rows = db.execute(
+        select(ListShare, Watchlist)
+        .join(Watchlist, Watchlist.id == ListShare.watchlist_id)
+        .where(
+            Watchlist.owner_user_id == user_id,
+            ListShare.revoked_at.is_(None),
+        )
+        .order_by(ListShare.created_at.desc())
+    ).all()
+    # Dedupe to one share per watchlist (the latest).
+    seen: set[UUID] = set()
+    out: list[PublicProfileListSummary] = []
+    for share, watchlist in share_rows:
+        if watchlist.id in seen:
+            continue
+        seen.add(watchlist.id)
+        item_count = db.scalar(
+            select(func.count(WatchlistItem.id)).where(WatchlistItem.watchlist_id == watchlist.id)
+        ) or 0
+        preview_rows = db.execute(
+            select(ContentTitle.poster_url)
+            .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
+            .where(WatchlistItem.watchlist_id == watchlist.id)
+            .order_by(WatchlistItem.created_at.desc())
+            .limit(4)
+        ).all()
+        preview_posters = [row[0] for row in preview_rows if row[0]]
+        out.append(PublicProfileListSummary(
+            list_id=watchlist.id,
+            name=watchlist.name,
+            description=watchlist.description,
+            item_count=int(item_count),
+            share_token=share.token,
+            preview_posters=preview_posters,
+        ))
+    return out
 
 
 @router.post("/{user_id}/follow", status_code=status.HTTP_204_NO_CONTENT)

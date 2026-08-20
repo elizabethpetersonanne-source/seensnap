@@ -17,7 +17,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { Avatar } from "@/components/avatar";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
-import { colors, radii, spacing } from "@/constants/theme";
+import { colors, fonts, radii, spacing } from "@/constants/theme";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
@@ -55,6 +55,15 @@ type PublicPost = {
   caption?: string | null;
   rating?: number | null;
   created_at: string;
+};
+
+type PublicList = {
+  list_id: string;
+  name: string;
+  description: string | null;
+  item_count: number;
+  share_token: string;
+  preview_posters: string[];
 };
 
 type Personality = { archetype: string; tagline: string; accentColor: string };
@@ -104,6 +113,7 @@ export default function PublicProfileScreen() {
 
   const [profile, setProfile] = useState<PublicProfile | null>(null);
   const [posts, setPosts] = useState<PublicPost[]>([]);
+  const [publicLists, setPublicLists] = useState<PublicList[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [followBusy, setFollowBusy] = useState(false);
@@ -134,12 +144,15 @@ export default function PublicProfileScreen() {
         setIsLoading(true);
         setError(null);
         try {
-          const [p, feed] = await Promise.all([
+          const [p, feed, lists] = await Promise.all([
             apiRequest<PublicProfile>(`/profiles/${userId}`, { token: sessionToken }),
             apiRequest<PublicPost[]>(`/profiles/${userId}/posts`, { token: sessionToken }),
+            apiRequest<PublicList[]>(`/profiles/${userId}/public-lists`, { token: sessionToken })
+              .catch(() => [] as PublicList[]),
           ]);
           setProfile(p);
           setPosts(feed);
+          setPublicLists(lists);
         } catch (loadError) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load profile");
         } finally {
@@ -414,14 +427,55 @@ export default function PublicProfileScreen() {
               <View style={styles.sectionHeaderRow}>
                 <Text style={styles.sectionKicker}>Collections</Text>
                 <Text style={styles.sectionTitle}>Public Lists</Text>
+                {publicLists.length > 0 ? (
+                  <Text style={styles.feedCount}>{publicLists.length}</Text>
+                ) : null}
               </View>
-              <View style={styles.listsEmpty}>
-                <Ionicons name="albums-outline" size={26} color={colors.muted} />
-                <Text style={styles.listsEmptyTitle}>No public lists yet</Text>
-                <Text style={styles.listsEmptyBody}>
-                  Public collections will appear here when shared.
-                </Text>
-              </View>
+              {publicLists.length === 0 ? (
+                <View style={styles.listsEmpty}>
+                  <Ionicons name="albums-outline" size={26} color={colors.muted} />
+                  <Text style={styles.listsEmptyTitle}>No public lists yet</Text>
+                  <Text style={styles.listsEmptyBody}>
+                    Public collections will appear here when {profile.display_name} shares one.
+                  </Text>
+                </View>
+              ) : (
+                <View style={styles.publicListCol}>
+                  {publicLists.map((list) => (
+                    <Pressable
+                      key={list.list_id}
+                      style={styles.publicListRow}
+                      onPress={() => router.push(`/lists/${list.share_token}`)}
+                    >
+                      <View style={styles.publicListPosters}>
+                        {list.preview_posters.slice(0, 4).map((uri, i) => (
+                          <Image
+                            key={uri + String(i)}
+                            source={{ uri: resolveMediaUrl(uri) ?? uri }}
+                            style={styles.publicListPoster}
+                            resizeMode="cover"
+                          />
+                        ))}
+                        {list.preview_posters.length === 0 ? (
+                          <View style={[styles.publicListPoster, styles.publicListPosterEmpty]}>
+                            <Ionicons name="albums-outline" size={18} color={colors.muted} />
+                          </View>
+                        ) : null}
+                      </View>
+                      <View style={{ flex: 1, gap: 4 }}>
+                        <Text style={styles.publicListName} numberOfLines={1}>{list.name}</Text>
+                        <Text style={styles.publicListMeta}>
+                          {list.item_count} {list.item_count === 1 ? "title" : "titles"}
+                        </Text>
+                        {list.description ? (
+                          <Text style={styles.publicListDesc} numberOfLines={2}>{list.description}</Text>
+                        ) : null}
+                      </View>
+                      <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+                    </Pressable>
+                  ))}
+                </View>
+              )}
             </View>
 
             {/* ── Activity Feed ── */}
@@ -761,6 +815,50 @@ const styles = StyleSheet.create({
   },
   listsEmptyTitle: { color: colors.ink, fontWeight: "800", fontSize: 14 },
   listsEmptyBody: { color: colors.muted, fontSize: 13, lineHeight: 18, textAlign: "center" },
+  publicListCol: { marginHorizontal: spacing.lg, gap: spacing.sm },
+  publicListRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.md,
+    borderRadius: 14,
+    backgroundColor: colors.surfaceMuted,
+    borderWidth: 1,
+    borderColor: colors.border,
+  },
+  publicListPosters: {
+    flexDirection: "row",
+    gap: 3,
+  },
+  publicListPoster: {
+    width: 28,
+    height: 42,
+    borderRadius: 3,
+    backgroundColor: colors.surface,
+  },
+  publicListPosterEmpty: {
+    alignItems: "center",
+    justifyContent: "center",
+    width: 42,
+  },
+  publicListName: {
+    fontFamily: fonts.serifBold,
+    color: colors.ink,
+    fontSize: 16,
+    letterSpacing: -0.2,
+  },
+  publicListMeta: {
+    fontFamily: fonts.mono,
+    color: colors.muted,
+    fontSize: 11,
+    letterSpacing: 0.5,
+  },
+  publicListDesc: {
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 12,
+    lineHeight: 16,
+  },
 
   // ── Feed section ──────────────────────────────────────────────────────────
   feedSection: { gap: spacing.md },
