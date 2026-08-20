@@ -79,6 +79,14 @@ export default function MyPicksScreen() {
   const [selectedList, setSelectedList] = useState<WatchlistResponse | null>(null);
   // Share-to-Feed composer for the currently open list.
   const [showShareToFeed, setShowShareToFeed] = useState(false);
+  // Public share status for the currently selected list (PRIVATE / PUBLIC LINK
+  // pill). Fetched on list change; refreshed after publish/revoke actions.
+  const [shareStatus, setShareStatus] = useState<{
+    is_public: boolean;
+    token: string | null;
+    url: string | null;
+  }>({ is_public: false, token: null, url: null });
+  const [shareStatusLoading, setShareStatusLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -107,6 +115,23 @@ export default function MyPicksScreen() {
   );
   const hasSavedPosters = savedPosters.length >= 2;
 
+  const loadShareStatus = useCallback(async (listId: string) => {
+    if (!sessionToken) return;
+    setShareStatusLoading(true);
+    try {
+      const s = await apiRequest<{ is_public: boolean; token: string | null; url: string | null }>(
+        `/me/watchlist/lists/${listId}/share`,
+        { token: sessionToken },
+      );
+      setShareStatus({ is_public: s.is_public, token: s.token, url: s.url });
+    } catch {
+      // Silent — pill just stays in PRIVATE state
+      setShareStatus({ is_public: false, token: null, url: null });
+    } finally {
+      setShareStatusLoading(false);
+    }
+  }, [sessionToken]);
+
   const loadLists = useCallback(async () => {
     if (!sessionToken) return;
     const summaries = await apiRequest<WatchlistSummary[]>("/me/watchlist/lists", { token: sessionToken });
@@ -123,10 +148,12 @@ export default function MyPicksScreen() {
     if (nextSelected) {
       const detail = await apiRequest<WatchlistResponse>(`/me/watchlist/lists/${nextSelected}`, { token: sessionToken });
       setSelectedList(detail);
+      void loadShareStatus(nextSelected);
     } else {
       setSelectedList(null);
+      setShareStatus({ is_public: false, token: null, url: null });
     }
-  }, [selectedListId, sessionToken]);
+  }, [selectedListId, sessionToken, loadShareStatus]);
 
   useFocusEffect(
     useCallback(() => {
@@ -154,6 +181,9 @@ export default function MyPicksScreen() {
     try {
       const detail = await apiRequest<WatchlistResponse>(`/me/watchlist/lists/${listId}`, { token: sessionToken });
       setSelectedList(detail);
+      // Load share status so the PRIVATE / PUBLIC LINK pill reflects
+      // reality without waiting for the user to interact.
+      void loadShareStatus(listId);
     } catch (listError) {
       setError(listError instanceof Error ? listError.message : "Failed to load list");
     }
@@ -208,6 +238,70 @@ export default function MyPicksScreen() {
     } catch (deleteError) {
       setError(deleteError instanceof Error ? deleteError.message : "Failed to delete list");
     }
+  }
+
+  async function publishList() {
+    if (!sessionToken || !selectedList) return;
+    try {
+      const resp = await apiRequest<{ token: string; url: string }>(
+        `/me/watchlist/lists/${selectedList.id}/share`,
+        { method: "POST", token: sessionToken, body: "{}" },
+      );
+      setShareStatus({ is_public: true, token: resp.token, url: resp.url });
+      // Also copy to clipboard so the user can share immediately.
+      const clipboard = (globalThis as { navigator?: { clipboard?: { writeText?: (t: string) => Promise<void> } } })?.navigator?.clipboard;
+      if (clipboard?.writeText) {
+        try { await clipboard.writeText(resp.url); } catch {}
+      }
+      setToast("List is now public — link copied");
+      setTimeout(() => setToast(null), 2400);
+    } catch (err) {
+      Alert.alert("Couldn't publish", err instanceof Error ? err.message : "Please try again.");
+    }
+  }
+
+  async function copyPublicLink() {
+    if (!shareStatus.url) return;
+    const clipboard = (globalThis as { navigator?: { clipboard?: { writeText?: (t: string) => Promise<void> } } })?.navigator?.clipboard;
+    if (clipboard?.writeText) {
+      try {
+        await clipboard.writeText(shareStatus.url);
+        setToast("Link copied");
+        setTimeout(() => setToast(null), 1800);
+        return;
+      } catch {
+        // fall through
+      }
+    }
+    Alert.alert("Public link", shareStatus.url);
+  }
+
+  async function revokePublicLink() {
+    if (!sessionToken || !selectedList) return;
+    Alert.alert(
+      "Make this list private?",
+      "The public link will stop working. Anyone with the link can no longer view the list.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Make private",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await apiRequest<void>(`/me/watchlist/lists/${selectedList.id}/share`, {
+                method: "DELETE",
+                token: sessionToken,
+              });
+              setShareStatus({ is_public: false, token: null, url: null });
+              setToast("List is private");
+              setTimeout(() => setToast(null), 1800);
+            } catch (err) {
+              Alert.alert("Couldn't revoke", err instanceof Error ? err.message : "Please try again.");
+            }
+          },
+        },
+      ],
+    );
   }
 
   async function removeFromList(item: WatchlistItem) {
@@ -328,6 +422,39 @@ export default function MyPicksScreen() {
               {selectedList.description ? (
                 <Text style={styles.selectedListDesc}>{selectedList.description}</Text>
               ) : null}
+              {/* Public/private status pill — explicit, tap-to-toggle
+                  affordance so users don't have to discover that the
+                  Share icon secretly makes lists public. */}
+              {shareStatusLoading ? null : shareStatus.is_public ? (
+                <View style={styles.publicStatusRow}>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.publicPill,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                    hitSlop={6}
+                    onPress={() => void copyPublicLink()}
+                  >
+                    <Ionicons name="link" size={12} color={colors.accent} />
+                    <Text style={styles.publicPillText}>PUBLIC LINK · TAP TO COPY</Text>
+                  </Pressable>
+                  <Pressable hitSlop={8} onPress={() => void revokePublicLink()}>
+                    <Ionicons name="close-circle" size={16} color={colors.muted} />
+                  </Pressable>
+                </View>
+              ) : (
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.privatePill,
+                    pressed && { opacity: 0.7 },
+                  ]}
+                  hitSlop={6}
+                  onPress={() => void publishList()}
+                >
+                  <Ionicons name="lock-closed" size={11} color={colors.muted} />
+                  <Text style={styles.privatePillText}>PRIVATE · TAP TO PUBLISH</Text>
+                </Pressable>
+              )}
             </View>
             <View style={styles.actionsRow}>
               {/* Post to Feed — Social brief §9. Primary action for surfacing
@@ -739,6 +866,48 @@ const styles = StyleSheet.create({
     fontSize: 10,
     letterSpacing: 1.2,
     color: colors.accent,
+  },
+  publicStatusRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    marginTop: 8,
+  },
+  publicPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.08)",
+    borderRadius: 2,
+    alignSelf: "flex-start",
+  },
+  publicPillText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.1,
+    color: colors.accent,
+  },
+  privatePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: 2,
+    marginTop: 8,
+    alignSelf: "flex-start",
+  },
+  privatePillText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.1,
+    color: colors.muted,
   },
 
   // Loading / error

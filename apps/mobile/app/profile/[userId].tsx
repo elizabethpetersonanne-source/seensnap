@@ -566,6 +566,11 @@ const styles = StyleSheet.create({
     bottom: -52,
     left: 0,
     right: 0,
+    // flexDirection + justifyContent centers reliably on react-native-web,
+    // where alignItems on an absolutely-positioned wrap sometimes reports
+    // a zero-width intrinsic size and the child pins to the left edge.
+    flexDirection: "row",
+    justifyContent: "center",
     alignItems: "center",
   },
   heroCompact: {

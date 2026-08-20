@@ -119,6 +119,51 @@ def create_or_reuse_list_share(
     )
 
 
+class ShareStatusResponse(BaseModel):
+    is_public: bool
+    token: str | None = None
+    url: str | None = None
+    open_count: int = 0
+    created_at: datetime | None = None
+
+
+@router.get(
+    "/me/watchlist/lists/{list_id}/share",
+    response_model=ShareStatusResponse,
+)
+def get_list_share_status(
+    list_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> ShareStatusResponse:
+    """Report whether the list currently has an active public share
+    without minting a token. Owner-only. Used by the client to render
+    PRIVATE / PUBLIC LINK state without side effects."""
+    watchlist = db.scalar(
+        select(Watchlist).where(Watchlist.id == list_id, Watchlist.owner_user_id == current_user.id)
+    )
+    if watchlist is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
+    share = db.scalar(
+        select(ListShare)
+        .where(
+            ListShare.watchlist_id == list_id,
+            ListShare.created_by_user_id == current_user.id,
+            ListShare.revoked_at.is_(None),
+        )
+        .order_by(ListShare.created_at.desc())
+    )
+    if share is None:
+        return ShareStatusResponse(is_public=False)
+    return ShareStatusResponse(
+        is_public=True,
+        token=share.token,
+        url=_build_share_url(share.token),
+        open_count=share.open_count,
+        created_at=share.created_at,
+    )
+
+
 @router.delete(
     "/me/watchlist/lists/{list_id}/share",
     status_code=status.HTTP_204_NO_CONTENT,

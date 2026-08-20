@@ -568,8 +568,7 @@ def hydrate_feed_event(
                 })
             # Read the current public share token so the feed card can
             # link viewers to /lists/{token}. Only latest non-revoked
-            # token is used; if the author revoked all shares, the card
-            # stays non-tappable.
+            # token is used.
             share_row = db.scalar(
                 select(ListShare)
                 .where(
@@ -580,6 +579,18 @@ def hydrate_feed_event(
             )
             if share_row is not None:
                 list_share_token = share_row.token
+            else:
+                # Back-fill: list_share posts created before the auto-mint
+                # code deployed have no ListShare row. Mint one now so
+                # they become clickable. Uses the author's identity —
+                # the token record belongs to them regardless of who's
+                # viewing.
+                list_share_token = _ensure_list_share_token(
+                    db,
+                    list_id=watchlist.id,
+                    author_user_id=watchlist.owner_user_id,
+                )
+                db.commit()
 
     like_count = int(
         db.scalar(
