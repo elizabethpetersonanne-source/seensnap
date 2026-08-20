@@ -72,9 +72,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
   const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
   const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
+  // Google sign-in is available when we have a web client id AND we're on
+  // a platform that can actually talk to Google's OAuth endpoints.
+  //   - iOS + Android native: the iOS/Android client id is preferred but
+  //     the web client id works as a fallback.
+  //   - Web (browser): the web client id is the only correct one —
+  //     Google's OAuth requires a "Web application" client for browser flows.
+  //   - Expo Go: uses the web client id via Expo's auth proxy.
+  // Without a web branch, browser sign-in fell through to /auth/dev,
+  // which staging correctly disables — the button appeared to no-op.
   const hasGoogleConfig = Boolean(
     webClientId &&
       (isExpoGo ||
+        Platform.OS === "web" ||
         (Platform.OS === "ios" && (iosClientId || webClientId)) ||
         (Platform.OS === "android" && (androidClientId || webClientId)))
   );
