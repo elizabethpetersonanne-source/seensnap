@@ -30,7 +30,12 @@ from app.schemas.taste import (
     TasteTitleReferenceResponse,
 )
 from app.services.teams import list_user_teams
-from app.services.tmdb import TmdbConfigurationError, fetch_related_titles, fetch_trending_titles
+from app.services.tmdb import (
+    TmdbConfigurationError,
+    fetch_popular_titles,
+    fetch_related_titles,
+    fetch_trending_titles,
+)
 
 THEME_KEYWORDS: dict[str, tuple[str, ...]] = {
     "Slow Burn": ("drama", "mystery", "thriller"),
@@ -1185,6 +1190,38 @@ def get_social_recommendations(
                 continue
             chosen.append(item)
             chosen_ids.add(item["title"].id)
+
+    # Deep cold-start pool. Trending alone is ~60 titles; after ~2-3 swipe
+    # sessions a fresh account exhausts it and hits the "you've seen
+    # everything" empty state — which is a lie because TMDB /movie/popular
+    # and /tv/popular have hundreds of pages. Pull additional popular
+    # titles, rotating the start_page based on how many titles this user
+    # has already been exposed to (via recently_shown count). Applies the
+    # same exclude set so we never repeat within the recycle window.
+    # Runs only when the deck still isn't full after trending — heavy
+    # personalized users never hit this path.
+    if len(chosen) < limit:
+        chosen_ids = {item["title"].id for item in chosen}
+        # start_page cycles per 40-title chunk the user has already seen.
+        start_page = 1 + (len(recently_shown) // 40) % 20
+        try:
+            extra_titles = fetch_popular_titles(db, limit=limit * 2, start_page=start_page)
+        except TmdbConfigurationError:
+            extra_titles = []
+        for title in extra_titles:
+            if len(chosen) >= limit:
+                break
+            if title.id in exclude or title.id in chosen_ids:
+                continue
+            chosen.append({
+                "title": title,
+                "reason_type": REASON_TYPE_TRENDING_PERSONALIZED,
+                "score": 5,
+                "contributing_titles": [],
+                "contributing_traits": [],
+                "confidence": 0.4,
+            })
+            chosen_ids.add(title.id)
 
     # --- Emit signals + build responses ---
     results: list[RecommendationResponse] = []

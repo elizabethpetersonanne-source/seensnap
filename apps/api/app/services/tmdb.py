@@ -452,6 +452,60 @@ def fetch_trending_titles(db: Session, limit: int = 20) -> list[ContentTitle]:
     return hydrated
 
 
+def fetch_popular_titles(
+    db: Session,
+    *,
+    limit: int = 40,
+    start_page: int = 1,
+) -> list[ContentTitle]:
+    """Fetch popular movies + TV shows across multiple TMDB pages. Used
+    as the deep cold-start pool so a brand-new user with no personalized
+    signals can keep swiping past the ~60-item trending list without
+    hitting empty state.
+
+    start_page rotates so consecutive calls return fresh titles instead
+    of the same page 1 slice — callers should pass a value that shifts
+    per request (e.g. based on how many titles the user has already
+    swiped through this session).
+
+    Pulls interleaved movie + TV pages so the deck stays media-diverse.
+    TMDB /popular endpoints support pages 1-500, so this is effectively
+    unbounded for internal-alpha needs.
+    """
+    hydrated: list[ContentTitle] = []
+    seen_tmdb_ids: set[int] = set()
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+        # Fetch up to 3 pages each of movie + TV. Interleave them for
+        # media diversity. 3 × 20 × 2 = up to 120 fresh candidates per call.
+        max_pages = 3
+        for offset in range(max_pages):
+            page = ((start_page - 1 + offset) % 500) + 1  # wrap at TMDB's max
+            for media_type, path in (("movie", "/movie/popular"), ("tv", "/tv/popular")):
+                if len(hydrated) >= limit:
+                    break
+                try:
+                    response = client.get(path, params={"language": "en-US", "page": page})
+                    response.raise_for_status()
+                except httpx.HTTPError:
+                    continue
+                results = response.json().get("results", [])
+                for item in results:
+                    tmdb_id = item.get("id")
+                    if not isinstance(tmdb_id, int) or tmdb_id in seen_tmdb_ids:
+                        continue
+                    seen_tmdb_ids.add(tmdb_id)
+                    item["media_type"] = media_type
+                    row = _upsert_title_from_tmdb_result(db, item)
+                    if row is not None:
+                        hydrated.append(row)
+                    if len(hydrated) >= limit:
+                        break
+            if len(hydrated) >= limit:
+                break
+    db.commit()
+    return hydrated
+
+
 def list_tmdb_genres() -> list[str]:
     movie_map = _fetch_genre_map("movie")
     tv_map = _fetch_genre_map("tv")
