@@ -719,7 +719,17 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: rules.default,
   },
-  content: { padding: spacing.lg, gap: spacing.md, paddingBottom: spacing.xxl },
+  // maxWidth caps the feed to a comfortable reading column on desktop
+  // (mobile web ignores it because it's narrower than 640 anyway).
+  // alignSelf: center keeps the column centered in wide viewports.
+  content: {
+    padding: spacing.lg,
+    gap: spacing.md,
+    paddingBottom: spacing.xxl,
+    width: "100%",
+    maxWidth: 640,
+    alignSelf: "center",
+  },
   centerState: {
     flex: 1,
     alignItems: "center",
@@ -914,8 +924,12 @@ const styles = StyleSheet.create({
   cardListMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 11, letterSpacing: 0.5 },
   cardListPreviewRow: { flexDirection: "row", gap: 6, marginTop: 8 },
   cardListPreviewPoster: {
-    flex: 1,
-    aspectRatio: 2 / 3,
+    // Fixed size — previously flex:1 which meant on desktop web each
+    // poster ballooned to ~400px wide (viewport / 5) with a 2:3 aspect
+    // ratio, filling half the screen. Fixed dimensions keep the row a
+    // proper mini-strip on every viewport.
+    width: 60,
+    height: 90,
     borderRadius: 4,
     overflow: "hidden",
     backgroundColor: colors.surface,
