@@ -48,6 +48,8 @@ class ShareCreatedResponse(BaseModel):
 
 
 class PublicListItemResponse(BaseModel):
+    title_id: UUID
+    tmdb_id: int
     title: str
     content_type: str
     poster_url: str | None = None
@@ -223,6 +225,8 @@ def get_public_shared_list(token: str, db: DbSession) -> PublicListResponse:
         shared_by_display_name=profile.display_name if profile else None,
         items=[
             PublicListItemResponse(
+                title_id=t.id,
+                tmdb_id=t.tmdb_id,
                 title=t.title,
                 content_type=t.content_type,
                 poster_url=t.poster_url,

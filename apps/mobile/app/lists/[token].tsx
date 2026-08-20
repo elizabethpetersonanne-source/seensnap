@@ -25,6 +25,8 @@ import { trackEvent } from "@/lib/analytics";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 
 type PublicListItem = {
+  title_id: string;
+  tmdb_id: number;
   title: string;
   content_type: string;
   poster_url: string | null;
@@ -105,24 +107,38 @@ export default function SharedListScreen() {
             </Text>
           </View>
           <View style={styles.grid}>
-            {list.items.map((item, idx) => (
-              <View key={`${item.title}-${idx}`} style={styles.card}>
-                <View style={styles.poster}>
-                  {item.poster_url ? (
-                    <Image source={{ uri: item.poster_url }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
-                  ) : (
-                    <View style={styles.posterFallback}>
-                      <Ionicons name="film-outline" size={24} color={colors.muted} />
-                    </View>
-                  )}
-                </View>
-                <Text numberOfLines={2} style={styles.cardTitle}>{item.title}</Text>
-                <Text style={styles.cardMeta}>
-                  {item.content_type === "movie" ? "FILM" : "SERIES"}
-                  {item.year ? `  ·  ${item.year}` : ""}
-                </Text>
-              </View>
-            ))}
+            {list.items.map((item, idx) => {
+              const routeKind = item.content_type === "movie" ? "movie" : "tv";
+              return (
+                <Pressable
+                  key={`${item.title_id}-${idx}`}
+                  style={({ pressed }) => [styles.card, pressed && { opacity: 0.7 }]}
+                  onPress={() => {
+                    trackEvent("shared_list_title_opened", {
+                      token,
+                      title_id: item.title_id,
+                      tmdb_id: item.tmdb_id,
+                    });
+                    router.push(`/titles/${routeKind}/${item.tmdb_id}`);
+                  }}
+                >
+                  <View style={styles.poster}>
+                    {item.poster_url ? (
+                      <Image source={{ uri: item.poster_url }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+                    ) : (
+                      <View style={styles.posterFallback}>
+                        <Ionicons name="film-outline" size={24} color={colors.muted} />
+                      </View>
+                    )}
+                  </View>
+                  <Text numberOfLines={2} style={styles.cardTitle}>{item.title}</Text>
+                  <Text style={styles.cardMeta}>
+                    {item.content_type === "movie" ? "FILM" : "SERIES"}
+                    {item.year ? `  ·  ${item.year}` : ""}
+                  </Text>
+                </Pressable>
+              );
+            })}
           </View>
         </ScrollView>
       ) : null}
