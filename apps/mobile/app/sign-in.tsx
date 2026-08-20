@@ -173,12 +173,15 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: colors.background,
-    justifyContent: "flex-end",
+    justifyContent: "center",
+    alignItems: "center",
     paddingHorizontal: spacing.xl,
-    paddingBottom: 48,
+    paddingVertical: 48,
   },
   inner: {
     gap: spacing.xl,
+    width: "100%",
+    maxWidth: 420,
   },
   header: {
     alignItems: "center",
