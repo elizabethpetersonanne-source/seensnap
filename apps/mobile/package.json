@@ -7,12 +7,19 @@
     "dev": "expo start",
     "ios": "expo run:ios",
     "android": "expo run:android",
+    "web": "expo start --web",
+    "web:build": "expo export --platform web",
+    "web:serve": "npx serve dist -l 8081 --single",
     "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=20 <21"
   },
   "dependencies": {
     "@expo-google-fonts/bodoni-moda": "^0.4.2",
     "@expo-google-fonts/ibm-plex-mono": "^0.4.1",
     "@expo-google-fonts/instrument-sans": "^0.4.2",
+    "@expo/metro-runtime": "~6.1.2",
     "@expo/ngrok": "^4.1.0",
     "@expo/vector-icons": "^14.1.0",
     "@react-native-async-storage/async-storage": "^2.1.0",
@@ -29,9 +36,11 @@
     "expo-status-bar": "~3.0.8",
     "expo-web-browser": "~15.0.8",
     "react": "19.1.0",
+    "react-dom": "19.1.0",
     "react-native": "0.81.4",
     "react-native-safe-area-context": "~5.6.0",
-    "react-native-screens": "~4.16.0"
+    "react-native-screens": "~4.16.0",
+    "react-native-web": "^0.21.0"
   },
   "devDependencies": {
     "@types/react": "~19.1.10",

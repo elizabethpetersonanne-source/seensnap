@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import * as ImagePicker from "expo-image-picker";
+import { appendImageToFormData, pickImageFromLibrary } from "@/lib/image-picker";
 import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -229,29 +229,19 @@ export default function ProfileScreen() {
       return;
     }
     try {
-      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
-      if (!permission.granted) {
-        Alert.alert("Photos access needed", "Allow photo access to upload a profile picture.");
-        return;
+      let picked;
+      try {
+        picked = await pickImageFromLibrary();
+      } catch (permissionError) {
+        if (permissionError instanceof Error && permissionError.message === "PERMISSION_DENIED") {
+          Alert.alert("Photos access needed", "Allow photo access to upload a profile picture.");
+          return;
+        }
+        throw permissionError;
       }
-      const result = await ImagePicker.launchImageLibraryAsync({
-        mediaTypes: ["images"],
-        allowsEditing: true,
-        aspect: [1, 1],
-        quality: 0.8,
-      });
-      if (result.canceled || !result.assets.length) {
-        return;
-      }
-      const asset = result.assets[0];
-      const filename = asset.fileName || `avatar-${Date.now()}.jpg`;
-      const mime = asset.mimeType || "image/jpeg";
+      if (!picked) return;
       const form = new FormData();
-      form.append("file", {
-        uri: asset.uri,
-        name: filename,
-        type: mime,
-      } as any);
+      appendImageToFormData(form, "file", picked);
       setIsUploadingAvatar(true);
       const updated = await apiRequest<Profile>("/me/avatar", {
         method: "POST",

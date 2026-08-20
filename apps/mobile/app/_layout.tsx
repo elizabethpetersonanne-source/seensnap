@@ -1,8 +1,8 @@
 import { Redirect, Stack, useSegments, router } from "expo-router";
 import * as Notifications from "expo-notifications";
-import * as SecureStore from "expo-secure-store";
+import * as SessionStorage from "@/lib/session-storage";
 import { useEffect, useRef, useState } from "react";
-import { StyleSheet, View, ActivityIndicator } from "react-native";
+import { StyleSheet, View, ActivityIndicator, Platform } from "react-native";
 import {
   BodoniModa_500Medium,
   BodoniModa_700Bold,
@@ -44,6 +44,9 @@ function AuthGate() {
 
   useEffect(() => {
     if (isExpoGo) return;
+    // Notification response listeners only exist on native — expo-notifications
+    // is a no-op module on web and calling these APIs throws.
+    if (Platform.OS === "web") return;
 
     responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
       const route = response.notification.request.content.data?.route as string | undefined;
@@ -75,7 +78,7 @@ function AuthGate() {
 
     async function checkOnboarding() {
       try {
-        const cached = await SecureStore.getItemAsync(ONBOARDING_COMPLETED_KEY);
+        const cached = await SessionStorage.getItem(ONBOARDING_COMPLETED_KEY);
         if (cached === "true") {
           if (!cancelled) setOnboardingStatus("completed");
           return;
@@ -85,7 +88,7 @@ function AuthGate() {
         });
         if (!cancelled) {
           if (prefs.onboarding_completed) {
-            await SecureStore.setItemAsync(ONBOARDING_COMPLETED_KEY, "true");
+            await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
             setOnboardingStatus("completed");
           } else {
             setOnboardingStatus("pending");

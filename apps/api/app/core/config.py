@@ -23,8 +23,19 @@ class Settings(BaseSettings):
     app_auth_audience: str = "seensnap-mobile"
     uploads_dir: str = "uploads"
     share_base_url: str = "https://seensnap.app"
+    # Comma-separated list of origins allowed to hit the API from a browser.
+    # Empty by default (native app doesn't need CORS). Set on staging/prod to
+    # the Netlify preview URL + any custom domains.
+    #   e.g. "https://seensnap-alpha.netlify.app,https://alpha.seensnap.com"
+    cors_allowed_origins: str = ""
+    # Regex fallback for Netlify's per-deploy preview subdomains
+    # (deploy-preview-42--seensnap-alpha.netlify.app). Optional.
+    cors_allowed_origin_regex: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    def parsed_cors_origins(self) -> list[str]:
+        return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
     @property
     def is_production(self) -> bool:

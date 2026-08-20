@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncIterator
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -21,6 +22,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 app = FastAPI(title=settings.app_name, lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+
+# CORS — needed for the Netlify QA web build (§21 of the Netlify brief).
+# Native apps ignore CORS; when the allow-list is empty we still register the
+# middleware so preflight OPTIONS get consistent handling without permissively
+# broadcasting Access-Control-Allow-Origin.
+_cors_origins = settings.parsed_cors_origins()
+if _cors_origins or settings.cors_allowed_origin_regex:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_origin_regex=settings.cors_allowed_origin_regex or None,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+        expose_headers=["*"],
+        max_age=600,
+    )
 app.include_router(api_router, prefix=settings.api_v1_prefix)
 # Public share-page routes are mounted at the ROOT (no /api/v1 prefix) so
 # shareable URLs read like https://seensnap.app/lists/{token} — clean URLs

@@ -1,4 +1,4 @@
-import { Image, StyleSheet, View, type ImageStyle, type ViewStyle } from "react-native";
+import { Image, StyleSheet, View, type ImageStyle, type StyleProp, type ViewStyle } from "react-native";
 
 /**
  * Canonical SeenSnap logo. Uses the real PNG assets — never redraw or text-approximate.
@@ -35,7 +35,7 @@ export function SSLogo({
 }: {
   variant?: SSLogoVariant;
   size?: SSLogoSize;
-  style?: ViewStyle;
+  style?: StyleProp<ImageStyle | ViewStyle>;
 }) {
   const heightPx = typeof size === "number" ? size : SIZE_MAP[size];
   // The full-logo PNGs are ~2000 × 1200 (roughly 1.67:1). The mark alone (top ~55%) is ~1:1.
@@ -61,7 +61,7 @@ export function SSLogo({
   }
 
   return (
-    <Image source={src} style={[styles.full, { width, height: heightPx } as ImageStyle, style]} />
+    <Image source={src} style={[styles.full, { width, height: heightPx } as ImageStyle, style as StyleProp<ImageStyle>]} />
   );
 }
 

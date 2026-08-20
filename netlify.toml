@@ -1,0 +1,58 @@
+# Netlify build configuration for the SeenSnap QA web target.
+#
+# This deployment is a QA-only browser build of the existing Expo React
+# Native app under apps/mobile. It shares the same backend, auth,
+# recommendations, Watch Team, and Social systems that ship natively —
+# native remains the primary product surface. See docs / brief §1-§3.
+
+[build]
+  # The Expo project lives inside a monorepo, so we run the export from
+  # apps/mobile and publish the artifact from apps/mobile/dist.
+  base = "apps/mobile"
+  command = "npx expo export --platform web"
+  publish = "apps/mobile/dist"
+
+[build.environment]
+  # Pin the Node runtime Netlify uses for the build. Expo SDK 54 supports
+  # Node 20 LTS.
+  NODE_VERSION = "20"
+  # Keep npm quiet in CI logs.
+  NPM_CONFIG_LOGLEVEL = "error"
+
+# ─── SPA routing ────────────────────────────────────────────────────────
+# Expo Router's `single` web output emits one index.html + a JS bundle.
+# Client-side routing owns every path, so any direct deep-link hit
+# (browser refresh, invite URL, /titles/movie/xxx, /invite/:token, etc.)
+# must fall back to index.html so the router can handle it.
+#
+# We explicitly do NOT fall back /_expo/* or /assets/* — those must return
+# 404 rather than the HTML shell if missing, so the runtime doesn't try to
+# execute HTML as JavaScript.
+[[redirects]]
+  from = "/_expo/*"
+  to = "/_expo/:splat"
+  status = 200
+  force = false
+
+[[redirects]]
+  from = "/assets/*"
+  to = "/assets/:splat"
+  status = 200
+  force = false
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# ─── Security headers ───────────────────────────────────────────────────
+# Modest baseline. Not a full CSP — the alpha is internal and we prefer
+# not to break third-party image hosts (TMDB, Google avatars, etc.) that
+# arrive with unpredictable origins.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=()"

@@ -1,4 +1,4 @@
-import * as SecureStore from "expo-secure-store";
+import * as SessionStorage from "@/lib/session-storage";
 import { router } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
@@ -304,14 +304,14 @@ export default function OnboardingScreen() {
         token: sessionToken,
         body: JSON.stringify({ onboarding_completed: true }),
       });
-      await SecureStore.setItemAsync(ONBOARDING_COMPLETED_KEY, "true");
+      await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
       trackEvent("onboarding_completed", {
         country: selectedCountry,
         services_count: selectedServices.size,
         swipes: swipeCount,
       });
     } catch {
-      await SecureStore.setItemAsync(ONBOARDING_COMPLETED_KEY, "true");
+      await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
     } finally {
       setIsSaving(false);
     }
@@ -325,10 +325,10 @@ export default function OnboardingScreen() {
         token: sessionToken,
         body: JSON.stringify({ onboarding_completed: true }),
       });
-      await SecureStore.setItemAsync(ONBOARDING_COMPLETED_KEY, "true");
+      await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
       trackEvent("onboarding_skipped", { step, swipes: swipeCount });
     } catch {
-      await SecureStore.setItemAsync(ONBOARDING_COMPLETED_KEY, "true");
+      await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
     }
     router.replace("/(tabs)");
   }

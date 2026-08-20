@@ -57,6 +57,11 @@
           "category": ["BROWSABLE", "DEFAULT"]
         }
       ]
+    },
+    "web": {
+      "bundler": "metro",
+      "output": "single",
+      "favicon": "./assets/branding/seensnap-logo.png"
     }
   }
 }

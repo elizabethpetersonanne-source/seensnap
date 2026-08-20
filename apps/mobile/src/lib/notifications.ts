@@ -33,21 +33,29 @@ export type NotificationPrefs = {
   push_enabled: boolean;
 };
 
-// Configure foreground notification behavior once at module load
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: true,
-    shouldPlaySound: true,
-    shouldSetBadge: true,
-    shouldShowBanner: true,
-    shouldShowList: true,
-  }),
-});
+// Native push behavior is not validated in the Netlify QA build — Expo
+// Notifications only ships iOS/Android runtimes. On web we no-op every
+// imperative API so nothing throws when the module loads or is invoked.
+const IS_NATIVE = Platform.OS !== "web";
+
+// Configure foreground notification behavior once at module load (native only)
+if (IS_NATIVE) {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: true,
+      shouldPlaySound: true,
+      shouldSetBadge: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
+    }),
+  });
+}
 
 /**
  * Returns the current push permission status without prompting.
  */
 export async function getNotificationPermissionStatus(): Promise<Notifications.PermissionStatus> {
+  if (!IS_NATIVE) return Notifications.PermissionStatus.UNDETERMINED;
   const { status } = await Notifications.getPermissionsAsync();
   return status;
 }
@@ -57,6 +65,7 @@ export async function getNotificationPermissionStatus(): Promise<Notifications.P
  * Only call this after the user has seen the SeenSnap pre-prompt.
  */
 export async function requestNotificationPermission(): Promise<boolean> {
+  if (!IS_NATIVE) return false;
   const { status: existing } = await Notifications.getPermissionsAsync();
   if (existing === Notifications.PermissionStatus.GRANTED) {
     return true;
@@ -70,6 +79,7 @@ export async function requestNotificationPermission(): Promise<boolean> {
  * Safe to call repeatedly — registration is idempotent.
  */
 export async function registerPushToken(sessionToken: string): Promise<string | null> {
+  if (!IS_NATIVE) return null;
   try {
     const { status } = await Notifications.getPermissionsAsync();
     if (status !== Notifications.PermissionStatus.GRANTED) {
@@ -112,6 +122,7 @@ export async function registerPushToken(sessionToken: string): Promise<string | 
  * for the signed-out account.
  */
 export async function deactivatePushToken(sessionToken: string): Promise<void> {
+  if (!IS_NATIVE) return;
   try {
     const { status } = await Notifications.getPermissionsAsync();
     if (status !== Notifications.PermissionStatus.GRANTED) return;

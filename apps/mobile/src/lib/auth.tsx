@@ -1,6 +1,5 @@
 import * as AppleAuthentication from "expo-apple-authentication";
 import Constants from "expo-constants";
-import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
 import { useIdTokenAuthRequest } from "expo-auth-session/providers/google";
 import { Platform } from "react-native";
@@ -9,6 +8,7 @@ import { createContext, PropsWithChildren, useContext, useEffect, useState } fro
 import { deactivatePushToken } from "@/lib/notifications";
 import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
 import { setAnalyticsToken } from "@/lib/analytics";
+import * as SessionStorage from "@/lib/session-storage";
 
 import { apiRequest } from "@/lib/api";
 
@@ -95,15 +95,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }
 
   async function persistSession(session: SessionResponse) {
-    await SecureStore.setItemAsync(SESSION_TOKEN_KEY, session.access_token);
-    await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(session.user));
-    await SecureStore.deleteItemAsync(EXPLICIT_SIGN_OUT_KEY);
+    await SessionStorage.setItem(SESSION_TOKEN_KEY, session.access_token);
+    await SessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(session.user));
+    await SessionStorage.deleteItem(EXPLICIT_SIGN_OUT_KEY);
   }
 
   useEffect(() => {
     async function loadSession() {
       try {
-        const signedOut = await SecureStore.getItemAsync(EXPLICIT_SIGN_OUT_KEY);
+        const signedOut = await SessionStorage.getItem(EXPLICIT_SIGN_OUT_KEY);
         if (isExpoGo) {
           if (signedOut === "1") {
             setSessionToken(null);
@@ -128,8 +128,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
           return;
         }
         const [storedTokenRaw, storedUserJson] = await Promise.all([
-          SecureStore.getItemAsync(SESSION_TOKEN_KEY),
-          SecureStore.getItemAsync(SESSION_USER_KEY),
+          SessionStorage.getItem(SESSION_TOKEN_KEY),
+          SessionStorage.getItem(SESSION_USER_KEY),
         ]);
         let storedToken = storedTokenRaw;
         let storedUser: SessionUser | null = null;
@@ -154,7 +154,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           try {
             const verifiedUser = await apiRequest<SessionUser>("/auth/me", { token: storedToken });
             storedUser = verifiedUser;
-            await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(storedUser));
+            await SessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(storedUser));
           } catch {
             if (storedUser?.email && DEMO_EMAILS.has(storedUser.email)) {
               try {
@@ -166,16 +166,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
                 storedToken = null;
                 storedUser = null;
                 await Promise.all([
-                  SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
-                  SecureStore.deleteItemAsync(SESSION_USER_KEY),
+                  SessionStorage.deleteItem(SESSION_TOKEN_KEY),
+                  SessionStorage.deleteItem(SESSION_USER_KEY),
                 ]);
               }
             } else {
               storedToken = null;
               storedUser = null;
               await Promise.all([
-                SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
-                SecureStore.deleteItemAsync(SESSION_USER_KEY),
+                SessionStorage.deleteItem(SESSION_TOKEN_KEY),
+                SessionStorage.deleteItem(SESSION_USER_KEY),
               ]);
             }
           }
@@ -184,8 +184,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setUser(storedUser);
       } catch {
         await Promise.allSettled([
-          SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
-          SecureStore.deleteItemAsync(SESSION_USER_KEY),
+          SessionStorage.deleteItem(SESSION_TOKEN_KEY),
+          SessionStorage.deleteItem(SESSION_USER_KEY),
         ]);
         setSessionToken(null);
         setUser(null);
@@ -304,10 +304,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
       await deactivatePushToken(sessionToken).catch(() => {});
     }
     await Promise.all([
-      SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
-      SecureStore.deleteItemAsync(SESSION_USER_KEY),
-      SecureStore.deleteItemAsync(ONBOARDING_COMPLETED_KEY),
-      SecureStore.setItemAsync(EXPLICIT_SIGN_OUT_KEY, "1"),
+      SessionStorage.deleteItem(SESSION_TOKEN_KEY),
+      SessionStorage.deleteItem(SESSION_USER_KEY),
+      SessionStorage.deleteItem(ONBOARDING_COMPLETED_KEY),
+      SessionStorage.setItem(EXPLICIT_SIGN_OUT_KEY, "1"),
     ]);
     setSessionToken(null);
     setUser(null);
@@ -319,12 +319,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
     }
     try {
       const nextUser = await apiRequest<SessionUser>("/auth/me", { token: sessionToken });
-      await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(nextUser));
+      await SessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(nextUser));
       setUser(nextUser);
     } catch {
       await Promise.all([
-        SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
-        SecureStore.deleteItemAsync(SESSION_USER_KEY),
+        SessionStorage.deleteItem(SESSION_TOKEN_KEY),
+        SessionStorage.deleteItem(SESSION_USER_KEY),
       ]);
       setSessionToken(null);
       setUser(null);
@@ -337,7 +337,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
         return current;
       }
       const merged = { ...current, ...next };
-      void SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(merged));
+      void SessionStorage.setItem(SESSION_USER_KEY, JSON.stringify(merged));
       return merged;
     });
   };
