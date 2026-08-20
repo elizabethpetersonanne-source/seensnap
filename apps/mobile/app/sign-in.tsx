@@ -67,26 +67,10 @@ export default function SignInScreen() {
   return (
     <View style={styles.root}>
       <View style={styles.inner}>
-        {/* Editorial header — real SeenSnap gold logo, then serif welcome */}
+        {/* Welcome — large centered logo + editorial eyebrow line */}
         <View style={styles.header}>
-          <SSLogo variant="gold" size="xl" style={{ alignSelf: "flex-start", marginBottom: spacing.md }} />
-          <Text style={styles.title}>Sign in{"\n"}to continue.</Text>
-        </View>
-
-        {/* Value props */}
-        <View style={styles.props}>
-          <View style={styles.propRow}>
-            <Text style={styles.propIndex}>01</Text>
-            <Text style={styles.propText}>Snap a scene — identify the title instantly.</Text>
-          </View>
-          <View style={styles.propRow}>
-            <Text style={styles.propIndex}>02</Text>
-            <Text style={styles.propText}>Save picks and compare with your watch team.</Text>
-          </View>
-          <View style={styles.propRow}>
-            <Text style={styles.propIndex}>03</Text>
-            <Text style={styles.propText}>Discover what to watch next based on your taste.</Text>
-          </View>
+          <SSLogo variant="gold" size={96} style={styles.logo} />
+          <Text style={styles.welcome}>Welcome to SeenSnap</Text>
         </View>
 
         {/* Auth actions */}
@@ -197,48 +181,20 @@ const styles = StyleSheet.create({
     gap: spacing.xl,
   },
   header: {
-    gap: spacing.sm,
+    alignItems: "center",
+    gap: spacing.md,
+    marginBottom: spacing.md,
   },
-  eyebrow: {
+  logo: {
+    alignSelf: "center",
+  },
+  welcome: {
     fontFamily: fonts.monoSemiBold,
-    fontSize: 10,
-    letterSpacing: 2,
+    fontSize: 13,
+    letterSpacing: 3,
     color: colors.accent,
     textTransform: "uppercase",
-  },
-  rule: {
-    height: 1,
-    backgroundColor: rules.gold,
-    width: 48,
-  },
-  title: {
-    fontFamily: fonts.serifBold,
-    fontSize: 42,
-    lineHeight: 48,
-    color: colors.ink,
-  },
-  props: {
-    gap: spacing.sm,
-  },
-  propRow: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    gap: spacing.sm,
-  },
-  propIndex: {
-    fontFamily: fonts.monoSemiBold,
-    fontSize: 10,
-    color: colors.accent,
-    letterSpacing: 0.5,
-    marginTop: 3,
-    width: 20,
-  },
-  propText: {
-    flex: 1,
-    fontFamily: fonts.sans,
-    fontSize: 15,
-    lineHeight: 22,
-    color: colors.muted,
+    textAlign: "center",
   },
   actions: {
     gap: spacing.sm,
