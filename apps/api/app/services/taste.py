@@ -1159,21 +1159,32 @@ def get_social_recommendations(
     # --- Blend + diversity pass ---
     chosen = _blend_and_diversify(buckets, limit)
 
-    # NO cold-start / trending pad. Prior implementation appended TMDB
-    # trending titles tagged GENERIC_TRENDING to fill any gap between the
-    # personalized deck and `limit`, and the copy layer surfaced them as
-    # "Trending on SeenSnap this week." That silently dumped unpersonalized
-    # catalog data into what the UI treats as a personal recommendation
-    # deck — user-visible, dominating heavy users' feeds after ~20 swipes.
+    # Deck-completion top-up.
     #
-    # Per SceneDNA brief §34 + user directive: never inject GENERIC content
-    # into a personalized surface. If real sources come up short, return a
-    # short deck — the client's Swipe empty state ("That's the fresh set
-    # for now") already handles this honestly.
-    #
-    # Cold-start users (no interactions) will get a genuinely empty deck
-    # until they interact. That's the correct experience; onboarding is the
-    # place to seed initial taste, not the recommendation engine.
+    # If the blended personalized deck came up short of `limit`, top up
+    # with TRENDING_PERSONALIZED items. This is safe because:
+    #   (1) The source is real TMDB trending — not the deleted
+    #       REASON_TYPE_GENERIC_TRENDING which pretended to be personalized.
+    #   (2) The copy layer's TRENDING_PERSONALIZED branch has cold-start
+    #       templates that speak in popularity terms ("climbing this week",
+    #       "having a moment") — never claims personalization. When the user
+    #       DOES have signals, the same branch uses their labels/genres
+    #       honestly.
+    #   (3) Fill only happens on the tail of the deck, so heavy users with
+    #       plenty of personalized candidates never see this path — no
+    #       "trending on SeenSnap" flood after 20 swipes, which was the
+    #       original bug.
+    # The Swipe screen must always be able to serve SOMETHING — a stuck
+    # empty state on a fresh account destroys the alpha demo.
+    if len(chosen) < limit and trending_recs:
+        chosen_ids = {item["title"].id for item in chosen}
+        for item in trending_recs:
+            if len(chosen) >= limit:
+                break
+            if item["title"].id in chosen_ids:
+                continue
+            chosen.append(item)
+            chosen_ids.add(item["title"].id)
 
     # --- Emit signals + build responses ---
     results: list[RecommendationResponse] = []
