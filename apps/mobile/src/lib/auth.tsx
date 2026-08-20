@@ -94,6 +94,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
     iosClientId: isExpoGo ? undefined : (iosClientId ?? webClientId ?? "dev-placeholder"),
     androidClientId: isExpoGo ? undefined : (androidClientId ?? webClientId ?? "dev-placeholder"),
     webClientId: webClientId ?? "dev-placeholder",
+    // prompt=select_account forces Google's account chooser on every
+    // sign-in. Without it, Google silently re-uses the most recent
+    // browser session (returns prompt=none in the response URL) —
+    // which meant after signing out of SeenSnap, hitting "Continue
+    // with Google" would silently re-auth the same account instead
+    // of letting the user switch to a different one.
+    extraParams: { prompt: "select_account" },
   });
 
   async function requestDemoSession(): Promise<SessionResponse> {
