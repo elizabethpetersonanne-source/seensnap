@@ -253,13 +253,16 @@ fi
 # ─── Migrations via one-shot Cloud Run Job ─────────────────────────────
 JOB_NAME="${SERVICE_NAME}-migrate"
 log "Ensuring migration job '$JOB_NAME'"
+# gcloud run jobs uses --set-cloudsql-instances (not --add-cloudsql-instances
+# which is a services-only flag). Both flags REPLACE the instance list on
+# jobs, so idempotency is fine.
 if gcloud run jobs describe "$JOB_NAME" --region="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
   gcloud run jobs update "$JOB_NAME" \
     --image="$IMAGE_URI" \
     --region="$REGION" \
     --execution-environment=gen2 \
     --service-account="$SA_EMAIL" \
-    --add-cloudsql-instances="$INSTANCE_CONNECTION_NAME" \
+    --set-cloudsql-instances="$INSTANCE_CONNECTION_NAME" \
     --set-env-vars="ENVIRONMENT=staging" \
     --set-secrets="DATABASE_URL=${DB_URL_SECRET}:latest,APP_AUTH_SECRET=seensnap-app-auth-secret:latest" \
     --command="alembic" --args="upgrade,head" \
@@ -270,7 +273,7 @@ else
     --region="$REGION" \
     --execution-environment=gen2 \
     --service-account="$SA_EMAIL" \
-    --add-cloudsql-instances="$INSTANCE_CONNECTION_NAME" \
+    --set-cloudsql-instances="$INSTANCE_CONNECTION_NAME" \
     --set-env-vars="ENVIRONMENT=staging" \
     --set-secrets="DATABASE_URL=${DB_URL_SECRET}:latest,APP_AUTH_SECRET=seensnap-app-auth-secret:latest" \
     --command="alembic" --args="upgrade,head" \
