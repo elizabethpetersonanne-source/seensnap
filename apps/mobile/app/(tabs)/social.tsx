@@ -69,6 +69,7 @@ type PostList = {
   description: string | null;
   item_count: number;
   preview: { title_id: string; title_name: string; poster_url: string | null }[];
+  share_token: string | null;
 };
 
 type SocialPost = {
@@ -522,7 +523,19 @@ function FeedCard({
       ) : null}
 
       {post.list ? (
-        <Pressable style={styles.cardListBlock}>
+        <Pressable
+          style={styles.cardListBlock}
+          onPress={() => {
+            if (!post.list?.share_token) return;
+            trackEvent("social_post_opened", {
+              post_id: post.id,
+              entry: "list_open",
+              post_type: post.post_type,
+            });
+            router.push(`/lists/${post.list.share_token}`);
+          }}
+          disabled={!post.list.share_token}
+        >
           <Text style={styles.cardListName}>{post.list.name}</Text>
           <Text style={styles.cardListMeta}>
             {post.list.item_count} {post.list.item_count === 1 ? "title" : "titles"}

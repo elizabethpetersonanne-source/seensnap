@@ -24,6 +24,7 @@ from app.models.social import (
     FeedEvent,
     FeedReaction,
     ListSave,
+    ListShare,
     Rating,
     Report,
     UserFollow,
@@ -139,6 +140,11 @@ def create_social_post(
         if watchlist is None or watchlist.owner_user_id != author_user_id:
             raise ValueError("list_id must reference a list you own")
         payload["list_name_at_share"] = watchlist.name
+        # Ensure every list_share post is tappable — mint a public share
+        # token if one doesn't already exist. Idempotent: reuses the
+        # latest active token when present. Without this, feed viewers
+        # would see the list card but have no route to open it.
+        _ensure_list_share_token(db, list_id=list_id, author_user_id=author_user_id)
     if rating_id is not None:
         rating = db.scalar(select(Rating).where(Rating.id == rating_id))
         if rating is None or rating.user_id != author_user_id:
@@ -162,6 +168,35 @@ def create_social_post(
     db.commit()
     db.refresh(event)
     return event
+
+
+def _ensure_list_share_token(db: Session, *, list_id: UUID, author_user_id: UUID) -> str:
+    """Return the active public share token for a list, minting a new one
+    if none exists. Idempotent — safe to call from post-creation paths."""
+    import secrets
+
+    existing = db.scalar(
+        select(ListShare)
+        .where(
+            ListShare.watchlist_id == list_id,
+            ListShare.created_by_user_id == author_user_id,
+            ListShare.revoked_at.is_(None),
+        )
+        .order_by(ListShare.created_at.desc())
+    )
+    if existing is not None:
+        return existing.token
+
+    token = secrets.token_urlsafe(24)
+    share = ListShare(
+        watchlist_id=list_id,
+        created_by_user_id=author_user_id,
+        token=token,
+        visibility="link",
+    )
+    db.add(share)
+    db.flush()
+    return token
 
 
 def delete_social_post(db: Session, viewer_user_id: UUID, event_id: UUID) -> None:
@@ -512,6 +547,7 @@ def hydrate_feed_event(
         rating = db.scalar(select(Rating).where(Rating.id == event.rating_id))
     watchlist = None
     list_items_preview: list[dict] = []
+    list_share_token: str | None = None
     if event.list_id is not None:
         watchlist = db.scalar(select(Watchlist).where(Watchlist.id == event.list_id))
         if watchlist is not None:
@@ -530,6 +566,20 @@ def hydrate_feed_event(
                     "title_name": t.title,
                     "poster_url": t.poster_url,
                 })
+            # Read the current public share token so the feed card can
+            # link viewers to /lists/{token}. Only latest non-revoked
+            # token is used; if the author revoked all shares, the card
+            # stays non-tappable.
+            share_row = db.scalar(
+                select(ListShare)
+                .where(
+                    ListShare.watchlist_id == watchlist.id,
+                    ListShare.revoked_at.is_(None),
+                )
+                .order_by(ListShare.created_at.desc())
+            )
+            if share_row is not None:
+                list_share_token = share_row.token
 
     like_count = int(
         db.scalar(
@@ -611,6 +661,7 @@ def hydrate_feed_event(
             "description": watchlist.description,
             "item_count": len(list_items_preview),
             "preview": list_items_preview,
+            "share_token": list_share_token,
         } if watchlist else None,
         "engagement": {
             "like_count": like_count,
