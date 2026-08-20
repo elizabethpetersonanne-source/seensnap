@@ -275,18 +275,22 @@ export default function PublicProfileScreen() {
                 ) : null}
 
                 <View style={styles.bannerAvatarWrap}>
-                  <Animated.View style={{ transform: [{ translateY: floatAnim }], alignItems: "center" }}>
-                    <View
-                      style={[
-                        styles.bannerAvatarRing,
-                        {
-                          borderColor: personality.accentColor,
-                          shadowColor: personality.accentColor,
-                        },
-                      ]}
-                    >
-                      <Avatar uri={profile.avatar_url} label={profile.display_name} size={96} />
-                    </View>
+                  {/* Flatten the float-animation transform onto the ring
+                      itself — a nested Animated.View wrapper with its
+                      own alignItems can compute a full-width box on
+                      react-native-web and defeat the parent's
+                      justifyContent centering. */}
+                  <Animated.View
+                    style={[
+                      styles.bannerAvatarRing,
+                      {
+                        borderColor: personality.accentColor,
+                        shadowColor: personality.accentColor,
+                        transform: [{ translateY: floatAnim }],
+                      },
+                    ]}
+                  >
+                    <Avatar uri={profile.avatar_url} label={profile.display_name} size={96} />
                   </Animated.View>
                 </View>
               </View>

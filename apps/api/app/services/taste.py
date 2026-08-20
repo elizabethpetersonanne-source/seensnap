@@ -1222,17 +1222,29 @@ def get_social_recommendations(
     # personalized users never hit this path.
     if len(chosen) < limit:
         chosen_ids = {item["title"].id for item in chosen}
-        # start_page cycles per 40-title chunk the user has already seen.
-        start_page = 1 + (len(recently_shown) // 40) % 20
+        # start_page advances by the fetch window (8 pages) per 40 titles
+        # already shown, so consecutive top-up calls never re-hit the same
+        # slice of TMDB /popular. Wraps at 500 pages inside fetch_popular_titles.
+        pages_per_call = 8
+        start_page = 1 + ((len(recently_shown) // 40) * pages_per_call)
+        # Pass the full exclude set (saved + dismissed + recently_shown +
+        # already-chosen this call) so fetch_popular_titles KEEPS fetching
+        # pages until it has `limit - len(chosen)` fresh items rather than
+        # returning a pageful that gets filtered to zero here.
+        needed = limit - len(chosen)
         try:
-            extra_titles = fetch_popular_titles(db, limit=limit * 2, start_page=start_page)
+            extra_titles = fetch_popular_titles(
+                db,
+                limit=needed,
+                start_page=start_page,
+                exclude_title_ids=exclude | chosen_ids,
+                max_pages=pages_per_call,
+            )
         except TmdbConfigurationError:
             extra_titles = []
         for title in extra_titles:
             if len(chosen) >= limit:
                 break
-            if title.id in exclude or title.id in chosen_ids:
-                continue
             chosen.append({
                 "title": title,
                 "reason_type": REASON_TYPE_TRENDING_PERSONALIZED,

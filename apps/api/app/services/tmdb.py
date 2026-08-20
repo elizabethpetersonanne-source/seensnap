@@ -457,27 +457,32 @@ def fetch_popular_titles(
     *,
     limit: int = 40,
     start_page: int = 1,
+    exclude_title_ids: set | None = None,
+    max_pages: int = 8,
 ) -> list[ContentTitle]:
     """Fetch popular movies + TV shows across multiple TMDB pages. Used
     as the deep cold-start pool so a brand-new user with no personalized
     signals can keep swiping past the ~60-item trending list without
     hitting empty state.
 
-    start_page rotates so consecutive calls return fresh titles instead
-    of the same page 1 slice — callers should pass a value that shifts
-    per request (e.g. based on how many titles the user has already
-    swiped through this session).
+    If exclude_title_ids is provided, items whose ContentTitle.id is in
+    the set are skipped BEFORE counting toward `limit` — so the caller
+    is guaranteed `limit` fresh items even when previously-shown titles
+    dominate the raw TMDB response. Fetches up to `max_pages` × 2 (movie
+    + tv) pages, breaking early when the fresh-item quota is met.
 
-    Pulls interleaved movie + TV pages so the deck stays media-diverse.
+    start_page rotates so consecutive calls return fresh titles instead
+    of the same slice — callers should pass a value that shifts per
+    request (e.g. based on how many titles the user has already swiped
+    through this session).
+
     TMDB /popular endpoints support pages 1-500, so this is effectively
     unbounded for internal-alpha needs.
     """
     hydrated: list[ContentTitle] = []
     seen_tmdb_ids: set[int] = set()
+    exclude_set = exclude_title_ids or set()
     with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
-        # Fetch up to 3 pages each of movie + TV. Interleave them for
-        # media diversity. 3 × 20 × 2 = up to 120 fresh candidates per call.
-        max_pages = 3
         for offset in range(max_pages):
             page = ((start_page - 1 + offset) % 500) + 1  # wrap at TMDB's max
             for media_type, path in (("movie", "/movie/popular"), ("tv", "/tv/popular")):
@@ -496,8 +501,14 @@ def fetch_popular_titles(
                     seen_tmdb_ids.add(tmdb_id)
                     item["media_type"] = media_type
                     row = _upsert_title_from_tmdb_result(db, item)
-                    if row is not None:
-                        hydrated.append(row)
+                    if row is None:
+                        continue
+                    # Skip if already in the caller's exclude set (recently
+                    # shown, saved, dismissed). Don't count toward limit —
+                    # keep hunting for fresh items across more pages.
+                    if row.id in exclude_set:
+                        continue
+                    hydrated.append(row)
                     if len(hydrated) >= limit:
                         break
             if len(hydrated) >= limit:
