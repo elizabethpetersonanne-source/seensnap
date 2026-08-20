@@ -678,7 +678,11 @@ export default function ForYouScreen() {
                           </Text>
                         </View>
                         <Text style={styles.signalEvidence}>
-                          Shows up across {signal.evidence_count} recent {signal.evidence_count === 1 ? "save" : "saves"}
+                          {/* evidence_count reflects all interactions
+                              feeding this signal (saves + ratings +
+                              swipes), not just saves — copy said "saves"
+                              which was misleading for swipe-heavy users. */}
+                          Seen across {signal.evidence_count} recent {signal.evidence_count === 1 ? "title" : "titles"}
                         </Text>
                         {signal.contributing_titles.length > 0 ? (
                           <View style={styles.signalPosterRow}>

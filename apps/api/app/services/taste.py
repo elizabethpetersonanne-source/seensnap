@@ -1554,6 +1554,18 @@ def record_swipe(
     db.flush()
     _prune_old_swipes(db, user_id)
     refresh_taste_profile(db, user_id)
+    # Also recompute UserSignal rows so the SceneDNA "Strongest Signals"
+    # section reflects reality after every swipe. Without this, signals
+    # only updated on the 6h staleness refresh — heavy swipers saw their
+    # signals stuck at "early / 0 recent titles" for hours after building
+    # substantial history.
+    try:
+        from app.services.user_signals import compute_user_signals
+        compute_user_signals(db, user_id)
+    except Exception:
+        # Non-blocking — a signal recompute failure shouldn't reject the
+        # underlying swipe record.
+        pass
     db.refresh(record)
     return record
 
