@@ -168,16 +168,31 @@ REASON_TYPE_GENERIC_HIDDEN_GEM = "GENERIC_HIDDEN_GEM"      # deprecated — not 
 # Target mix per spec §17. Values are proportional; the blender treats them as soft
 # quotas that gracefully degrade when a source runs dry (cold-start users have no
 # picks/teams — SceneDNA + trending temporarily dominate).
+#
+# PICKS_SIMILARITY is intentionally weighted heaviest — a user's own saves
+# are the highest-signal training data we have. Bumped from 0.35 → 0.50
+# because a user with 5+ picks was getting only ~14 of 40 cards from
+# picks-similarity even when the source had many more candidates; the
+# soft quota + 40% hard cap was starving the highest-signal source.
 FEED_MIX_TARGETS: dict[str, float] = {
-    REASON_TYPE_PICKS_SIMILARITY: 0.35,
-    REASON_TYPE_SCENEDNA_MATCH: 0.20,
+    REASON_TYPE_PICKS_SIMILARITY: 0.50,
+    REASON_TYPE_SCENEDNA_MATCH: 0.15,
     REASON_TYPE_PICKS_SCENEDNA_OVERLAP: 0.10,
-    REASON_TYPE_TRENDING_PERSONALIZED: 0.10,
+    REASON_TYPE_TRENDING_PERSONALIZED: 0.05,
     REASON_TYPE_WATCH_TEAM: 0.05,
     REASON_TYPE_CREATOR_AFFINITY: 0.05,
     REASON_TYPE_HIDDEN_GEM: 0.05,
-    REASON_TYPE_TASTE_NEIGHBORS: 0.05,
-    REASON_TYPE_SERENDIPITY: 0.05,
+    REASON_TYPE_TASTE_NEIGHBORS: 0.02,
+    REASON_TYPE_SERENDIPITY: 0.03,
+}
+
+# Per-bucket ceiling for slack absorption. Defaults to 40% (defensive
+# against a runaway source flooding the deck), but PICKS_SIMILARITY is
+# raised to 70% because it's the user's own saved-titles signal — the
+# concern that motivated the 40% cap (GENERIC_TRENDING flooding heavy
+# users) doesn't apply to a signal that IS the user's declared taste.
+_BUCKET_CAP_OVERRIDES: dict[str, float] = {
+    REASON_TYPE_PICKS_SIMILARITY: 0.70,
 }
 
 
@@ -908,14 +923,19 @@ def _blend_and_diversify(
     # regression) it could eat 100% of the deck. Cap protects against future
     # source misbehavior swallowing the whole recommendation surface.
     slack = max(limit - total, 0)
-    max_per_bucket = max(int(limit * 0.4), 2)
+    default_cap = max(int(limit * 0.4), 2)
+    def _cap_for(reason_type: str) -> int:
+        override = _BUCKET_CAP_OVERRIDES.get(reason_type)
+        if override is not None:
+            return max(int(limit * override), 2)
+        return default_cap
     while slack > 0:
         progressed = False
         for reason_type, items in sorted(buckets.items(), key=lambda kv: -len(kv[1])):
             if slack <= 0:
                 break
             current_quota = quotas.get(reason_type, 0)
-            if len(items) > current_quota and current_quota < max_per_bucket:
+            if len(items) > current_quota and current_quota < _cap_for(reason_type):
                 quotas[reason_type] = current_quota + 1
                 slack -= 1
                 progressed = True
