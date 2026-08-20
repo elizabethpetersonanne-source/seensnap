@@ -1,0 +1,24 @@
+# Keep the build context tight — Cloud Build uploads the entire context.
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local dev
+.env
+.env.*
+!.env.example
+
+# Ephemeral runtime state (Cloud Run has its own writable /tmp)
+uploads/
+
+# Editor / VCS
+.vscode/
+.idea/
+.DS_Store

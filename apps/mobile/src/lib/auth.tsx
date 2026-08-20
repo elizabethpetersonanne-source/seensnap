@@ -8,6 +8,7 @@ import { createContext, PropsWithChildren, useContext, useEffect, useState } fro
 import { deactivatePushToken } from "@/lib/notifications";
 import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
 import { setAnalyticsToken } from "@/lib/analytics";
+import { clearRecentSearches } from "@/lib/recent-searches";
 import * as SessionStorage from "@/lib/session-storage";
 
 import { apiRequest } from "@/lib/api";
@@ -303,10 +304,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
     if (sessionToken && !isExpoGo) {
       await deactivatePushToken(sessionToken).catch(() => {});
     }
+    // Clear every persisted key that carries user-scoped state. If you
+    // add a new per-user cache, add its key here too — anything left
+    // behind is visible to the NEXT account that signs in on the same
+    // browser/device.
     await Promise.all([
       SessionStorage.deleteItem(SESSION_TOKEN_KEY),
       SessionStorage.deleteItem(SESSION_USER_KEY),
       SessionStorage.deleteItem(ONBOARDING_COMPLETED_KEY),
+      clearRecentSearches(),
       SessionStorage.setItem(EXPLICIT_SIGN_OUT_KEY, "1"),
     ]);
     setSessionToken(null);

@@ -29,7 +29,6 @@
       "typedRoutes": true
     },
     "extra": {
-      "apiBaseUrl": "https://prepared-rouge-unity-pregnant.trycloudflare.com/api/v1",
       "easProjectId": ""
     },
     "ios": {

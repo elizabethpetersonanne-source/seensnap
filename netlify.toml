@@ -8,8 +8,12 @@
 [build]
   # The Expo project lives inside a monorepo, so we run the export from
   # apps/mobile and publish the artifact from apps/mobile/dist.
+  # --clear is deliberate: Metro's babel-transform cache stores serialized
+  # copies of app.json's `extra` block, and Netlify's build environment
+  # may share caches across deploys. Without --clear, edits to app.json
+  # (env, api URLs, feature flags) can invisibly persist in old bundles.
   base = "apps/mobile"
-  command = "npx expo export --platform web"
+  command = "npx expo export --platform web --clear"
   publish = "apps/mobile/dist"
 
 [build.environment]
