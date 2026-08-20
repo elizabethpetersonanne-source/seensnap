@@ -210,10 +210,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     async function exchangeToken() {
+      // eslint-disable-next-line no-console
+      console.log("[exchangeToken] response.type =", response?.type, "params keys:",
+        response?.type === "success" ? Object.keys(response.params) : []);
       const idToken = response?.type === "success" ? response.params.id_token : null;
       if (!idToken) {
+        // eslint-disable-next-line no-console
+        console.log("[exchangeToken] no id_token in response — bailing");
         return;
       }
+      // eslint-disable-next-line no-console
+      console.log("[exchangeToken] posting id_token to /auth/google (len=" + idToken.length + ")");
 
       setIsLoading(true);
       try {
@@ -221,9 +228,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
           method: "POST",
           body: JSON.stringify({ id_token: idToken }),
         });
+        // eslint-disable-next-line no-console
+        console.log("[exchangeToken] session established for", session.user.email);
         await persistSession(session);
         setSessionToken(session.access_token);
         setUser(session.user);
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error("[exchangeToken] backend rejected:", err);
+        throw err;
       } finally {
         setIsLoading(false);
       }
