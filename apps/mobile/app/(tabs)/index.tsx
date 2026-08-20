@@ -1,31 +1,42 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useFocusEffect } from "@react-navigation/native";
+import { router } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import {
+  ActivityIndicator,
   Animated,
-  Easing,
+  FlatList,
   Image,
-  KeyboardAvoidingView,
-  Modal,
-  Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 
-import { apiRequest, resolveMediaUrl } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
-import { colors, radii, spacing } from "@/constants/theme";
-import { AddToTeamSheet } from "@/components/add-to-team-sheet";
-import { SaveToListSheet } from "@/components/save-to-list-sheet";
+import { SSAnimatedRule } from "@/components/ss-animated-rule";
+import { SSMotionBackdrop } from "@/components/ss-motion-backdrop";
+import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { useCyclingBackdrop } from "@/lib/backdrop-pool";
+
 import { UniversalTitleModal } from "@/components/universal-title-modal";
+import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
+import { apiRequest } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
+import { trackEvent } from "@/lib/analytics";
+import {
+  addRecentSearch,
+  clearRecentSearches,
+  getRecentSearches,
+  removeRecentSearch,
+} from "@/lib/recent-searches";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
-type Title = {
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type TitleItem = {
   id: string;
   tmdb_id: number;
   content_type: string;
@@ -36,2085 +47,1388 @@ type Title = {
   genres: string[];
   release_date?: string | null;
   runtime_minutes?: number | null;
-  season_count?: number | null;
   tmdb_rating?: number | null;
-  language?: string | null;
-  director?: string | null;
-  top_cast?: string[];
-  wikipedia_url?: string | null;
-  metadata_source?: string;
 };
 
-type FeedEvent = {
-  id: string;
-  team_id?: string | null;
-  created_at?: string;
-  actor?: {
-    user_id: string;
-    display_name?: string | null;
-    avatar_url?: string | null;
-  };
-  title?: Title | null;
-  payload: Record<string, unknown>;
+type TrendingResponse = {
+  source_mode: string;
+  display_label: string;
+  generated_at: string;
+  items: TitleItem[];
+};
+
+type SearchResultItem = {
+  entity_type: string;
+  entity_id: string;
+  title: string;
+  subtitle?: string | null;
+  artwork?: string | null;
+  year?: number | null;
+  media_type?: string | null;
+  route: string;
+  source: string;
+};
+
+type SearchResponse = {
+  query: string;
+  movies: SearchResultItem[];
+  series: SearchResultItem[];
+  people: SearchResultItem[];
+  collections: SearchResultItem[];
+  my_stuff: SearchResultItem[];
+};
+
+type CollectionSummary = {
+  slug: string;
+  title: string;
+  subtitle?: string | null;
+  thesis?: string | null;
+  collection_type: string;
+  media_scope: string;
+  poster_urls: string[];
+  item_count?: number | null;
 };
 
 type RecommendationItem = {
-  title: Title;
-  reason: string;
-  seed_title_id?: string | null;
-};
-
-type TrendingSeedItem = {
-  id: string;
-  title: string;
-  type: "movie" | "show";
-  tag: string;
-  subtext: string;
-  posterUrl?: string;
-  backdropUrl?: string;
-  genre: string;
-  trendingScore: number;
-};
-
-type SmartRecommendationSeed = {
-  id: string;
-  title: string;
-  mediaType: "movie" | "show";
-  year: number;
-  genre: string;
-  description: string;
+  title: TitleItem;
   reason: string;
 };
 
-type EditorialItem = {
-  id: string;
-  title: string;
-  mediaType: "movie" | "show";
-  poster: string;
-  year: number;
-  genre: string;
-  description: string;
+// ─── /discover/feed structured module contract ───────────────────────────────
+// Matches build_discover_feed on the backend. Client renders whatever modules
+// the server returns; module eligibility is decided server-side (§27) so an
+// absent module means the data didn't qualify — the client never fabricates.
+type FeedItem = {
+  impression_id: string | null;
+  title: TitleItem;
+  score: number | null;
+  confidence: string | null;
+  reasons: { type: string; signal_type?: string; signal_name?: string; hits?: number; score?: number }[];
+  reason_template: string | null;
 };
 
-type DoubleFeatureItem = {
-  id: string;
-  leftTitle: string;
-  leftType: "movie" | "show";
-  leftPoster: string;
-  rightTitle: string;
-  rightType: "movie" | "show";
-  rightPoster: string;
-  genre: string;
-  description: string;
+type DiscoverModule =
+  | {
+      type: "contextual_pick";
+      window: string;
+      mode: string;
+      label: string;
+      item: FeedItem;
+    }
+  | {
+      type: "personalized_rail" | "because_you" | "team_recommendation" | "trending" | "exploration_rail";
+      key: string;
+      label: string;
+      subtitle?: string;
+      items: FeedItem[];
+    };
+
+type DiscoverContext = {
+  window: string;
+  display_label: string;
+  is_weekend: boolean;
+  recommended_mode: string;
+  confidence: string;
+  local_hour: number;
 };
 
-function titleKey(name: string, type: "movie" | "show") {
-  return `${name.toLowerCase()}::${type}`;
-}
-
-const TRENDING_SEED: TrendingSeedItem[] = [
-  {
-    id: "tr_succession",
-    title: "Succession",
-    type: "show",
-    tag: "Trending",
-    subtext: "Rated 9/10 by most users",
-    posterUrl: "https://image.tmdb.org/t/p/w500/7HW47XbkNQ5fiwQFYGWdw9gs144.jpg",
-    backdropUrl: "https://image.tmdb.org/t/p/w780/8u7W8H4Uk6n6Q0E8xY8Tz6kRXKu.jpg",
-    genre: "Drama",
-    trendingScore: 98,
-  },
-  {
-    id: "tr_bear",
-    title: "The Bear",
-    type: "show",
-    tag: "Buzzing Now",
-    subtext: "Exploding with Scene Snap users this week",
-    posterUrl: "https://image.tmdb.org/t/p/w500/sHFlbKS3WLqMnp9t2ghADIJFnuQ.jpg",
-    backdropUrl: "https://image.tmdb.org/t/p/w780/9s7f0M6D3k1vXfQ4f6x4k0R4YQJ.jpg",
-    genre: "Drama",
-    trendingScore: 96,
-  },
-  {
-    id: "tr_saltburn",
-    title: "Saltburn",
-    type: "movie",
-    tag: "Viral Pick",
-    subtext: "One of the most saved films right now",
-    posterUrl: "https://image.tmdb.org/t/p/w500/qjhahNLSZ705B5JP92YMEYPocPz.jpg",
-    genre: "Thriller",
-    trendingScore: 93,
-  },
-  {
-    id: "tr_severance",
-    title: "Severance",
-    type: "show",
-    tag: "Back in Rotation",
-    subtext: "Added to watchlists all week",
-    posterUrl: "https://image.tmdb.org/t/p/w500/pPHpeI2X1qEd1CS1SeyrdhZ4qnT.jpg",
-    genre: "Sci-Fi",
-    trendingScore: 92,
-  },
-  {
-    id: "tr_past_lives",
-    title: "Past Lives",
-    type: "movie",
-    tag: "Critic Favorite",
-    subtext: "Quietly becoming a top-rated save",
-    posterUrl: "https://image.tmdb.org/t/p/w500/k3waqVXSnvCZWfJYNtdamTgTtTA.jpg",
-    genre: "Romance",
-    trendingScore: 90,
-  },
-  {
-    id: "tr_girls",
-    title: "Girls",
-    type: "show",
-    tag: "Rewatch Wave",
-    subtext: "High engagement among recent users",
-    posterUrl: "https://image.tmdb.org/t/p/w500/cTnQfNQ4qQ4u8YQ3Q9Bf4xQb3mI.jpg",
-    genre: "Comedy",
-    trendingScore: 89,
-  },
-];
-
-const TV_SMART_PICKS: SmartRecommendationSeed[] = [
-  {
-    id: "tv_sharp_objects",
-    title: "Sharp Objects",
-    mediaType: "show",
-    year: 2018,
-    genre: "Psychological Mystery",
-    description: "Psychological mystery anchored by grief, memory, and trauma.",
-    reason: "Because you save dark character-driven dramas.",
-  },
-  {
-    id: "tv_industry",
-    title: "Industry",
-    mediaType: "show",
-    year: 2020,
-    genre: "Drama",
-    description: "Ambition and power collide inside elite finance culture.",
-    reason: "Because you like Succession-style intensity.",
-  },
-  {
-    id: "tv_normal_people",
-    title: "Normal People",
-    mediaType: "show",
-    year: 2020,
-    genre: "Romance",
-    description: "Intimate, emotionally grounded story of love and timing.",
-    reason: "Because you favor character-first storytelling.",
-  },
-  {
-    id: "tv_mindhunter",
-    title: "Mindhunter",
-    mediaType: "show",
-    year: 2017,
-    genre: "Crime",
-    description: "Meticulous psychological crime drama about criminal profiling.",
-    reason: "Because you watch slow-burn prestige thrillers.",
-  },
-  {
-    id: "tv_leftovers",
-    title: "The Leftovers",
-    mediaType: "show",
-    year: 2014,
-    genre: "Drama",
-    description: "Existential drama exploring loss, belief, and meaning.",
-    reason: "Because you save emotionally complex series.",
-  },
-  {
-    id: "tv_fleabag",
-    title: "Fleabag",
-    mediaType: "show",
-    year: 2016,
-    genre: "Dark Comedy",
-    description: "Sharp, dark comedy layered with emotional vulnerability.",
-    reason: "Because you like smart, character-led writing.",
-  },
-  {
-    id: "tv_severance",
-    title: "Severance",
-    mediaType: "show",
-    year: 2022,
-    genre: "Sci-Fi",
-    description: "Surreal corporate thriller where identity is fractured.",
-    reason: "Because you enjoy cerebral mystery.",
-  },
-  {
-    id: "tv_night_of",
-    title: "The Night Of",
-    mediaType: "show",
-    year: 2016,
-    genre: "Legal Drama",
-    description: "Tense legal drama exploring justice and moral ambiguity.",
-    reason: "Because you watch procedural prestige dramas.",
-  },
-  {
-    id: "tv_atlanta",
-    title: "Atlanta",
-    mediaType: "show",
-    year: 2016,
-    genre: "Comedy-Drama",
-    description: "Surreal, stylish storytelling blending comedy and commentary.",
-    reason: "Because you enjoy genre-bending series.",
-  },
-  {
-    id: "tv_big_little_lies",
-    title: "Big Little Lies",
-    mediaType: "show",
-    year: 2017,
-    genre: "Prestige Drama",
-    description: "Prestige ensemble drama built on secrets and performance.",
-    reason: "Because you follow award-winning series.",
-  },
-];
-
-const MOVIE_SMART_PICKS: SmartRecommendationSeed[] = [
-  {
-    id: "mv_aftersun",
-    title: "Aftersun",
-    mediaType: "movie",
-    year: 2022,
-    genre: "Drama",
-    description: "Memory-driven emotional drama about love and distance.",
-    reason: "Because you save reflective indie films.",
-  },
-  {
-    id: "mv_past_lives",
-    title: "Past Lives",
-    mediaType: "movie",
-    year: 2023,
-    genre: "Romance",
-    description: "Tender meditation on timing, connection, and fate.",
-    reason: "Because you value quiet emotional storytelling.",
-  },
-  {
-    id: "mv_prisoners",
-    title: "Prisoners",
-    mediaType: "movie",
-    year: 2013,
-    genre: "Thriller",
-    description: "Dark investigative thriller driven by moral tension.",
-    reason: "Because you watch intense character thrillers.",
-  },
-  {
-    id: "mv_nightcrawler",
-    title: "Nightcrawler",
-    mediaType: "movie",
-    year: 2014,
-    genre: "Psychological Thriller",
-    description: "Psychological descent into ambition and media ethics.",
-    reason: "Because you like unsettling character studies.",
-  },
-  {
-    id: "mv_portrait_lady_on_fire",
-    title: "Portrait of a Lady on Fire",
-    mediaType: "movie",
-    year: 2019,
-    genre: "Art-House Romance",
-    description: "Romantic slow-burn built on visual storytelling and silence.",
-    reason: "Because you save art-house romance.",
-  },
-  {
-    id: "mv_zodiac",
-    title: "Zodiac",
-    mediaType: "movie",
-    year: 2007,
-    genre: "Crime",
-    description: "Meticulous crime thriller about obsession and uncertainty.",
-    reason: "Because you enjoy procedural tension.",
-  },
-  {
-    id: "mv_call_me_by_your_name",
-    title: "Call Me by Your Name",
-    mediaType: "movie",
-    year: 2017,
-    genre: "Romance",
-    description: "Sun-soaked coming-of-age romance full of longing.",
-    reason: "Because you like intimate character stories.",
-  },
-  {
-    id: "mv_whiplash",
-    title: "Whiplash",
-    mediaType: "movie",
-    year: 2014,
-    genre: "Drama",
-    description: "High-intensity character drama about obsession and performance.",
-    reason: "Because you watch driven psychological stories.",
-  },
-  {
-    id: "mv_moonlight",
-    title: "Moonlight",
-    mediaType: "movie",
-    year: 2016,
-    genre: "Drama",
-    description: "Visually poetic coming-of-age story told in quiet emotional beats.",
-    reason: "Because you save intimate prestige films.",
-  },
-  {
-    id: "mv_her",
-    title: "Her",
-    mediaType: "movie",
-    year: 2013,
-    genre: "Sci-Fi Romance",
-    description: "Soft sci-fi romance exploring loneliness and connection.",
-    reason: "Because you enjoy emotional speculative stories.",
-  },
-];
-
-const AWARDS_SEASON_ITEMS: EditorialItem[] = [
-  { id: "aw_oppenheimer", title: "Oppenheimer", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/8Gxv8gSFCU0XGDykEGv7zR1n2ua.jpg", year: 2023, genre: "Drama", description: "Awards frontrunner for direction, performance, and technical scale." },
-  { id: "aw_poor_things", title: "Poor Things", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/kCGlIMHnOm8JPXq3rXM6c5wMxcT.jpg", year: 2023, genre: "Surreal Prestige", description: "Surreal prestige cinema driven by bold performances and design." },
-  { id: "aw_anatomy_of_a_fall", title: "Anatomy of a Fall", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/kQs6keheMwCxJxrzV83VUwFtHkB.jpg", year: 2023, genre: "Courtroom Drama", description: "Courtroom drama with critical acclaim and standout acting." },
-  { id: "aw_holdovers", title: "The Holdovers", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/VHSzNBTwxV8vh7wylo7O9CLdac.jpg", year: 2023, genre: "Period Drama", description: "Character-driven period drama fueled by performance and writing." },
-  { id: "aw_past_lives", title: "Past Lives", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/k3waqVXSnvCZWfJYNtdamTgTtTA.jpg", year: 2023, genre: "Drama", description: "Emotional indie drama anchored by subtle, powerful performances." },
-  { id: "aw_killers", title: "Killers of the Flower Moon", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/dB6Krk806zeqd0YNp2ngQ9zXteH.jpg", year: 2023, genre: "Historical Crime", description: "Epic historical crime drama with heavyweight performances." },
-  { id: "aw_maestro", title: "Maestro", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/njsL6XJovH7Y7cfWfMNkWvVfBEl.jpg", year: 2023, genre: "Biographical Drama", description: "Intimate biographical drama focused on artistic legacy." },
-  { id: "aw_barbie", title: "Barbie", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/iuFNMS8U5cb6xfzi51Dbkovj7vM.jpg", year: 2023, genre: "Satire", description: "Blockbuster satire recognized for cultural impact and design." },
-  { id: "aw_zone_of_interest", title: "The Zone of Interest", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/hUu9zyZmDd8VZegKi1iK1Vk0RYS.jpg", year: 2023, genre: "Historical Drama", description: "Experimental historical drama praised for formal innovation." },
-  { id: "aw_american_fiction", title: "American Fiction", mediaType: "movie", poster: "https://image.tmdb.org/t/p/w500/57MFWGHarg9jid7yfDTka4RmcMU.jpg", year: 2023, genre: "Satire", description: "Sharp social satire driven by performance and commentary." },
-];
-
-const DOUBLE_FEATURE_ITEMS: DoubleFeatureItem[] = [
-  { id: "df_black_swan", leftTitle: "Black Swan", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/viWheBd44bouiLCHgNMvahLThqx.jpg", rightTitle: "Perfect Blue", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/2fYpM2R5mQb9a9nM3sQvVf8k0Yk.jpg", genre: "Psychological", description: "Psychological identity spirals through performance and pressure." },
-  { id: "df_past_lives", leftTitle: "Past Lives", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/k3waqVXSnvCZWfJYNtdamTgTtTA.jpg", rightTitle: "Before Sunrise", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/4K5hC2G6z6L1bY3N7r1P8v2v8mG.jpg", genre: "Romance", description: "Intimate romantic conversations shaped by timing and place." },
-  { id: "df_succession_industry", leftTitle: "Succession", leftType: "show", leftPoster: "https://image.tmdb.org/t/p/w500/7HW47XbkNQ5fiwQFYGWdw9gs144.jpg", rightTitle: "Industry", rightType: "show", rightPoster: "https://image.tmdb.org/t/p/w500/x8xq4R8vH0qL9r2Q2cYVQY5nY6V.jpg", genre: "Prestige Drama", description: "Power, ambition, and moral compromise inside elite systems." },
-  { id: "df_social_network", leftTitle: "The Social Network", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/n0ybibhJtQ5icDqTp8eRytcIHJx.jpg", rightTitle: "Steve Jobs", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/ah19M0nQJ6fdrH3oQjAriRbBCvN.jpg", genre: "Biographical", description: "Fast-talking portraits of visionary ambition and ego." },
-  { id: "df_hereditary_witch", leftTitle: "Hereditary", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/p9fmuz2Oj3HtEJEqbIwkFGUhVXD.jpg", rightTitle: "The Witch", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/zlEhsNfOKhbnfs5NTJ6zOZtoLBb.jpg", genre: "Horror", description: "Atmospheric horror driven by dread, isolation, and slow tension." },
-  { id: "df_ladybird_frances", leftTitle: "Lady Bird", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/iySFtKLrWvVzXzlFj7x1zalxi5G.jpg", rightTitle: "Frances Ha", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/gf1Q1f3nJ2jQfF4nM16fY7lyfX2.jpg", genre: "Coming of Age", description: "Restless coming-of-age stories about identity and direction." },
-  { id: "df_dune_blade_runner", leftTitle: "Dune: Part Two", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/1pdfLvkbY9ohJlCjQH2CZjjYVvJ.jpg", rightTitle: "Blade Runner 2049", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/gajva2L0rPYkEWjzgFlBXCAVBE5.jpg", genre: "Sci-Fi", description: "Epic sci-fi worlds defined by scale, design, and philosophy." },
-  { id: "df_moonlight_call_me", leftTitle: "Moonlight", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/4911T5FbJ9eD2Faz5Z8cT3SU9a.jpg", rightTitle: "Call Me by Your Name", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/mZ4gBdfVHf0MER7qbEqRhoB2q6p.jpg", genre: "Drama", description: "Tender, visually rich stories of identity and longing." },
-  { id: "df_zodiac_mindhunter", leftTitle: "Zodiac", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/6YmeO4pB7XTh8P8F960O1uA14JO.jpg", rightTitle: "Mindhunter", rightType: "show", rightPoster: "https://image.tmdb.org/t/p/w500/fbKE87mojpIETWepSbD5Qt741fp.jpg", genre: "Crime", description: "Obsessive procedural investigations into criminal psychology." },
-  { id: "df_lost_in_translation", leftTitle: "Lost in Translation", leftType: "movie", leftPoster: "https://image.tmdb.org/t/p/w500/wkSzJs7oMf8MIr9CQVICsvRfwA7.jpg", rightTitle: "In the Mood for Love", rightType: "movie", rightPoster: "https://image.tmdb.org/t/p/w500/iYypPT4bhqXfq1b6EnmxvRt6b2Y.jpg", genre: "Romance", description: "Quiet longing expressed through atmosphere and restraint." },
-];
-
-const POSTER_PLACEHOLDER = "/media/brand/poster_placeholder.png";
-const DIRECT_IMAGE_EXT = /\.(jpg|jpeg|png|webp)(\?.*)?$/i;
-const WIKI_POSTER_FALLBACK: Record<string, string> = {
-  "perfect blue::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Perfect_Blue_film_poster.jpg",
-  "before sunrise::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Before_Sunrise_poster.jpg",
-  "steve jobs::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Steve_Jobs_%28film%29_poster.jpg",
-  "industry::show": "https://en.wikipedia.org/wiki/Special:FilePath/Industry_%28TV_series%29_title_card.jpg",
-  "maestro::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Maestro_film_poster.jpg",
-  "moonlight::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Moonlight_%282016_film%29.png",
-  "call me by your name::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Call_Me_by_Your_Name_film_poster.png",
-  "frances ha::movie": "https://en.wikipedia.org/wiki/Special:FilePath/Frances_Ha_poster.jpg",
+type DiscoverFeedResponse = {
+  context: DiscoverContext;
+  user_stage: "cold_start" | "emerging" | "personalized";
+  modules: DiscoverModule[];
 };
 
-function normalizeExternalPoster(uri?: string | null): string | null {
-  if (!uri) {
-    return null;
-  }
-  const value = uri.trim();
-  if (!value.startsWith("https://")) {
-    return null;
-  }
-  if (value.startsWith("https://image.tmdb.org/t/p/")) {
-    return value.replace(/\/(original|w[0-9]+)\//i, "/w500/");
-  }
-  if (DIRECT_IMAGE_EXT.test(value)) {
-    return value;
-  }
-  return null;
-}
+// ─── Search result type tabs ──────────────────────────────────────────────────
 
-function getPosterUri(title: string, mediaType: "movie" | "show", primary?: string | null, secondary?: string | null): string {
-  const titleFallback = WIKI_POSTER_FALLBACK[titleKey(title, mediaType)];
-  const external = normalizeExternalPoster(primary) ?? normalizeExternalPoster(secondary);
-  if (external) {
-    return external;
-  }
-  if (titleFallback) {
-    return titleFallback;
-  }
-  return resolveMediaUrl(POSTER_PLACEHOLDER) ?? POSTER_PLACEHOLDER;
-}
+const SEARCH_TABS = [
+  { key: "all", label: "All" },
+  { key: "movies", label: "Movies" },
+  { key: "series", label: "Series" },
+  { key: "people", label: "People" },
+  { key: "collections", label: "Collections" },
+] as const;
 
-function PosterCardImage({
-  title,
-  mediaType,
-  uri,
-  fallbackUri,
-  style,
+type SearchTab = (typeof SEARCH_TABS)[number]["key"];
+
+// ─── Components ───────────────────────────────────────────────────────────────
+
+function PosterCard({
+  item,
+  onPress,
+  rank,
+  showRank = false,
 }: {
-  title: string;
-  mediaType: "movie" | "show";
-  uri?: string | null;
-  fallbackUri?: string | null;
-  style: any;
+  item: TitleItem | SearchResultItem;
+  onPress: () => void;
+  rank?: number;
+  showRank?: boolean;
 }) {
-  const [failed, setFailed] = useState(false);
-  const primary = getPosterUri(title, mediaType, uri, fallbackUri);
-  const placeholder = resolveMediaUrl(POSTER_PLACEHOLDER) ?? POSTER_PLACEHOLDER;
-  const sourceUri = failed ? placeholder : primary;
+  const poster = "poster_url" in item
+    ? (item as TitleItem).poster_url
+    : (item as SearchResultItem).artwork;
+  const title = item.title;
+  const year = "release_date" in item && (item as TitleItem).release_date
+    ? new Date((item as TitleItem).release_date!)
+    : null;
+  const yearNum = year ? year.getFullYear() : ("year" in item ? (item as SearchResultItem).year : null);
+
   return (
-    <Image
-      source={{ uri: sourceUri }}
-      style={style}
-      resizeMode="cover"
-      onError={() => setFailed(true)}
-      defaultSource={{ uri: placeholder }}
-    />
+    <Pressable onPress={onPress} style={({ pressed }) => [styles.posterCard, pressed && styles.pressed]}>
+      <View style={styles.posterImageWrap}>
+        {poster ? (
+          <Image source={{ uri: poster }} style={styles.posterImage} resizeMode="cover" />
+        ) : (
+          <View style={[styles.posterImage, styles.posterPlaceholder]}>
+            <Ionicons name="film-outline" size={20} color={colors.muted2} />
+          </View>
+        )}
+        {showRank && rank !== undefined && (
+          <View style={styles.rankBadge}>
+            <Text style={styles.rankText}>{rank}</Text>
+          </View>
+        )}
+      </View>
+      <Text style={styles.posterTitle} numberOfLines={2}>{title}</Text>
+      {yearNum ? <Text style={styles.posterYear}>{yearNum}</Text> : null}
+    </Pressable>
   );
 }
 
-export default function HomeScreen() {
-  const router = useRouter();
-  const { sessionToken, user } = useAuth();
+function SearchResultRow({
+  item,
+  onPress,
+}: {
+  item: SearchResultItem;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.searchRow, pressed && styles.pressed]}
+    >
+      {item.artwork ? (
+        <Image source={{ uri: item.artwork }} style={styles.searchRowArt} resizeMode="cover" />
+      ) : (
+        <View style={[styles.searchRowArt, styles.searchRowArtPlaceholder]}>
+          <Ionicons
+            name={
+              item.entity_type === "person"
+                ? "person-outline"
+                : item.entity_type === "collection"
+                ? "library-outline"
+                : "film-outline"
+            }
+            size={14}
+            color={colors.muted2}
+          />
+        </View>
+      )}
+      <View style={styles.searchRowText}>
+        <Text style={styles.searchRowTitle} numberOfLines={1}>{item.title}</Text>
+        {item.subtitle ? (
+          <Text style={styles.searchRowSub} numberOfLines={1}>{item.subtitle}</Text>
+        ) : null}
+      </View>
+      <Text style={styles.searchRowType}>
+        {item.entity_type === "series" ? "SERIES" : item.entity_type.toUpperCase()}
+      </Text>
+    </Pressable>
+  );
+}
+
+function CollectionCard({
+  coll,
+  onPress,
+}: {
+  coll: CollectionSummary;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      style={({ pressed }) => [styles.collectionCard, pressed && styles.pressed]}
+    >
+      <View style={styles.collectionPosters}>
+        {coll.poster_urls.slice(0, 3).map((url, i) => (
+          <Image
+            key={i}
+            source={{ uri: url }}
+            style={[styles.collectionPoster, { zIndex: 3 - i, marginLeft: i > 0 ? -20 : 0 }]}
+            resizeMode="cover"
+          />
+        ))}
+        {coll.poster_urls.length === 0 && (
+          <View style={[styles.collectionPoster, styles.posterPlaceholder]}>
+            <Ionicons name="library-outline" size={16} color={colors.muted2} />
+          </View>
+        )}
+      </View>
+      <View style={styles.collectionInfo}>
+        <Text style={styles.collectionType}>
+          {coll.collection_type === "dynamic_discover" ? "CURATED" : coll.collection_type.toUpperCase()}
+        </Text>
+        <Text style={styles.collectionTitle} numberOfLines={2}>{coll.title}</Text>
+        {coll.subtitle ? (
+          <Text style={styles.collectionSub} numberOfLines={2}>{coll.subtitle}</Text>
+        ) : null}
+      </View>
+      <Ionicons name="chevron-forward" size={14} color={colors.muted2} />
+    </Pressable>
+  );
+}
+
+// ─── Main screen ──────────────────────────────────────────────────────────────
+
+export default function DiscoverScreen() {
+  const { sessionToken } = useAuth();
+
+  // Search state
   const [query, setQuery] = useState("");
-  const [results, setResults] = useState<Title[]>([]);
-  const [recommendedItems, setRecommendedItems] = useState<RecommendationItem[]>([]);
-  const [recommendedVisibleCount, setRecommendedVisibleCount] = useState(10);
-  const [genres, setGenres] = useState<string[]>([
-    "Drama",
-    "Comedy",
-    "Thriller",
-    "Horror",
-    "Romance",
-    "Documentary",
-    "Sci-Fi",
-    "Fantasy",
-    "Action",
-    "Mystery",
-    "Animation",
-    "Crime",
-  ]);
-  const [selectedGenre, setSelectedGenre] = useState<string | null>(null);
-  const [genreMediaType, setGenreMediaType] = useState<"all" | "movie" | "show">("all");
-  const [genreResults, setGenreResults] = useState<Title[]>([]);
-  const [genreLoading, setGenreLoading] = useState(false);
-  const [savedIds, setSavedIds] = useState<Set<string>>(new Set());
-  const [isSearching, setIsSearching] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const [searchActive, setSearchActive] = useState(false);
+  const [searchTab, setSearchTab] = useState<SearchTab>("all");
+  const [searchResults, setSearchResults] = useState<SearchResponse | null>(null);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [recentSearches, setRecentSearches] = useState<string[]>([]);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const abortRef = useRef<{ cancelled: boolean }>({ cancelled: false });
 
-  const [selectedTitle, setSelectedTitle] = useState<Title | null>(null);
-  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
-  const [showSaveSheet, setShowSaveSheet] = useState(false);
-  const [showPostComposer, setShowPostComposer] = useState(false);
-  const [showDetails, setShowDetails] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
+  // Discover content
+  const [trending, setTrending] = useState<TrendingResponse | null>(null);
+  const [trendingLoading, setTrendingLoading] = useState(true);
+  const [collections, setCollections] = useState<CollectionSummary[]>([]);
+  const [collectionsLoading, setCollectionsLoading] = useState(true);
+  const [recommendations, setRecommendations] = useState<RecommendationItem[]>([]);
+  // Unified Discover feed (SceneDNA brief §28) — one server call returns
+  // ordered modules the client renders directly. Replaces the prior three
+  // parallel endpoints + hardcoded module order.
+  const [discoverFeed, setDiscoverFeed] = useState<DiscoverFeedResponse | null>(null);
+  const [discoverFeedLoading, setDiscoverFeedLoading] = useState(true);
+
+  // Title modal
+  const [selectedTitleId, setSelectedTitleId] = useState<string | null>(null);
   const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
-  const [showAddToTeam, setShowAddToTeam] = useState(false);
-  const [addToTeamTitle, setAddToTeamTitle] = useState<{ id: string; title: string } | null>(null);
-  const [composeCaption, setComposeCaption] = useState("");
-  const [composeRating, setComposeRating] = useState("");
-  const [composerViewportHeight, setComposerViewportHeight] = useState<number | null>(null);
-  const [isPosting, setIsPosting] = useState(false);
-  const [quickPickType, setQuickPickType] = useState<"movie" | "show" | null>(null);
-  const [quickPickLoading, setQuickPickLoading] = useState(false);
-  const [quickPick, setQuickPick] = useState<RecommendationItem | null>(null);
-  const [resolvedTitleMap, setResolvedTitleMap] = useState<Record<string, Title>>({});
-  const [tvQueue, setTvQueue] = useState<number[]>([]);
-  const [movieQueue, setMovieQueue] = useState<number[]>([]);
+  const [titleModalVisible, setTitleModalVisible] = useState(false);
+  const [titleLoading, setTitleLoading] = useState(false);
 
-  const rootScrollRef = useRef<ScrollView>(null);
-  const composerScrollRef = useRef<ScrollView>(null);
-  const searchPulse = useRef(new Animated.Value(1)).current;
-  const heroDrift = useRef(new Animated.Value(0)).current;
+  const searchInputRef = useRef<TextInput>(null);
+  const scrollY = useRef(new Animated.Value(0)).current;
+  const [isFocused, setIsFocused] = useState(true);
 
-  async function refreshRecommendations() {
-    if (!sessionToken) {
-      return;
-    }
+  // ── Load discover content ─────────────────────────────────────────────────
+
+  async function loadTrending() {
+    if (!sessionToken) return;
     try {
-      const recommendations = await apiRequest<RecommendationItem[]>("/titles/recommendations/for-me?limit=36", {
+      const result = await apiRequest<TrendingResponse>("/discover/trending?limit=12", {
         token: sessionToken,
       });
-      setRecommendedItems(recommendations);
+      setTrending(result);
     } catch {
-      // Keep existing recommendations when refresh fails.
+      // silently degrade — trending stays null
+    } finally {
+      setTrendingLoading(false);
     }
   }
 
-  function shuffleIndices(length: number) {
-    const values = Array.from({ length }, (_, idx) => idx);
-    for (let i = values.length - 1; i > 0; i -= 1) {
-      const j = Math.floor(Math.random() * (i + 1));
-      [values[i], values[j]] = [values[j], values[i]];
-    }
-    return values;
-  }
-
-  async function resolveTitleByName(name: string, preferredType: "movie" | "show") {
-    const key = titleKey(name, preferredType);
-    const cached = resolvedTitleMap[key];
-    if (cached) {
-      return cached;
-    }
-    if (!sessionToken) {
-      return null;
-    }
+  async function loadCollections() {
+    if (!sessionToken) return;
     try {
-      const found = await apiRequest<Title[]>(`/titles/search?q=${encodeURIComponent(name)}`, { token: sessionToken });
-      const picked =
-        found.find((item) => {
-          const normalizedType = item.content_type === "tv" ? "show" : item.content_type;
-          return normalizedType === preferredType && item.title.toLowerCase() === name.toLowerCase();
-        }) ??
-        found.find((item) => {
-          const normalizedType = item.content_type === "tv" ? "show" : item.content_type;
-          return normalizedType === preferredType;
-        }) ??
-        found[0];
-      if (!picked) {
-        return null;
-      }
-      // Always hydrate with title detail endpoint so poster_url uses TMDB refresh + Wikipedia fallback.
-      // Search rows can be stale/incomplete and are a common source of missing thumbnail images.
-      let hydrated = picked;
-      try {
-        hydrated = await apiRequest<Title>(`/titles/${picked.id}`, { token: sessionToken });
-      } catch {
-        hydrated = picked;
-      }
-      setResolvedTitleMap((current) => ({ ...current, [key]: hydrated }));
-      return hydrated;
+      const result = await apiRequest<CollectionSummary[]>("/collections?limit=3", {
+        token: sessionToken,
+      });
+      setCollections(result.slice(0, 3));
     } catch {
-      return null;
+      // silently degrade
+    } finally {
+      setCollectionsLoading(false);
     }
   }
 
-  async function openDetailsByName(name: string, preferredType: "movie" | "show") {
-    const resolved = await resolveTitleByName(name, preferredType);
-    if (!resolved) {
-      setToast("Title details unavailable right now");
-      return;
-    }
-    void openDetails(resolved);
-  }
-
-  async function addToListByName(name: string, preferredType: "movie" | "show") {
-    const resolved = await resolveTitleByName(name, preferredType);
-    if (!resolved) {
-      setToast("Unable to save this title right now");
-      return;
-    }
-    openSaveSheet(resolved);
-  }
-
-  async function loadGenreResults(nextGenre: string, nextMediaType: "all" | "movie" | "show") {
-    if (!sessionToken) {
-      return;
-    }
-    setGenreLoading(true);
-    setError(null);
+  async function loadRecommendations() {
+    if (!sessionToken) return;
     try {
-      const discovered = await apiRequest<Title[]>(
-        `/titles/discover?genre=${encodeURIComponent(nextGenre)}&media_type=${nextMediaType}&limit=30`,
+      const result = await apiRequest<RecommendationItem[]>(
+        "/titles/recommendations/for-me?limit=12",
         { token: sessionToken }
       );
-      setGenreResults(discovered);
-    } catch (discoverError) {
-      setError(discoverError instanceof Error ? discoverError.message : "Failed to load genre results");
-      setGenreResults([]);
-    } finally {
-      setGenreLoading(false);
+      setRecommendations(result);
+    } catch {
+      // silently degrade — module hidden when empty
     }
   }
 
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(searchPulse, { toValue: 1.06, duration: 900, useNativeDriver: true }),
-        Animated.timing(searchPulse, { toValue: 1, duration: 900, useNativeDriver: true }),
-      ])
-    ).start();
-  }, [searchPulse]);
-
-  useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(heroDrift, { toValue: 1, duration: 12000, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-        Animated.timing(heroDrift, { toValue: 0, duration: 12000, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
-      ])
-    ).start();
-  }, [heroDrift]);
-
-  useEffect(() => {
-    if (Platform.OS !== "web") {
-      return;
-    }
-    const win = globalThis as any;
-    const vv = win.visualViewport;
-    if (!vv) {
-      return;
-    }
-    const handleResize = () => setComposerViewportHeight(vv.height);
-    setComposerViewportHeight(vv.height);
-    vv.addEventListener("resize", handleResize);
-    return () => vv.removeEventListener("resize", handleResize);
-  }, []);
-
-  useEffect(() => {
-    setTvQueue(shuffleIndices(TV_SMART_PICKS.length));
-    setMovieQueue(shuffleIndices(MOVIE_SMART_PICKS.length));
-  }, []);
-
-  useEffect(() => {
-    if (!toast) {
-      return;
-    }
-    const timer = setTimeout(() => setToast(null), 1600);
-    return () => clearTimeout(timer);
-  }, [toast]);
-
-  useEffect(() => {
-    async function loadHome() {
-      if (!sessionToken) {
-        return;
-      }
-      setError(null);
-      try {
-        const [savedTitleIds, recommendations] = await Promise.all([
-          apiRequest<string[]>("/me/watchlist/title-ids", { token: sessionToken }),
-          apiRequest<RecommendationItem[]>("/titles/recommendations/for-me?limit=36", { token: sessionToken }),
-        ]);
-        setSavedIds(new Set(savedTitleIds));
-        setRecommendedItems(recommendations);
-      } catch (loadError) {
-        setError(loadError instanceof Error ? loadError.message : "Failed to load home");
-      }
-    }
-    void loadHome();
-  }, [sessionToken]);
-
-  useEffect(() => {
-    async function loadGenres() {
-      if (!sessionToken) {
-        return;
-      }
-      try {
-        const values = await apiRequest<string[]>("/titles/genres", { token: sessionToken });
-        if (values.length) {
-          setGenres(values);
-        }
-      } catch {
-        // Keep seeded fallback list.
-      }
-    }
-    void loadGenres();
-  }, [sessionToken]);
-
-  useEffect(() => {
-    if (!sessionToken) {
-      return;
-    }
-    if (query.trim().length < 3) {
-      setResults([]);
-      return;
-    }
-    const timer = setTimeout(async () => {
-      setIsSearching(true);
-      setError(null);
-      try {
-        const data = await apiRequest<Title[]>(`/titles/search?q=${encodeURIComponent(query.trim())}`, {
-          token: sessionToken,
-        });
-        setResults(data);
-      } catch (searchError) {
-        setError(searchError instanceof Error ? searchError.message : "Search failed");
-      } finally {
-        setIsSearching(false);
-      }
-    }, 200);
-    return () => clearTimeout(timer);
-  }, [query, sessionToken]);
-
-  useEffect(() => {
-    if (!sessionToken) {
-      return;
-    }
-    const editorialTargets = [
-      ...AWARDS_SEASON_ITEMS.map((item) => ({ title: item.title, mediaType: item.mediaType })),
-      ...DOUBLE_FEATURE_ITEMS.flatMap((item) => [
-        { title: item.leftTitle, mediaType: item.leftType },
-        { title: item.rightTitle, mediaType: item.rightType },
-      ]),
-    ];
-    const byKey = new Map<string, { title: string; mediaType: "movie" | "show" }>();
-    for (const item of editorialTargets) {
-      byKey.set(titleKey(item.title, item.mediaType), item);
-    }
-
-    async function preloadEditorialPosters() {
-      await Promise.all(
-        Array.from(byKey.values()).map(async (item) => {
-          try {
-            await resolveTitleByName(item.title, item.mediaType);
-          } catch {
-            // keep static poster fallback
-          }
-        })
+  async function loadDiscoverFeed() {
+    if (!sessionToken) return;
+    setDiscoverFeedLoading(true);
+    try {
+      // Pass the client's local hour so context resolution matches the user's
+      // clock (backend defaults to server time otherwise).
+      const localHour = new Date().getHours();
+      const result = await apiRequest<DiscoverFeedResponse>(
+        `/discover/feed?local_hour=${localHour}`,
+        { token: sessionToken },
       );
-    }
-    void preloadEditorialPosters();
-  }, [sessionToken]);
-
-  function openSaveSheet(title: Title) {
-    setSelectedTitle(title);
-    setSaveTitleId(title.id);
-    setShowSaveSheet(true);
-  }
-
-  async function openDetails(title: Title) {
-    if (!sessionToken) {
-      return;
-    }
-    setSelectedTitle(title);
-    setShowDetails(true);
-    setDetailLoading(true);
-    try {
-      const universal = await fetchUniversalTitle(sessionToken, title.id, title);
-      setUniversalTitle(universal);
-    } catch (detailError) {
-      setUniversalTitle(null);
-      setError(detailError instanceof Error ? detailError.message : "Failed to load full details");
+      setDiscoverFeed(result);
+    } catch {
+      // silently degrade — falls back to the legacy trending/for-you/collections
+      // triple below if this endpoint is unreachable.
     } finally {
-      setDetailLoading(false);
+      setDiscoverFeedLoading(false);
     }
   }
 
-  function openComposer(title: Pick<Title, "id" | "title" | "poster_url" | "tmdb_rating">) {
-    setSelectedTitle((current) => ({
-      tmdb_id: current?.tmdb_id ?? 0,
-      content_type: current?.content_type ?? "movie",
-      genres: current?.genres ?? [],
-      ...current,
-      ...title,
-    }));
-    setComposeCaption("");
-    setComposeRating(title.tmdb_rating ? `${Math.round(title.tmdb_rating)}` : "");
-    setShowPostComposer(true);
-  }
-
-  function openAddToTeam(title: Pick<Title, "id" | "title">) {
-    setAddToTeamTitle({ id: title.id, title: title.title });
-    setShowAddToTeam(true);
-  }
-
-  async function postToSocialWall() {
-    if (!sessionToken || !selectedTitle || isPosting) {
-      return;
-    }
-    setIsPosting(true);
-    try {
-      const event = await apiRequest<FeedEvent>("/feed/wall-posts", {
-        method: "POST",
-        token: sessionToken,
-        body: JSON.stringify({
-          content_title_id: selectedTitle.id,
-          caption: composeCaption.trim() || null,
-          rating: composeRating ? Number(composeRating) : null,
-          share_to_team_id: null,
-        }),
-      });
-      void event;
-      setShowPostComposer(false);
-      setToast("Posted to your Social Wall");
-    } catch (postError) {
-      setError(postError instanceof Error ? postError.message : "Post failed");
-    } finally {
-      setIsPosting(false);
-    }
-  }
-
-  async function requestSmartRecommendation(type: "movie" | "show") {
-    if (quickPickLoading) {
-      return;
-    }
-    setQuickPickType(type);
-    setQuickPickLoading(true);
-    setQuickPick(null);
-    try {
-      const source = type === "movie" ? MOVIE_SMART_PICKS : TV_SMART_PICKS;
-      const queue = type === "movie" ? movieQueue : tvQueue;
-      const nextQueue = queue.length ? queue : shuffleIndices(source.length);
-      const nextIndex = nextQueue[0];
-      const seed = source[nextIndex];
-      const remaining = nextQueue.slice(1);
-      if (type === "movie") {
-        setMovieQueue(remaining.length ? remaining : shuffleIndices(source.length));
-      } else {
-        setTvQueue(remaining.length ? remaining : shuffleIndices(source.length));
-      }
-      const resolved = await resolveTitleByName(seed.title, seed.mediaType);
-      if (!resolved) {
-        setToast("No recommendation available yet");
-        return;
-      }
-      setQuickPick({
-        title: {
-          ...resolved,
-          overview: seed.description || resolved.overview,
-          release_date: resolved.release_date ?? `${seed.year}-01-01`,
-          genres: resolved.genres.length ? resolved.genres : [seed.genre],
-        },
-        reason: seed.reason,
-      });
-    } finally {
-      setQuickPickLoading(false);
-    }
-  }
-
-  const recommendedTitles = useMemo(
-    () => recommendedItems.slice(0, recommendedVisibleCount),
-    [recommendedItems, recommendedVisibleCount]
+  useFocusEffect(
+    useCallback(() => {
+      setIsFocused(true);
+      void loadDiscoverFeed();
+      void loadTrending();       // still fetched for the header backdrop cycling
+      void loadCollections();    // editorial collections stay a separate module
+      void loadRecommendations();
+      void getRecentSearches().then(setRecentSearches);
+      trackEvent("discover_viewed", {});
+      return () => setIsFocused(false);
+    }, [sessionToken])
   );
 
-  const becauseYouSaved = useMemo(() => {
-    const grouped = new Map<string, RecommendationItem[]>();
-    for (const item of recommendedItems) {
-      const key = item.reason || "Inspired by your picks";
-      grouped.set(key, [...(grouped.get(key) ?? []), item]);
-    }
-    return Array.from(grouped.entries()).slice(0, 3);
-  }, [recommendedItems]);
+  // ── Search ────────────────────────────────────────────────────────────────
 
-  const showSearchPrompt = query.trim().length < 3;
-  const showNoResults = query.trim().length >= 3 && !isSearching && results.length === 0;
-  const composerMaxHeight = composerViewportHeight ? Math.floor(composerViewportHeight * 0.88) : undefined;
+  function activateSearch() {
+    setSearchActive(true);
+    void getRecentSearches().then(setRecentSearches);
+    trackEvent("search_opened", { entry_point: "discover" });
+    setTimeout(() => searchInputRef.current?.focus(), 50);
+  }
+
+  function deactivateSearch() {
+    setSearchActive(false);
+    setQuery("");
+    setSearchResults(null);
+    setSearchLoading(false);
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    abortRef.current.cancelled = true;
+    abortRef.current = { cancelled: false };
+  }
+
+  function handleQueryChange(text: string) {
+    setQuery(text);
+    if (!text.trim()) {
+      setSearchResults(null);
+      setSearchLoading(false);
+      return;
+    }
+    if (text.trim().length < 2) return;
+
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setSearchLoading(true);
+
+    const token = abortRef.current;
+    debounceRef.current = setTimeout(async () => {
+      if (!sessionToken || token.cancelled) return;
+      try {
+        const result = await apiRequest<SearchResponse>(
+          `/search/global?q=${encodeURIComponent(text.trim())}`,
+          { token: sessionToken }
+        );
+        if (!token.cancelled) {
+          setSearchResults(result);
+          trackEvent("search_submitted", { query_length: text.trim().length });
+        }
+      } catch {
+        // keep existing results
+      } finally {
+        if (!token.cancelled) setSearchLoading(false);
+      }
+    }, 250);
+  }
+
+  async function handleSearchSubmit() {
+    const q = query.trim();
+    if (!q) return;
+    await addRecentSearch(q);
+    setRecentSearches(await getRecentSearches());
+  }
+
+  async function handleRecentSearchTap(q: string) {
+    setQuery(q);
+    handleQueryChange(q);
+  }
+
+  async function handleRemoveRecent(q: string) {
+    const updated = await removeRecentSearch(q);
+    setRecentSearches(updated);
+  }
+
+  async function handleClearRecents() {
+    await clearRecentSearches();
+    setRecentSearches([]);
+  }
+
+  function handleSearchResultPress(item: SearchResultItem) {
+    trackEvent("search_result_clicked", {
+      entity_type: item.entity_type,
+      source: item.source,
+    });
+    void addRecentSearch(query.trim());
+    if (item.entity_type === "movie" || item.entity_type === "series") {
+      openTitleModal(item.entity_id);
+    } else if (item.entity_type === "collection") {
+      deactivateSearch();
+      // Navigate to collection screen (future route)
+    } else {
+      deactivateSearch();
+    }
+  }
+
+  // ── Title modal ───────────────────────────────────────────────────────────
+
+  async function openTitleModal(titleId: string) {
+    if (!sessionToken) return;
+    setSelectedTitleId(titleId);
+    setTitleLoading(true);
+    setTitleModalVisible(true);
+    try {
+      const ut = await fetchUniversalTitle(sessionToken, titleId);
+      setUniversalTitle(ut);
+    } catch {
+      setTitleModalVisible(false);
+    } finally {
+      setTitleLoading(false);
+    }
+  }
+
+  // ── Computed search results for current tab ────────────────────────────────
+
+  function getTabResults(): SearchResultItem[] {
+    if (!searchResults) return [];
+    switch (searchTab) {
+      case "movies": return searchResults.movies;
+      case "series": return searchResults.series;
+      case "people": return searchResults.people;
+      case "collections": return searchResults.collections;
+      default: {
+        const all = [
+          ...searchResults.movies.slice(0, 4),
+          ...searchResults.series.slice(0, 4),
+          ...searchResults.people.slice(0, 3),
+          ...searchResults.collections.slice(0, 3),
+          ...searchResults.my_stuff.slice(0, 2),
+        ];
+        return all;
+      }
+    }
+  }
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  const HERO_EXPANDED = 190;
+  const HERO_COMPACT = 52;
+
+  const headerHeight = scrollY.interpolate({
+    inputRange: [0, 130],
+    outputRange: [HERO_EXPANDED, HERO_COMPACT],
+    extrapolate: "clamp",
+  });
+
+  const heroContentOpacity = scrollY.interpolate({
+    inputRange: [0, 90],
+    outputRange: [1, 0],
+    extrapolate: "clamp",
+  });
+
+  const compactTitleOpacity = scrollY.interpolate({
+    inputRange: [70, 130],
+    outputRange: [0, 1],
+    extrapolate: "clamp",
+  });
+
+  // Prefer real landscape backdrops; never stretch a poster into a header.
+  // Cycle across the top 3 trending items so the header refreshes each time
+  // the tab regains focus rather than pinning to trending[0] forever.
+  const trendingBackdrop = useCyclingBackdrop([
+    trending?.items[0]?.backdrop_url,
+    trending?.items[1]?.backdrop_url,
+    trending?.items[2]?.backdrop_url,
+  ]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <View style={styles.pageGlow} />
-      <ScrollView
-        ref={rootScrollRef}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={styles.content}
+    <SafeAreaView style={styles.root} edges={["left", "right"]}>
+      {/* Unified Header System brief §7 taxonomy — H1 reinforces navigation.
+          "What's next?" moved to Swipe (where it belongs); Discover's H1 IS
+          "Discover" so the tab bar and page title agree. Same SeenSnapHeader
+          instance used everywhere. */}
+      <SeenSnapHeader
+        title="Discover"
+        subtitle="Films and series chosen for your scene."
+        artworkSource={trendingBackdrop}
+        scrollY={scrollY}
+        fallbackSeed={1}
+      />
+
+      {/* ── Search bar ────────────────────────────────────────────────────── */}
+      <Pressable
+        style={styles.searchBarWrap}
+        onPress={!searchActive ? activateSearch : undefined}
       >
-        <View style={styles.hero}>
-          <View style={styles.logoGlow} />
-          <Animated.View
-            style={[
-              styles.heroNoise,
-              {
-                transform: [
-                  {
-                    translateX: heroDrift.interpolate({
-                      inputRange: [0, 1],
-                      outputRange: [-14, 14],
-                    }),
-                  },
-                ],
-              },
-            ]}
+        <View style={[styles.searchBar, searchActive && styles.searchBarActive]}>
+          <Ionicons
+            name="search"
+            size={14}
+            color={searchActive ? colors.accent : colors.muted2}
+            style={styles.searchIcon}
           />
-          <Image source={require("../../assets/branding/seensnap-logo-white.png")} style={styles.logo} resizeMode="contain" />
-          <Pressable style={styles.bellButton}>
-            <Ionicons name="notifications-outline" size={19} color={colors.ink} />
-          </Pressable>
-          <Text style={styles.heroTitle}>{`Welcome back, ${user?.display_name?.split(" ")[0] ?? "Elizabeth"}.`}</Text>
-          <Text style={styles.heroSubtitle}>Find the scene. Save the feeling.</Text>
-          <Text style={styles.heroMicro}>Track what you love. Discover what's next.</Text>
-        </View>
-
-        <Pressable style={styles.swipeCtaCard} onPress={() => router.push("/what-next")}>
-          <View style={styles.swipeCtaGlow} />
-          <Text style={styles.swipeCtaKicker}>Swipe Discovery</Text>
-          <Text style={styles.swipeCtaTitle}>Not sure what to watch?</Text>
-          <Text style={styles.swipeCtaBody}>Let SeenSnap build a cinematic swipe deck around your taste, your teams, and what you are most likely to love tonight.</Text>
-          <View style={styles.swipeCtaButton}>
-            <Ionicons name="sparkles" size={16} color={colors.background} />
-            <Text style={styles.swipeCtaButtonText}>Open What&apos;s Next?</Text>
-          </View>
-        </Pressable>
-
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Trending</Text>
-          <Text style={styles.sectionSub}>What Scene Snap users are buzzing about right now.</Text>
-        </View>
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.trendingRow}>
-          {TRENDING_SEED.map((item) => (
-            <Pressable
-              key={item.id}
-              style={({ pressed }) => [styles.trendingCard, pressed && styles.pressed]}
-              onPress={() => void openDetailsByName(item.title, item.type)}
-            >
-              {item.posterUrl ? (
-                <Image source={{ uri: item.posterUrl }} style={styles.trendingPoster} />
-              ) : (
-                <View style={styles.trendingPosterFallback} />
-              )}
-              <View style={styles.trendingBody}>
-                <Text style={styles.trendingTag}>{item.tag}</Text>
-                <Text style={styles.trendingTitle}>{item.title}</Text>
-                <Text numberOfLines={2} style={styles.trendingSubtext}>{item.subtext}</Text>
-                <Text style={styles.trendingMeta}>
-                  {item.type === "movie" ? "Movie" : "Show"} · {item.genre}
-                </Text>
-                <View style={styles.actionRow}>
-                  <Pressable
-                    onPress={() => void addToListByName(item.title, item.type)}
-                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="bookmark-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Add to List</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void openDetailsByName(item.title, item.type)}
-                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Details</Text>
-                  </Pressable>
-                </View>
-              </View>
+          <TextInput
+            ref={searchInputRef}
+            style={styles.searchInput}
+            placeholder="Search films, series, people & collections"
+            placeholderTextColor={colors.muted2}
+            value={query}
+            onChangeText={handleQueryChange}
+            onFocus={activateSearch}
+            onSubmitEditing={handleSearchSubmit}
+            returnKeyType="search"
+            autoCorrect={false}
+            autoCapitalize="none"
+          />
+          {searchActive && (
+            <Pressable onPress={deactivateSearch} hitSlop={10}>
+              <Text style={styles.searchCancel}>Cancel</Text>
             </Pressable>
-          ))}
-        </ScrollView>
-
-        <View style={styles.searchModule}>
-          <Text style={styles.searchPrompt}>Start by searching for a title you love, or browse by genre.</Text>
-          <View style={styles.searchBar}>
-            <Animated.View style={{ transform: [{ scale: searchPulse }] }}>
-              <Ionicons name="search" size={18} color={colors.muted} />
-            </Animated.View>
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              onFocus={() => {
-                rootScrollRef.current?.scrollTo({ y: 220, animated: true });
-                if (Platform.OS === "web") {
-                  const el = globalThis.document?.activeElement as HTMLElement | null;
-                  el?.scrollIntoView?.({ block: "center", behavior: "smooth" });
-                }
-              }}
-              autoCapitalize="words"
-              placeholder="Search for a movie or show"
-              placeholderTextColor={colors.muted}
-              style={styles.searchInput}
-            />
-          </View>
-          <View style={styles.genreHeaderRow}>
-            <Text style={styles.genreLabel}>Browse by Genre</Text>
-            {selectedGenre ? (
-              <Pressable
-                onPress={() => {
-                  setSelectedGenre(null);
-                  setGenreResults([]);
-                  setGenreMediaType("all");
-                }}
-              >
-                <Text style={styles.genreClear}>Clear</Text>
-              </Pressable>
-            ) : null}
-          </View>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.genreRow}>
-            {genres.map((genre) => (
-              <Pressable
-                key={genre}
-                style={[styles.genreChip, selectedGenre === genre && styles.genreChipActive]}
-                onPress={() => {
-                  setSelectedGenre(genre);
-                  void loadGenreResults(genre, genreMediaType);
-                }}
-              >
-                <Text style={[styles.genreChipText, selectedGenre === genre && styles.genreChipTextActive]}>{genre}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
+          )}
         </View>
+      </Pressable>
 
-        {selectedGenre ? (
-          <View style={styles.genreResultsModule}>
-            <View style={styles.genreResultsHeader}>
-              <Text style={styles.genreResultsTitle}>{selectedGenre}</Text>
-              <View style={styles.mediaSegmentRow}>
-                {(["all", "movie", "show"] as const).map((segment) => (
-                  <Pressable
-                    key={segment}
-                    style={[styles.mediaSegment, genreMediaType === segment && styles.mediaSegmentActive]}
-                    onPress={() => {
-                      setGenreMediaType(segment);
-                      void loadGenreResults(selectedGenre, segment);
-                    }}
-                  >
-                    <Text style={[styles.mediaSegmentText, genreMediaType === segment && styles.mediaSegmentTextActive]}>
-                      {segment === "all" ? "All" : segment === "movie" ? "Movies" : "Shows"}
-                    </Text>
-                  </Pressable>
-                ))}
-              </View>
-            </View>
-            {genreLoading ? <Text style={styles.infoText}>Loading {selectedGenre}...</Text> : null}
-            {!genreLoading && genreResults.length === 0 ? (
-              <Text style={styles.infoText}>No titles found for this genre yet.</Text>
-            ) : null}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.posterStrip}>
-              {genreResults.slice(0, 14).map((title) => (
-                <Pressable key={`genre-${title.id}`} onPress={() => void openDetails(title)}>
-                  {title.poster_url ? (
-                    <Image source={{ uri: title.poster_url }} style={styles.stripPoster} />
-                  ) : (
-                    <View style={styles.stripPosterFallback} />
-                  )}
+      {/* ── Search active: results ─────────────────────────────────────────── */}
+      {searchActive ? (
+        <View style={styles.searchOverlay}>
+          {/* Type tabs */}
+          {searchResults && (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.tabsScroll}
+              contentContainerStyle={styles.tabsContent}
+            >
+              {SEARCH_TABS.map((tab) => (
+                <Pressable
+                  key={tab.key}
+                  onPress={() => setSearchTab(tab.key)}
+                  style={[styles.tab, searchTab === tab.key && styles.tabActive]}
+                >
+                  <Text style={[styles.tabText, searchTab === tab.key && styles.tabTextActive]}>
+                    {tab.label}
+                  </Text>
                 </Pressable>
               ))}
             </ScrollView>
-          </View>
-        ) : null}
+          )}
 
-        <View style={styles.smartActions}>
-          <Pressable
-            style={[styles.smartButton, quickPickType === "show" && styles.smartButtonActive]}
-            onPress={() => void requestSmartRecommendation("show")}
-          >
-            <Ionicons name="tv-outline" size={16} color={colors.ink} />
-            <Text style={styles.smartButtonText}>Recommend me a TV show</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.smartButton, quickPickType === "movie" && styles.smartButtonActive]}
-            onPress={() => void requestSmartRecommendation("movie")}
-          >
-            <Ionicons name="videocam-outline" size={16} color={colors.ink} />
-            <Text style={styles.smartButtonText}>Recommend me a movie</Text>
-          </Pressable>
-        </View>
-
-        {quickPickLoading ? (
-          <View style={styles.quickPickLoading}>
-            <Text style={styles.sectionSub}>Finding something great for you...</Text>
-          </View>
-        ) : null}
-        {quickPick ? (
-          <View style={styles.quickPickCard}>
-            {quickPick.title.poster_url ? (
-              <Image source={{ uri: quickPick.title.poster_url }} style={styles.quickPickPoster} />
-            ) : (
-              <View style={styles.quickPickPosterFallback} />
-            )}
-            <View style={styles.quickPickCopy}>
-              <Text style={styles.quickPickTitle}>{quickPick.title.title}</Text>
-              <Text style={styles.quickPickMeta}>
-                {(quickPick.title.release_date ? `${new Date(quickPick.title.release_date).getFullYear()} · ` : "") +
-                  `${quickPick.title.content_type === "movie" ? "Movie" : "Show"} · ` +
-                  `${quickPick.title.genres[0] ?? "Featured"}`}
-              </Text>
-              <Text style={styles.quickPickDescription} numberOfLines={3}>
-                {quickPick.title.overview ?? "A strong match based on your recent activity."}
-              </Text>
-              <Text style={styles.quickPickReason}>{quickPick.reason}</Text>
-              <View style={styles.actionRow}>
-                <Pressable onPress={() => openSaveSheet(quickPick.title)} style={styles.actionPill}>
-                  <Ionicons name="bookmark-outline" size={14} color={colors.ink} />
-                  <Text style={styles.actionLabel}>Add to List</Text>
-                </Pressable>
-                <Pressable onPress={() => void openDetails(quickPick.title)} style={styles.actionPill}>
-                  <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
-                  <Text style={styles.actionLabel}>Details</Text>
-                </Pressable>
-              </View>
+          {/* Results */}
+          {searchLoading ? (
+            <View style={styles.searchCenter}>
+              <ActivityIndicator color={colors.accent} size="small" />
             </View>
-          </View>
-        ) : null}
-
-        {showSearchPrompt ? (
-          <View style={styles.promptCard}>
-            <Ionicons name="film-outline" size={17} color={colors.muted} />
-            <Text style={styles.promptText}>Start by searching for a title you love.</Text>
-          </View>
-        ) : null}
-        {showNoResults ? <Text style={styles.infoText}>No exact matches found. Try another title.</Text> : null}
-        {isSearching ? <Text style={styles.infoText}>Searching...</Text> : null}
-        {error ? <Text style={styles.errorText}>{error}</Text> : null}
-
-        {results.map((title) => (
-          <View key={title.id} style={styles.resultCard}>
-            {title.poster_url ? (
-              <Image source={{ uri: title.poster_url }} style={styles.resultPoster} />
-            ) : (
-              <View style={styles.resultPosterFallback} />
-            )}
-            <View style={styles.resultBody}>
-              <Text style={styles.resultTitle}>{title.title}</Text>
-              <Text style={styles.resultMeta}>
-                {(title.release_date ? `${new Date(title.release_date).getFullYear()} · ` : "") +
-                  (title.genres[0] ? `${title.genres[0]} · ` : "") +
-                  (title.content_type === "movie"
-                    ? `${title.runtime_minutes ?? "—"} min`
-                    : `${title.season_count ?? "—"} seasons`)}
-              </Text>
-              <View style={styles.actionRow}>
-                <Pressable
-                  onPress={() => openSaveSheet(title)}
-                  style={({ pressed }) => [
-                    styles.actionPill,
-                    savedIds.has(title.id) && styles.actionPillSaved,
-                    pressed && styles.pressed,
-                  ]}
-                >
-                  <Ionicons
-                    name={savedIds.has(title.id) ? "bookmark" : "bookmark-outline"}
-                    size={14}
-                    color={savedIds.has(title.id) ? colors.accent : colors.ink}
+          ) : searchResults ? (
+            getTabResults().length > 0 ? (
+              <FlatList
+                data={getTabResults()}
+                keyExtractor={(item, i) => `${item.entity_type}-${item.entity_id}-${i}`}
+                renderItem={({ item }) => (
+                  <SearchResultRow
+                    item={item}
+                    onPress={() => handleSearchResultPress(item)}
                   />
-                  <Text style={styles.actionLabel}>Save</Text>
-                </Pressable>
-                <Pressable onPress={() => openComposer(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
-                  <Ionicons name="share-social-outline" size={14} color={colors.ink} />
-                  <Text style={styles.actionLabel}>Post</Text>
-                </Pressable>
-                <Pressable onPress={() => openAddToTeam(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
-                  <Ionicons name="people-outline" size={14} color={colors.ink} />
-                  <Text style={styles.actionLabel}>Team</Text>
-                </Pressable>
-                <Pressable onPress={() => void openDetails(title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
-                  <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
-                  <Text style={styles.actionLabel}>Details</Text>
-                </Pressable>
+                )}
+                ItemSeparatorComponent={() => <View style={styles.separator} />}
+                keyboardShouldPersistTaps="handled"
+                contentContainerStyle={{ paddingBottom: 40 }}
+              />
+            ) : (
+              <View style={styles.searchCenter}>
+                <Text style={styles.emptyTitle}>No results</Text>
+                <Text style={styles.emptyBody}>Try a different title, person, or collection name.</Text>
               </View>
+            )
+          ) : (
+            /* Recent searches */
+            <View style={styles.recentsWrap}>
+              {recentSearches.length > 0 ? (
+                <>
+                  <View style={styles.recentsHeader}>
+                    <Text style={styles.recentsLabel}>RECENT</Text>
+                    <Pressable onPress={handleClearRecents} hitSlop={8}>
+                      <Text style={styles.recentsClear}>Clear all</Text>
+                    </Pressable>
+                  </View>
+                  {recentSearches.map((q) => (
+                    <Pressable
+                      key={q}
+                      style={styles.recentRow}
+                      onPress={() => void handleRecentSearchTap(q)}
+                    >
+                      <Ionicons name="time-outline" size={13} color={colors.muted2} />
+                      <Text style={styles.recentText}>{q}</Text>
+                      <Pressable onPress={() => void handleRemoveRecent(q)} hitSlop={10}>
+                        <Ionicons name="close" size={13} color={colors.muted2} />
+                      </Pressable>
+                    </Pressable>
+                  ))}
+                </>
+              ) : (
+                <View style={styles.searchCenter}>
+                  <Text style={styles.emptyBody}>Search for films, series, or people.</Text>
+                </View>
+              )}
             </View>
-          </View>
-        ))}
-
-        <View style={styles.sectionHeader}>
-          <Text style={styles.sectionTitle}>Recommended for You</Text>
-          <Text style={styles.sectionSub}>Based on what you already saved.</Text>
+          )}
         </View>
-        <ScrollView
-          horizontal
-          keyboardShouldPersistTaps="handled"
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.recommendationRow}
-          onScroll={({ nativeEvent }) => {
-            const { layoutMeasurement, contentOffset, contentSize } = nativeEvent;
-            if (layoutMeasurement.width + contentOffset.x >= contentSize.width - 60) {
-              setRecommendedVisibleCount((prev) => Math.min(prev + 6, 60));
-            }
-          }}
+      ) : (
+        /* ── Discover modules ───────────────────────────────────────────── */
+        <Animated.ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+          onScroll={Animated.event(
+            [{ nativeEvent: { contentOffset: { y: scrollY } } }],
+            { useNativeDriver: false }
+          )}
           scrollEventThrottle={16}
         >
-          {recommendedTitles.map((item) => (
-            <View key={item.title.id} style={styles.recommendationCard}>
-              {item.title.poster_url ? (
-                <Image source={{ uri: item.title.poster_url }} style={styles.recommendationPoster} />
-              ) : (
-                <View style={styles.recommendationPosterFallback} />
-              )}
-              <Text numberOfLines={1} style={styles.recommendationTitle}>{item.title.title}</Text>
-              <Text numberOfLines={1} style={styles.recommendationMeta}>
-                {(item.title.release_date ? `${new Date(item.title.release_date).getFullYear()} · ` : "") +
-                  `${item.title.content_type === "movie" ? "Movie" : "Show"} · ` +
-                  (item.title.genres[0] ? `${item.title.genres[0]} · ` : "") +
-                  (item.title.content_type === "movie"
-                    ? `${item.title.runtime_minutes ?? "—"} min`
-                    : `${item.title.season_count ?? "—"} seasons`)}
-              </Text>
-              <Text numberOfLines={2} style={styles.recommendationDescription}>
-                {item.title.overview ?? "A tailored pick based on your recent saves and activity."}
-              </Text>
-              <Text numberOfLines={2} style={styles.reasonLine}>{item.reason}</Text>
-              <View style={styles.actionRow}>
-                <Pressable
-                  onPress={() => openSaveSheet(item.title)}
-                  style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
+          {/* Primary nav row — quick jumps to the three most-used destinations. */}
+          <View style={styles.quickNavRow}>
+            {[
+              { key: "swipe", label: "Swipe", icon: "layers" as const, route: "/(tabs)/swipe" as const },
+              { key: "my-picks", label: "My Picks", icon: "bookmark" as const, route: "/(tabs)/my-picks" as const },
+              { key: "teams", label: "Watch Teams", icon: "people" as const, route: "/(tabs)/teams" as const },
+            ].map((tile) => (
+              <Pressable
+                key={tile.key}
+                style={({ pressed }) => [styles.quickNavTile, pressed && styles.quickNavTilePressed]}
+                onPress={() => {
+                  trackEvent("discover_quick_nav", { destination: tile.key });
+                  router.push(tile.route);
+                }}
+              >
+                <View style={styles.quickNavIconWrap}>
+                  <Ionicons name={tile.icon} size={22} color={colors.accent} />
+                </View>
+                {/* Single-line label with aggressive auto-shrink so "Watch Teams"
+                    or any future long label never wraps/clips. */}
+                <Text
+                  style={styles.quickNavLabel}
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.5}
                 >
-                  <Ionicons name="bookmark-outline" size={14} color={colors.ink} />
-                  <Text style={styles.actionLabel}>Add to List</Text>
-                </Pressable>
-                <Pressable onPress={() => void openDetails(item.title)} style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}>
-                  <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
-                  <Text style={styles.actionLabel}>Details</Text>
-                </Pressable>
-              </View>
-            </View>
-          ))}
-        </ScrollView>
-
-        {becauseYouSaved.map(([reason, items]) => (
-          <View key={reason} style={styles.subsection}>
-            <Text style={styles.subsectionTitle}>{reason}</Text>
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recommendationRow}>
-              {items.slice(0, 8).map((item) => (
-                <View key={`${reason}-${item.title.id}`} style={styles.miniEditorialCard}>
-                  <Pressable onPress={() => void openDetails(item.title)}>
-                    {item.title.poster_url ? (
-                      <Image source={{ uri: item.title.poster_url }} style={styles.stripPoster} />
-                    ) : (
-                      <View style={styles.stripPosterFallback} />
-                    )}
-                  </Pressable>
-                  <Text numberOfLines={1} style={styles.miniEditorialTitle}>{item.title.title}</Text>
-                  <Pressable
-                    onPress={() => openSaveSheet(item.title)}
-                    style={({ pressed }) => [styles.actionPillCompact, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="bookmark-outline" size={12} color={colors.ink} />
-                    <Text style={styles.actionLabelCompact}>Add to List</Text>
-                  </Pressable>
-                </View>
-              ))}
-            </ScrollView>
-          </View>
-        ))}
-
-        <View style={styles.subsection}>
-          <Text style={styles.sectionTitle}>Awards Season</Text>
-          <Text style={styles.sectionSub}>
-            The year's most talked-about films and performances dominating awards conversation.
-          </Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recommendationRow}>
-            {AWARDS_SEASON_ITEMS.map((item) => (
-              <View key={item.id} style={styles.editorialCard}>
-                <Pressable onPress={() => void openDetailsByName(item.title, item.mediaType)}>
-                  <PosterCardImage
-                    title={item.title}
-                    mediaType={item.mediaType}
-                    uri={resolvedTitleMap[titleKey(item.title, item.mediaType)]?.poster_url ?? null}
-                    fallbackUri={item.poster}
-                    style={styles.editorialPoster}
-                  />
-                </Pressable>
-                <Text style={styles.editorialTitle}>{item.title}</Text>
-                <Text style={styles.editorialMeta}>
-                  {item.year} · {item.mediaType === "movie" ? "Movie" : "Show"} · {item.genre}
+                  {tile.label}
                 </Text>
-                <Text numberOfLines={3} style={styles.editorialDescription}>{item.description}</Text>
-                <View style={styles.actionRow}>
-                  <Pressable
-                    onPress={() => void addToListByName(item.title, item.mediaType)}
-                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="bookmark-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Add to List</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void openDetailsByName(item.title, item.mediaType)}
-                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Details</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-
-        <View style={styles.subsection}>
-          <Text style={styles.sectionTitle}>Double Feature</Text>
-          <Text style={styles.sectionSub}>
-            Curated title pairings that complement each other in tone, theme, or style.
-          </Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.recommendationRow}>
-            {DOUBLE_FEATURE_ITEMS.map((item) => (
-              <View key={item.id} style={styles.editorialCardWide}>
-                <Text style={styles.doubleFeatureTitle}>{item.leftTitle} + {item.rightTitle}</Text>
-                <Text style={styles.editorialMeta}>{item.genre}</Text>
-                <View style={styles.doublePosterRow}>
-                  <Pressable
-                    style={styles.doublePosterColumn}
-                    onPress={() => void openDetailsByName(item.leftTitle, item.leftType)}
-                  >
-                    <PosterCardImage
-                      title={item.leftTitle}
-                      mediaType={item.leftType}
-                      uri={resolvedTitleMap[titleKey(item.leftTitle, item.leftType)]?.poster_url ?? null}
-                      fallbackUri={item.leftPoster}
-                      style={styles.doublePoster}
-                    />
-                    <Text numberOfLines={1} style={styles.doublePosterTitle}>{item.leftTitle}</Text>
-                  </Pressable>
-                  <Pressable
-                    style={styles.doublePosterColumn}
-                    onPress={() => void openDetailsByName(item.rightTitle, item.rightType)}
-                  >
-                    <PosterCardImage
-                      title={item.rightTitle}
-                      mediaType={item.rightType}
-                      uri={resolvedTitleMap[titleKey(item.rightTitle, item.rightType)]?.poster_url ?? null}
-                      fallbackUri={item.rightPoster}
-                      style={styles.doublePoster}
-                    />
-                    <Text numberOfLines={1} style={styles.doublePosterTitle}>{item.rightTitle}</Text>
-                  </Pressable>
-                </View>
-                <Text numberOfLines={3} style={styles.editorialDescription}>{item.description}</Text>
-                <View style={styles.actionRow}>
-                  <Pressable
-                    onPress={() => void addToListByName(item.leftTitle, item.leftType)}
-                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="bookmark-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Add {item.leftTitle}</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void addToListByName(item.rightTitle, item.rightType)}
-                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="bookmark-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Add {item.rightTitle}</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void openDetailsByName(item.leftTitle, item.leftType)}
-                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Open Left</Text>
-                  </Pressable>
-                  <Pressable
-                    onPress={() => void openDetailsByName(item.rightTitle, item.rightType)}
-                    style={({ pressed }) => [styles.actionPill, pressed && styles.pressed]}
-                  >
-                    <Ionicons name="information-circle-outline" size={14} color={colors.ink} />
-                    <Text style={styles.actionLabel}>Open Right</Text>
-                  </Pressable>
-                </View>
-              </View>
-            ))}
-          </ScrollView>
-        </View>
-      </ScrollView>
-
-      <SaveToListSheet
-        visible={showSaveSheet}
-        token={sessionToken}
-        titleId={saveTitleId}
-        source="home"
-        onClose={() => {
-          setShowSaveSheet(false);
-          setSaveTitleId(null);
-        }}
-        onSaved={(listName, alreadySaved) => {
-          if (saveTitleId) {
-            setSavedIds((current) => new Set(current).add(saveTitleId));
-          }
-          void refreshRecommendations();
-          setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
-        }}
-        onError={(message) => setError(message)}
-      />
-
-      <Modal transparent visible={showPostComposer} animationType="slide" onRequestClose={() => setShowPostComposer(false)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setShowPostComposer(false)} />
-        <KeyboardAvoidingView
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-          keyboardVerticalOffset={Platform.OS === "ios" ? 18 : 0}
-          style={styles.composerWrap}
-        >
-          <View style={[styles.sheet, composerMaxHeight ? { maxHeight: composerMaxHeight } : null]}>
-            <Text style={styles.sheetTitle}>Post to Social Wall</Text>
-            <ScrollView
-              ref={composerScrollRef}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={styles.composerScroll}
-            >
-              {selectedTitle?.poster_url ? (
-                <Image source={{ uri: selectedTitle.poster_url }} style={styles.composePoster} />
-              ) : null}
-              <Text style={styles.sheetSubTitle}>{selectedTitle?.title}</Text>
-              <Text style={styles.sheetSubTitle}>TMDB: {selectedTitle?.tmdb_rating ?? "—"}</Text>
-              <TextInput
-                value={composeCaption}
-                onChangeText={setComposeCaption}
-                onFocus={() => composerScrollRef.current?.scrollToEnd({ animated: true })}
-                placeholder="Add caption (optional)"
-                placeholderTextColor={colors.muted}
-                style={styles.textInput}
-                multiline
-              />
-              <TextInput
-                value={composeRating}
-                onChangeText={setComposeRating}
-                onFocus={() => composerScrollRef.current?.scrollToEnd({ animated: true })}
-                placeholder="Add rating (optional)"
-                keyboardType="numeric"
-                placeholderTextColor={colors.muted}
-                style={styles.textInput}
-              />
-            </ScrollView>
-            <View style={styles.composerFooter}>
-              <Pressable onPress={() => setShowPostComposer(false)} style={styles.secondaryButton}>
-                <Text style={styles.secondaryButtonLabel}>Cancel</Text>
               </Pressable>
-              <Pressable onPress={() => void postToSocialWall()} style={styles.primaryButton}>
-                <Text style={styles.primaryButtonLabel}>{isPosting ? "Posting..." : "Post"}</Text>
-              </Pressable>
-            </View>
+            ))}
           </View>
-        </KeyboardAvoidingView>
-      </Modal>
 
-      <UniversalTitleModal
-        visible={showDetails}
-        loading={detailLoading}
-        title={universalTitle}
-        onClose={() => setShowDetails(false)}
-        onSaveTitle={(detail) => {
-          setSaveTitleId(detail.id);
-          setShowSaveSheet(true);
-        }}
-        onPost={(detail) => {
-          openComposer({
-            id: detail.id,
-            title: detail.title,
-            poster_url: detail.posterUrl ?? undefined,
-            tmdb_rating: detail.ratingTmdb ?? undefined,
-          });
-        }}
-        onAddToTeam={(detail) => {
-          openAddToTeam({
-            id: detail.id,
-            title: detail.title,
-          });
-        }}
-      />
+          {/* Dynamic module stack from /discover/feed. Backend decides which
+              modules qualify (§27); client renders in order. Contextual hero
+              gets a dedicated card treatment; every rail-type module renders
+              through the shared rail block. Falls back to a lightweight
+              loading state on first paint. */}
+          {discoverFeedLoading && !discoverFeed ? (
+            <View style={styles.moduleLoading}>
+              <ActivityIndicator color={colors.accent} size="small" />
+            </View>
+          ) : null}
+          {discoverFeed?.modules.map((mod, moduleIndex) => {
+            if (mod.type === "contextual_pick") {
+              const t = mod.item.title;
+              return (
+                <View key={`ctx-${mod.window}-${moduleIndex}`} style={styles.contextualHero}>
+                  <Text style={styles.contextualHeroKicker}>{mod.label.toUpperCase()}</Text>
+                  <Pressable
+                    onPress={() => {
+                      trackEvent("discover_contextual_pick_opened", {
+                        window: mod.window,
+                        mode: mod.mode,
+                        content_id: t.id,
+                        impression_id: mod.item.impression_id,
+                      });
+                      void openTitleModal(t.id);
+                    }}
+                    style={styles.contextualHeroCard}
+                  >
+                    {t.backdrop_url ? (
+                      <Image source={{ uri: t.backdrop_url }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+                    ) : null}
+                    <View style={styles.contextualHeroShade} />
+                    <View style={styles.contextualHeroBody}>
+                      <Text style={styles.contextualHeroTitle} numberOfLines={2}>{t.title}</Text>
+                      {mod.item.reason_template ? (
+                        <Text style={styles.contextualHeroReason} numberOfLines={2}>{mod.item.reason_template}</Text>
+                      ) : null}
+                    </View>
+                  </Pressable>
+                </View>
+              );
+            }
+            // All rail-shaped modules (personalized_rail, because_you,
+            // team_recommendation, trending, exploration_rail).
+            if (!mod.items || mod.items.length === 0) return null;
+            return (
+              <View key={`${mod.type}-${mod.key}-${moduleIndex}`} style={styles.module}>
+                <View style={styles.moduleHeader}>
+                  <View style={{ flex: 1, paddingRight: 12 }}>
+                    <Text style={styles.moduleTitle}>{mod.label}</Text>
+                    {mod.subtitle ? (
+                      <Text style={styles.moduleSubtitle} numberOfLines={1}>{mod.subtitle}</Text>
+                    ) : null}
+                  </View>
+                  {mod.type === "personalized_rail" ? (
+                    <Pressable onPress={() => router.push("/(tabs)/for-you")} hitSlop={10}>
+                      <Text style={styles.seeAll}>SEE ALL</Text>
+                    </Pressable>
+                  ) : null}
+                </View>
+                <FlatList
+                  data={mod.items}
+                  keyExtractor={(item) => `${mod.key}-${item.title.id}`}
+                  horizontal
+                  showsHorizontalScrollIndicator={false}
+                  contentContainerStyle={styles.railContent}
+                  renderItem={({ item, index }) => (
+                    <PosterCard
+                      item={item.title}
+                      onPress={() => {
+                        trackEvent("discover_item_clicked", {
+                          module_type: mod.type,
+                          module_key: mod.key,
+                          content_id: item.title.id,
+                          rank: index + 1,
+                          impression_id: item.impression_id,
+                        });
+                        void openTitleModal(item.title.id);
+                      }}
+                    />
+                  )}
+                />
+              </View>
+            );
+          })}
 
-      <AddToTeamSheet
-        visible={showAddToTeam}
-        token={sessionToken}
-        title={addToTeamTitle}
-        onClose={() => setShowAddToTeam(false)}
-        onAdded={(teamName) => setToast(`Added to ${teamName}`)}
-        onError={(message) => setError(message)}
-      />
+          {/* Modules 4–5: Collections */}
+          {(collectionsLoading || collections.length > 0) && (
+            <View style={styles.module}>
+              <View style={styles.moduleHeader}>
+                <View>
+                  <Text style={styles.moduleTitle}>Collections</Text>
+                </View>
+                <Pressable onPress={() => router.push("/collections")} hitSlop={10}>
+                  <Text style={styles.seeAll}>BROWSE ALL</Text>
+                </Pressable>
+              </View>
 
-      {toast ? (
-        <View style={styles.toast}>
-          <Text style={styles.toastLabel}>{toast}</Text>
-        </View>
-      ) : null}
+              {collectionsLoading ? (
+                <View style={styles.moduleLoading}>
+                  <ActivityIndicator color={colors.accent} size="small" />
+                </View>
+              ) : (
+                <View style={styles.collectionList}>
+                  {collections.map((coll) => (
+                    <CollectionCard
+                      key={coll.slug}
+                      coll={coll}
+                      onPress={() => {
+                        trackEvent("collection_opened", {
+                          collection_id: coll.slug,
+                          entry_point: "discover",
+                          collection_type: coll.collection_type,
+                        });
+                        router.push(`/collections/${coll.slug}`);
+                      }}
+                    />
+                  ))}
+                </View>
+              )}
+            </View>
+          )}
+
+          <View style={{ height: 40 }} />
+        </Animated.ScrollView>
+      )}
+
+      {/* ── Title modal ───────────────────────────────────────────────────── */}
+      {titleModalVisible && (
+        <UniversalTitleModal
+          visible={titleModalVisible}
+          title={universalTitle}
+          loading={titleLoading}
+          onClose={() => {
+            setTitleModalVisible(false);
+            setUniversalTitle(null);
+            setSelectedTitleId(null);
+          }}
+        />
+      )}
     </SafeAreaView>
   );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
+const POSTER_W = 100;
+const POSTER_H = 150;
+const COLLECTION_POSTER_W = 64;
+const COLLECTION_POSTER_H = 96;
+
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: colors.background },
-  pageGlow: {
-    position: "absolute",
-    top: -120,
-    left: -40,
-    width: 300,
-    height: 300,
-    borderRadius: 150,
-    backgroundColor: "#1b3d67",
-    opacity: 0.22,
+  root: {
+    flex: 1,
+    backgroundColor: colors.background,
   },
-  content: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: 120,
-    gap: spacing.md,
-  },
-  hero: {
-    borderRadius: 22,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.xl + 10,
-    alignItems: "center",
-    backgroundColor: "rgba(11, 20, 36, 0.58)",
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  logoGlow: {
-    position: "absolute",
-    top: 18,
-    width: 420,
-    height: 170,
-    borderRadius: 120,
-    backgroundColor: "rgba(244, 196, 48, 0.14)",
-  },
-  heroNoise: {
-    position: "absolute",
-    bottom: -40,
-    left: -20,
-    right: -20,
-    height: 110,
-    borderRadius: 100,
-    backgroundColor: "rgba(32, 53, 82, 0.45)",
-  },
-  logo: { width: 376, height: 132, marginTop: 8, marginBottom: 16 },
-  bellButton: {
-    position: "absolute",
-    right: 14,
-    top: 14,
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    alignItems: "center",
-    justifyContent: "center",
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-  },
-  heroTitle: { marginTop: 16, color: colors.ink, fontSize: 30, fontWeight: "900", textAlign: "center" },
-  heroSubtitle: { marginTop: 6, color: colors.muted, lineHeight: 21, textAlign: "center" },
-  heroMicro: { marginTop: 4, color: colors.ink, opacity: 0.72, textAlign: "center", fontSize: 13 },
-  swipeCtaCard: {
-    marginTop: spacing.md,
-    borderRadius: 28,
-    padding: spacing.xl,
-    backgroundColor: "#182843",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+  // Living hero header
+  heroShell: {
     overflow: "hidden",
-    gap: spacing.sm,
+    backgroundColor: colors.background,
   },
-  swipeCtaGlow: {
+  backdropShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(7,11,18,0.55)",
+  },
+  backdropShadeLeft: {
     position: "absolute",
-    top: -50,
-    right: -20,
-    width: 180,
-    height: 180,
-    borderRadius: 90,
-    backgroundColor: "rgba(244,196,48,0.16)",
+    left: 0,
+    top: 0,
+    bottom: 0,
+    width: "55%",
+    backgroundColor: "rgba(7,11,18,0.72)",
   },
-  swipeCtaKicker: {
+  heroBody: {
+    position: "absolute",
+    left: 0,
+    bottom: 0,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.md,
+    gap: 5,
+  },
+  compactBar: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    bottom: 0,
+    paddingHorizontal: spacing.lg,
+    paddingBottom: 14,
+    justifyContent: "flex-end",
+  },
+  compactTitle: {
+    fontFamily: fonts.sansBold,
+    fontSize: 16,
+    color: colors.ink,
+    letterSpacing: -0.2,
+  },
+  heroEyebrow: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.5,
     color: colors.accent,
     textTransform: "uppercase",
-    letterSpacing: 1.2,
-    fontSize: 12,
-    fontWeight: "800",
   },
-  swipeCtaTitle: {
+  heroTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 32,
+    lineHeight: 34,
     color: colors.ink,
-    fontSize: 24,
-    lineHeight: 29,
-    fontWeight: "900",
+    letterSpacing: -0.5,
   },
-  swipeCtaBody: {
-    color: colors.muted,
-    fontSize: 14,
-    lineHeight: 21,
-    maxWidth: "92%",
-  },
-  swipeCtaButton: {
-    marginTop: spacing.xs,
-    alignSelf: "flex-start",
-    borderRadius: radii.pill,
-    backgroundColor: colors.accent,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-  },
-  swipeCtaButtonText: {
-    color: colors.background,
-    fontSize: 13,
-    fontWeight: "900",
-  },
-  trendingRow: { gap: 12, paddingBottom: 4 },
-  trendingCard: {
-    width: 248,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    overflow: "hidden",
-  },
-  trendingPoster: {
-    width: "100%",
-    height: 142,
-    backgroundColor: colors.backgroundElevated,
-  },
-  trendingPosterFallback: {
-    width: "100%",
-    height: 142,
-    backgroundColor: colors.backgroundElevated,
-  },
-  trendingBody: {
-    padding: spacing.sm,
-    gap: 4,
-  },
-  trendingTag: {
-    color: colors.accent,
-    fontSize: 11,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  trendingTitle: {
-    color: colors.ink,
-    fontWeight: "900",
-    fontSize: 17,
-  },
-  trendingSubtext: {
-    color: colors.muted,
-    fontSize: 12,
-    lineHeight: 17,
-  },
-  trendingMeta: {
-    color: colors.ink,
-    opacity: 0.82,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  searchModule: {
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    gap: 8,
-  },
-  searchPrompt: {
-    color: colors.ink,
-    opacity: 0.86,
-    fontSize: 13,
-    lineHeight: 18,
+
+  // Search
+  searchBarWrap: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.sm,
   },
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: spacing.xs,
-    borderRadius: 18,
+    backgroundColor: "rgba(255,255,255,0.05)",
     borderWidth: 1,
-    borderColor: "#3a4f6b",
-    backgroundColor: "#111f35",
-    paddingHorizontal: 14,
-    paddingVertical: 15,
-    minHeight: 54,
-  },
-  searchInput: { flex: 1, color: colors.ink, fontSize: 16 },
-  genreHeaderRow: {
-    marginTop: 6,
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-  },
-  genreLabel: {
-    color: colors.ink,
-    fontWeight: "800",
-    fontSize: 13,
-  },
-  genreClear: {
-    color: colors.accent,
-    fontWeight: "700",
-    fontSize: 12,
-  },
-  genreRow: { gap: 8, paddingTop: 6, paddingBottom: 2 },
-  genreChip: {
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    paddingHorizontal: 12,
-    paddingVertical: 7,
-  },
-  genreChipActive: {
-    borderColor: colors.accent,
-    backgroundColor: "rgba(244, 196, 48, 0.14)",
-  },
-  genreChipText: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  genreChipTextActive: {
-    color: colors.accent,
-  },
-  genreResultsModule: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.sm,
-    gap: 8,
-  },
-  genreResultsHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "center",
-    gap: 8,
-  },
-  genreResultsTitle: {
-    color: colors.ink,
-    fontWeight: "900",
-    fontSize: 16,
-  },
-  mediaSegmentRow: {
-    flexDirection: "row",
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    padding: 2,
-    gap: 2,
-  },
-  mediaSegment: {
-    borderRadius: radii.pill,
-    paddingHorizontal: 8,
-    paddingVertical: 5,
-  },
-  mediaSegmentActive: {
-    backgroundColor: colors.accent,
-  },
-  mediaSegmentText: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: "700",
-  },
-  mediaSegmentTextActive: {
-    color: colors.background,
-  },
-  promptCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-  },
-  promptText: { color: colors.muted },
-  infoText: { color: colors.muted, fontSize: 12 },
-  errorText: { color: colors.danger, fontSize: 12 },
-  resultCard: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.sm,
-    flexDirection: "row",
+    borderColor: rules.default,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 10,
     gap: spacing.sm,
   },
-  resultPoster: { width: 88, height: 132, borderRadius: 11, backgroundColor: colors.backgroundElevated },
-  resultPosterFallback: { width: 88, height: 132, borderRadius: 11, backgroundColor: colors.backgroundElevated },
-  resultBody: { flex: 1, gap: 6 },
-  resultTitle: { color: colors.ink, fontSize: 18, fontWeight: "800" },
-  resultMeta: { color: colors.muted, fontSize: 12 },
-  actionRow: { marginTop: 8, flexDirection: "row", flexWrap: "wrap", gap: 8 },
-  actionPill: {
-    borderRadius: radii.pill,
+  searchBarActive: {
+    borderColor: "rgba(244,196,48,0.4)",
+    backgroundColor: "rgba(255,255,255,0.06)",
+  },
+  searchIcon: { flexShrink: 0 },
+  searchInput: {
+    flex: 1,
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    color: colors.ink,
+    padding: 0,
+  },
+  searchCancel: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    letterSpacing: 0.3,
+    color: colors.accent,
+    textTransform: "uppercase",
+  },
+
+  // Search overlay
+  searchOverlay: {
+    flex: 1,
+  },
+  tabsScroll: {
+    flexGrow: 0,
+    borderBottomWidth: 1,
+    borderBottomColor: rules.default,
+  },
+  tabsContent: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.sm,
+    gap: spacing.sm,
+  },
+  tab: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    paddingVertical: 7,
-    paddingHorizontal: 11,
+    borderColor: rules.default,
+  },
+  tabActive: {
+    borderColor: "rgba(244,196,48,0.5)",
+    backgroundColor: "rgba(244,196,48,0.06)",
+  },
+  tabText: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    letterSpacing: 0.5,
+    color: colors.muted2,
+    textTransform: "uppercase",
+  },
+  tabTextActive: {
+    color: colors.accent,
+  },
+
+  // Search results
+  searchRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-  },
-  actionPillSaved: { borderColor: colors.success },
-  actionLabel: { color: colors.ink, fontSize: 11, fontWeight: "700" },
-  pressed: { transform: [{ scale: 0.98 }], opacity: 0.9 },
-  smartActions: {
-    flexDirection: "row",
-    gap: 8,
-  },
-  smartButton: {
-    flex: 1,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    paddingHorizontal: 10,
+    paddingHorizontal: spacing.lg,
     paddingVertical: 10,
-    flexDirection: "row",
+    gap: spacing.md,
+  },
+  searchRowArt: {
+    width: 40,
+    height: 56,
+    borderRadius: radii.sm,
+    overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.05)",
+  },
+  searchRowArtPlaceholder: {
     alignItems: "center",
     justifyContent: "center",
-    gap: 6,
   },
-  smartButtonActive: {
-    borderColor: colors.accent,
-    backgroundColor: "rgba(244, 196, 48, 0.12)",
-  },
-  smartButtonText: { color: colors.ink, fontWeight: "800", fontSize: 12 },
-  quickPickLoading: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
-  },
-  quickPickCard: {
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.sm,
-    flexDirection: "row",
-    gap: spacing.sm,
-  },
-  quickPickPoster: { width: 88, height: 132, borderRadius: 10, backgroundColor: colors.backgroundElevated },
-  quickPickPosterFallback: { width: 88, height: 132, borderRadius: 10, backgroundColor: colors.backgroundElevated },
-  quickPickCopy: { flex: 1, gap: 6 },
-  quickPickTitle: { color: colors.accent, fontWeight: "900", fontSize: 17 },
-  quickPickMeta: { color: colors.ink, opacity: 0.84, fontSize: 12, fontWeight: "700" },
-  quickPickDescription: { color: colors.muted, fontSize: 12, lineHeight: 18 },
-  quickPickReason: { color: colors.muted, fontSize: 12, lineHeight: 18 },
-  sectionHeader: { marginTop: spacing.sm, gap: 4 },
-  sectionTitle: { color: colors.ink, fontSize: 22, fontWeight: "900" },
-  sectionSub: { color: colors.muted, fontSize: 13 },
-  recommendationRow: { gap: spacing.sm, paddingBottom: spacing.sm },
-  recommendationCard: {
-    width: 180,
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.sm,
-  },
-  recommendationPoster: { width: "100%", aspectRatio: 2 / 3, borderRadius: 11, backgroundColor: colors.backgroundElevated },
-  recommendationPosterFallback: { width: "100%", aspectRatio: 2 / 3, borderRadius: 11, backgroundColor: colors.backgroundElevated },
-  recommendationTitle: { color: colors.ink, fontWeight: "800", marginTop: 8 },
-  recommendationMeta: { color: colors.muted, fontSize: 12, marginTop: 3, minHeight: 34 },
-  recommendationDescription: { color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 4, minHeight: 48 },
-  reasonLine: { color: colors.accent, fontSize: 11, marginTop: 4, fontWeight: "700" },
-  subsection: { gap: 8 },
-  subsectionTitle: { color: colors.ink, fontSize: 16, fontWeight: "800" },
-  posterStrip: { gap: 10, paddingBottom: 4 },
-  stripPoster: {
-    width: 82,
-    height: 122,
-    borderRadius: 10,
-    backgroundColor: colors.backgroundElevated,
-  },
-  stripPosterFallback: {
-    width: 82,
-    height: 122,
-    borderRadius: 10,
-    backgroundColor: colors.backgroundElevated,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  miniEditorialCard: {
-    width: 110,
-    borderRadius: 12,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: 8,
-    gap: 6,
-  },
-  miniEditorialTitle: {
+  searchRowText: { flex: 1, gap: 2 },
+  searchRowTitle: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
     color: colors.ink,
-    fontWeight: "700",
-    fontSize: 11,
   },
-  actionPillCompact: {
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    paddingVertical: 5,
-    paddingHorizontal: 8,
+  searchRowSub: {
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    color: colors.muted2,
+  },
+  searchRowType: {
+    fontFamily: fonts.mono,
+    fontSize: 8,
+    letterSpacing: 0.5,
+    color: colors.muted2,
+    textTransform: "uppercase",
+  },
+
+  // Recent searches
+  recentsWrap: { paddingHorizontal: spacing.lg, paddingTop: spacing.md },
+  recentsHeader: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 4,
+    justifyContent: "space-between",
+    marginBottom: spacing.sm,
   },
-  actionLabelCompact: {
-    color: colors.ink,
-    fontSize: 10,
-    fontWeight: "700",
+  recentsLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1,
+    color: colors.muted2,
+    textTransform: "uppercase",
   },
-  editorialCard: {
-    width: 226,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.sm,
-  },
-  editorialPoster: {
-    width: "100%",
-    aspectRatio: 2 / 3,
-    borderRadius: 10,
-    backgroundColor: colors.backgroundElevated,
-  },
-  editorialPosterFallback: {
-    width: "100%",
-    aspectRatio: 2 / 3,
-    borderRadius: 10,
-    backgroundColor: colors.backgroundElevated,
-  },
-  editorialTitle: {
-    marginTop: 8,
+  recentsClear: {
+    fontFamily: fonts.mono,
+    fontSize: 9,
+    letterSpacing: 0.5,
     color: colors.accent,
-    fontSize: 16,
-    fontWeight: "900",
+    textTransform: "uppercase",
   },
-  editorialMeta: {
-    marginTop: 4,
-    color: colors.ink,
-    opacity: 0.84,
-    fontSize: 12,
-    fontWeight: "700",
+  recentRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: rules.default,
   },
-  editorialDescription: {
-    marginTop: 6,
+  recentText: {
+    flex: 1,
+    fontFamily: fonts.sans,
+    fontSize: 13,
     color: colors.muted,
-    fontSize: 12,
-    lineHeight: 18,
   },
-  editorialCardWide: {
-    width: 320,
-    borderRadius: 16,
+
+  // Discover scroll
+  scroll: { flex: 1 },
+  scrollContent: { paddingBottom: 60 },
+
+  // Magnifying-glass button in the Discover header's right slot (Search entry point).
+  headerSearchBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(255,255,255,0.10)",
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.md,
+    borderColor: "rgba(255,255,255,0.18)",
   },
-  doubleFeatureTitle: {
-    color: colors.accent,
-    fontWeight: "900",
-    fontSize: 17,
-  },
-  doublePosterRow: {
-    marginTop: 10,
+
+  // Primary nav row (Swipe / My Picks / Watch Teams)
+  quickNavRow: {
     flexDirection: "row",
     gap: 10,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.lg,
   },
-  doublePosterColumn: {
+  quickNavTile: {
     flex: 1,
-    gap: 6,
-  },
-  doublePoster: {
-    width: "100%",
-    aspectRatio: 2 / 3,
-    borderRadius: 10,
-    backgroundColor: colors.backgroundElevated,
-  },
-  doublePosterFallback: {
-    width: "100%",
-    aspectRatio: 2 / 3,
-    borderRadius: 10,
-    backgroundColor: colors.backgroundElevated,
-  },
-  doublePosterTitle: {
-    color: colors.ink,
-    fontSize: 12,
-    fontWeight: "700",
-  },
-  pulseCard: {
-    borderRadius: 14,
+    minHeight: 96,
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: rules.default,
     backgroundColor: colors.surface,
-    padding: spacing.sm,
-    gap: 4,
-  },
-  pulseCardFeatured: {
-    backgroundColor: colors.surfaceSoft,
-  },
-  pulseHeader: {
-    flexDirection: "row",
-    justifyContent: "space-between",
     alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
   },
-  teamBadge: {
-    borderRadius: radii.pill,
+  quickNavTilePressed: {
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.04)",
+  },
+  quickNavIconWrap: {
+    width: 34,
+    height: 34,
+    borderRadius: radii.sm,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(244,196,48,0.08)",
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    borderColor: "rgba(244,196,48,0.18)",
+  },
+  quickNavGoldRule: {
+    width: 20,
+    height: 1,
+    backgroundColor: rules.gold,
+  },
+  quickNavLabel: {
+    fontFamily: fonts.serifBold,
+    fontSize: 14,
+    lineHeight: 18,
+    color: colors.ink,
+    letterSpacing: -0.2,
+    textAlign: "center",
+    alignSelf: "stretch", // allow adjustsFontSizeToFit to know the width
+  },
+
+  // Swipe CTA
+  swipeCta: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: "rgba(244,196,48,0.18)",
+    backgroundColor: "rgba(244,196,48,0.035)",
+    overflow: "hidden",
+  },
+  swipeCtaInner: {
+    padding: spacing.lg,
+    flexDirection: "row",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+  },
+  swipeCtaEyebrow: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.5,
+    color: colors.accent,
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
+  swipeCtaTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 22,
+    color: colors.ink,
+    letterSpacing: -0.3,
+    marginBottom: 2,
+  },
+  swipeCtaSub: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: colors.muted,
+  },
+  swipeCtaAction: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
+    paddingBottom: 2,
   },
-  teamBadgeText: {
+  swipeCtaActionText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.5,
     color: colors.accent,
-    fontWeight: "700",
-    fontSize: 11,
+    textTransform: "uppercase",
   },
-  pulseTime: { color: colors.muted, fontSize: 11 },
-  pulseTitle: { color: colors.ink, fontWeight: "700", fontSize: 12 },
-  pulseBody: { color: colors.muted, fontSize: 12 },
-  pulseFooter: {
-    marginTop: 6,
+  swipeCtaGoldBar: {
+    height: 2,
+    backgroundColor: "rgba(244,196,48,0.45)",
+  },
+
+  // Module structure
+  module: {
+    marginBottom: spacing.xl,
+  },
+  moduleHeader: {
     flexDirection: "row",
-    alignItems: "center",
+    alignItems: "flex-end",
+    justifyContent: "space-between",
+    paddingHorizontal: spacing.lg,
+    marginBottom: spacing.md,
+  },
+  moduleMeta: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.5,
+    color: colors.accent,
+    textTransform: "uppercase",
+    marginBottom: 3,
+  },
+  moduleGoldRule: {
+    height: 1,
+    width: 24,
+    backgroundColor: "rgba(244,196,48,0.4)",
+    marginBottom: 4,
+  },
+  moduleTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 22,
+    color: colors.ink,
+    letterSpacing: -0.3,
+  },
+  moduleSubtitle: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: colors.muted,
+    marginTop: 2,
+    letterSpacing: 0.1,
+  },
+  // Contextual hero card — brief §12. Single high-confidence pick keyed to
+  // the current context window ("Movie Night", "Late Night", etc.).
+  contextualHero: {
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.md,
     gap: 8,
   },
-  pulseAvatar: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
-    backgroundColor: colors.backgroundElevated,
+  contextualHeroKicker: {
+    color: colors.accent,
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    letterSpacing: 1.6,
+  },
+  contextualHeroCard: {
+    height: 200,
+    borderRadius: 14,
+    overflow: "hidden",
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: rules.default,
+  },
+  contextualHeroShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(4,8,14,0.60)",
+  },
+  contextualHeroBody: {
+    position: "absolute",
+    left: 16,
+    right: 16,
+    bottom: 16,
+    gap: 6,
+  },
+  contextualHeroTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 26,
+    lineHeight: 30,
+    color: colors.ink,
+    letterSpacing: -0.4,
+  },
+  contextualHeroReason: {
+    fontFamily: fonts.serif,
+    fontStyle: "italic",
+    fontSize: 13,
+    lineHeight: 18,
+    color: "rgba(243,239,229,0.85)",
+  },
+  moduleLoading: {
+    height: POSTER_H,
     alignItems: "center",
     justifyContent: "center",
   },
-  pulseAvatarText: {
-    color: colors.ink,
-    fontWeight: "800",
-    fontSize: 10,
+  moduleEmpty: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
   },
-  pulseMeta: { color: colors.muted, fontSize: 11 },
-  modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(4, 9, 17, 0.72)" },
-  composerWrap: { flex: 1, justifyContent: "flex-end" },
-  sheet: {
-    marginTop: "auto",
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.lg,
-    gap: spacing.sm,
-    paddingBottom: Platform.OS === "ios" ? 28 : 16,
+  seeAll: {
+    fontFamily: fonts.mono,
+    fontSize: 9,
+    letterSpacing: 0.8,
+    color: colors.accent,
+    textTransform: "uppercase",
+    paddingBottom: 3,
   },
-  detailsSheet: { maxHeight: "88%" },
-  sheetTitle: { color: colors.ink, fontSize: 21, fontWeight: "900" },
-  sheetSubTitle: { color: colors.muted, fontSize: 13 },
-  sheetButton: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    paddingVertical: 12,
-    paddingHorizontal: 12,
+
+  // Poster rail
+  railContent: {
+    paddingHorizontal: spacing.lg,
+    gap: spacing.md,
   },
-  sheetButtonLabel: { color: colors.ink, fontWeight: "700" },
-  composePoster: { width: 72, height: 108, borderRadius: 10, backgroundColor: colors.backgroundElevated },
-  composerScroll: { gap: spacing.sm, paddingBottom: spacing.md },
-  textInput: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    color: colors.ink,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
+  posterCard: {
+    width: POSTER_W,
+    gap: 5,
   },
-  switchRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  composerFooter: {
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    paddingTop: spacing.sm,
-    gap: spacing.xs,
+  posterImageWrap: {
+    position: "relative",
   },
-  detailBackdrop: { width: "100%", aspectRatio: 16 / 9, borderRadius: 14, marginBottom: spacing.sm },
-  detailMeta: { color: colors.muted, lineHeight: 20 },
-  detailCopy: { color: colors.ink, marginTop: 6, lineHeight: 21 },
-  primaryButton: {
-    borderRadius: 14,
-    backgroundColor: colors.accent,
-    paddingVertical: 12,
+  posterImage: {
+    width: POSTER_W,
+    height: POSTER_H,
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  posterPlaceholder: {
     alignItems: "center",
+    justifyContent: "center",
   },
-  primaryButtonLabel: { color: colors.background, fontWeight: "800" },
-  secondaryButton: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.accent,
-    paddingVertical: 12,
-    alignItems: "center",
+  posterTitle: {
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    color: colors.muted,
+    lineHeight: 15,
   },
-  secondaryButtonLabel: { color: colors.accent, fontWeight: "800" },
-  tertiaryButton: {
-    borderRadius: 14,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    paddingVertical: 12,
-    alignItems: "center",
+  posterYear: {
+    fontFamily: fonts.mono,
+    fontSize: 9,
+    color: colors.muted2,
+    letterSpacing: 0.3,
   },
-  tertiaryButtonLabel: { color: colors.ink, fontWeight: "700" },
-  toast: {
+  rankBadge: {
     position: "absolute",
-    left: spacing.lg,
-    right: spacing.lg,
-    bottom: 88,
-    borderRadius: 14,
-    backgroundColor: "rgba(46, 196, 182, 0.96)",
-    paddingVertical: 12,
-    paddingHorizontal: 12,
+    top: 5,
+    left: 5,
+    backgroundColor: "rgba(7,11,18,0.85)",
+    paddingHorizontal: 5,
+    paddingVertical: 2,
   },
-  toastLabel: { color: colors.background, textAlign: "center", fontWeight: "800" },
+  rankText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    color: colors.accent,
+    letterSpacing: 0.5,
+  },
+
+  // Collections
+  collectionList: {
+    paddingHorizontal: spacing.lg,
+    gap: spacing.md,
+  },
+  collectionCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: rules.default,
+    padding: spacing.md,
+    gap: spacing.md,
+  },
+  collectionPosters: {
+    flexDirection: "row",
+    width: COLLECTION_POSTER_W * 1.6,
+    height: COLLECTION_POSTER_H,
+    position: "relative",
+    flexShrink: 0,
+  },
+  collectionPoster: {
+    width: COLLECTION_POSTER_W,
+    height: COLLECTION_POSTER_H,
+    position: "absolute",
+    top: 0,
+    backgroundColor: "rgba(255,255,255,0.04)",
+  },
+  collectionInfo: {
+    flex: 1,
+    gap: 3,
+  },
+  collectionType: {
+    fontFamily: fonts.mono,
+    fontSize: 8,
+    letterSpacing: 1,
+    color: colors.accent,
+    textTransform: "uppercase",
+  },
+  collectionTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 16,
+    color: colors.ink,
+    letterSpacing: -0.2,
+  },
+  collectionSub: {
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    color: colors.muted2,
+    lineHeight: 15,
+  },
+
+  // Shared
+  separator: {
+    height: 1,
+    backgroundColor: rules.default,
+    marginHorizontal: spacing.lg,
+  },
+  searchCenter: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: spacing.xl,
+    paddingTop: 60,
+    gap: spacing.sm,
+  },
+  emptyTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 26,
+    color: colors.ink,
+    letterSpacing: -0.3,
+  },
+  emptyBody: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    color: colors.muted,
+    textAlign: "center",
+    lineHeight: 19,
+  },
+  pressed: { opacity: 0.7 },
 });

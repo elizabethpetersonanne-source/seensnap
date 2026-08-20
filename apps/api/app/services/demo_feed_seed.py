@@ -24,6 +24,7 @@ from app.models.social import (
     Watchlist,
     WatchlistItem,
 )
+from app.models.taste import TeamAnalyticsSnapshot
 from app.models.user import User, UserPreferences, UserProfile
 from app.services.demo import DEMO_EMAIL
 from app.services.feed import create_feed_event
@@ -37,21 +38,24 @@ MEDIA_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 LOGO_AVATAR_URL = "/media/brand/seensnap_logo.png"
 SCENESNAP_ACCOUNT_CODES = {"platform_trending", "industry_news", "u_demo"}
 
+def _dicebear(seed: str) -> str:
+    return f"https://api.dicebear.com/7.x/avataaars/png?seed={seed}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf&size=150"
+
 DEMO_USERS = [
-    {"code": "u1", "name": "Maya Chen", "username": "framebyframe", "bio": "Slow cinema. Long takes. Emotional damage.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_framebyframe.jpg"},
-    {"code": "u2", "name": "Jordan Alvarez", "username": "prestigepilled", "bio": "If it wins awards, I’m watching.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_prestigepilled.jpg"},
-    {"code": "u3", "name": "Sofia Romano", "username": "comfortrewatcher", "bio": "Rotating comfort shows forever.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_comfortrewatcher.jpg"},
-    {"code": "u4", "name": "Evan Brooks", "username": "cinematographyguy", "bio": "Directors matter. Cinematography matters more.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_cinematographyguy.jpg"},
-    {"code": "u5", "name": "Leila Haddad", "username": "horrorhead", "bio": "If it’s disturbing, I’ve seen it twice.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_horrorhead.jpg"},
-    {"code": "u6", "name": "Noah Greene", "username": "letterboxdcore", "bio": "Logging everything. Rewatching half.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_letterboxdcore.jpg"},
-    {"code": "u7", "name": "Chloe Park", "username": "softspotlight", "bio": "Messy women & moody lighting.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_softspotlight.jpg"},
-    {"code": "u8", "name": "Marcus Reed", "username": "plotarmorgone", "bio": "Good writing or I’m out.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_plotarmorgone.jpg"},
-    {"code": "u9", "name": "Tessa Morgan", "username": "rewindculture", "bio": "90s kid. Rewatch specialist.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_rewindculture.jpg"},
-    {"code": "u10", "name": "Aiden Clarke", "username": "blockbusterbrain", "bio": "Big screen. Big feelings.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_blockbusterbrain.jpg"},
-    {"code": "v1", "name": "Lena Hart", "username": "LenaHartOfficial", "bio": "Actor. Producer.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_LenaHartOfficial.jpg", "verified": True},
-    {"code": "v2", "name": "Diego Valez", "username": "DiegoValez", "bio": "Director.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_DiegoValez.jpg", "verified": True},
-    {"code": "v3", "name": "Rae Kim", "username": "RaeKimStudio", "bio": "Writer & Showrunner.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_RaeKimStudio.jpg", "verified": True},
-    {"code": "v4", "name": "Northlight Films", "username": "NorthlightFilms", "bio": "Independent studio.", "avatar": "/media/users/HEADSHOT_TO_BE_PROVIDED_NorthlightFilms.jpg", "verified": True},
+    {"code": "u1",  "name": "Maya Chen",       "username": "framebyframe",     "bio": "Slow cinema. Long takes. Emotional damage.",                   "avatar": _dicebear("framebyframe")},
+    {"code": "u2",  "name": "Jordan Alvarez",  "username": "prestigepilled",   "bio": "If it wins awards, I’m watching.",                             "avatar": _dicebear("prestigepilled")},
+    {"code": "u3",  "name": "Sofia Romano",    "username": "comfortrewatcher", "bio": "Rotating comfort shows forever.",                              "avatar": _dicebear("comfortrewatcher")},
+    {"code": "u4",  "name": "Evan Brooks",     "username": "cinematographyguy","bio": "Directors matter. Cinematography matters more.",                "avatar": _dicebear("cinematographyguy")},
+    {"code": "u5",  "name": "Leila Haddad",    "username": "horrorhead",       "bio": "If it’s disturbing, I’ve seen it twice.",                      "avatar": _dicebear("horrorhead")},
+    {"code": "u6",  "name": "Noah Greene",     "username": "letterboxdcore",   "bio": "Logging everything. Rewatching half.",                         "avatar": _dicebear("letterboxdcore")},
+    {"code": "u7",  "name": "Chloe Park",      "username": "softspotlight",    "bio": "Messy women & moody lighting.",                                "avatar": _dicebear("softspotlight")},
+    {"code": "u8",  "name": "Marcus Reed",     "username": "plotarmorgone",    "bio": "Good writing or I’m out.",                                     "avatar": _dicebear("plotarmorgone")},
+    {"code": "u9",  "name": "Tessa Morgan",    "username": "rewindculture",    "bio": "90s kid. Rewatch specialist.",                                 "avatar": _dicebear("rewindculture")},
+    {"code": "u10", "name": "Aiden Clarke",    "username": "blockbusterbrain", "bio": "Big screen. Big feelings.",                                    "avatar": _dicebear("blockbusterbrain")},
+    {"code": "v1",  "name": "Lena Hart",       "username": "LenaHartOfficial", "bio": "Actor. Producer.",                                             "avatar": _dicebear("LenaHartOfficial"),   "verified": True},
+    {"code": "v2",  "name": "Diego Valez",     "username": "DiegoValez",       "bio": "Director.",                                                    "avatar": _dicebear("DiegoValez"),         "verified": True},
+    {"code": "v3",  "name": "Rae Kim",         "username": "RaeKimStudio",     "bio": "Writer & Showrunner.",                                         "avatar": _dicebear("RaeKimStudio"),       "verified": True},
+    {"code": "v4",  "name": "Northlight Films","username": "NorthlightFilms",  "bio": "Independent studio.",                                          "avatar": _dicebear("NorthlightFilms"),    "verified": True},
     {"code": "platform_trending", "name": "Scene Snap Trending", "username": "seensnap_trending", "bio": "What the platform is watching right now.", "avatar": LOGO_AVATAR_URL, "verified": True},
     {"code": "industry_news", "name": "Scene Snap Industry", "username": "industry_news", "bio": "Industry updates and release radar.", "avatar": LOGO_AVATAR_URL},
     {"code": "u_demo", "name": "SeenSnap Demo", "username": "seensnap.demo", "bio": "Official SeenSnap demo account.", "avatar": LOGO_AVATAR_URL},
@@ -60,9 +64,46 @@ DEMO_USERS = [
 FOLLOWING_SEED = ["u1", "u2", "u4", "u7", "u8"]
 
 WATCHLIST_SEED = {
-    "My Picks": ["Past Lives", "The Bear", "Severance", "Portrait of a Lady on Fire"],
-    "Want to Watch": ["Challengers", "Poor Things", "Anatomy of a Fall", "Dune: Part Two"],
-    "Favorites": ["Succession", "Moonlight", "Parasite", "Aftersun"],
+    "My Picks": [
+        "Past Lives",
+        "The Bear",
+        "Severance",
+        "Portrait of a Lady on Fire",
+        "Succession",
+        "Fleabag",
+        "Aftersun",
+        "Arrival",
+        "The Last of Us",
+        "Midsommar",
+        "Her",
+        "The Social Network",
+    ],
+    "Want to Watch": [
+        "Challengers",
+        "Poor Things",
+        "Anatomy of a Fall",
+        "Dune: Part Two",
+        "Saltburn",
+        "Oppenheimer",
+        "Everything Everywhere All At Once",
+        "Blade Runner 2049",
+        "True Detective S1",
+        "Mindhunter",
+    ],
+    "Favorites": [
+        "Moonlight",
+        "Parasite",
+        "Whiplash",
+        "The Godfather",
+        "Mad Men",
+        "Breaking Bad",
+        "Interstellar",
+        "Hereditary",
+        "Get Out",
+        "Roma",
+        "Lost in Translation",
+        "Before Sunrise",
+    ],
 }
 
 WATCH_TEAM_SEED = [
@@ -98,6 +139,84 @@ WATCH_TEAM_SEED = [
         "posts": [
             {"author": "u5", "title": "Midsommar", "caption": "This team was built for daylight horror discourse.", "likes": 132, "comments": ["Absolutely cursed.", "Still thinking about the flower dress."]},
             {"author": "u7", "title": "Portrait of a Lady on Fire", "caption": "Can we talk about that final scene again or is it too soon?", "likes": 121, "comments": ["Never too soon.", "I still haven’t recovered.", "The score destroys me."]},
+        ],
+    },
+    {
+        "name": "Sci-Fi Syndicate",
+        "slug": "demo-scifi-syndicate",
+        "description": "Interstellar travel, dystopian dread, and debating Villeneuve at 2am.",
+        "invite_code": "scifi42",
+        "icon": "🚀",
+        "members": ["u_demo", "u4", "u8", "u10", "u6"],
+        "titles": [
+            {"title": "Blade Runner 2049", "added_by": "u4", "note": "Deakins basically invented a new visual language.", "rank": 1, "score": 9.7, "movement": "same", "weeks_on_list": 8},
+            {"title": "Interstellar", "added_by": "u10", "note": "The docking sequence is still the most intense 10 minutes in cinema.", "rank": 2, "score": 9.3, "movement": "up", "weeks_on_list": 6},
+            {"title": "Dune: Part Two", "added_by": "u_demo", "note": "Villeneuve finally delivered the impossible adaptation.", "rank": 3, "score": 9.1, "movement": "up", "weeks_on_list": 5},
+            {"title": "Arrival", "added_by": "u6", "note": "Time and language as one idea. Nothing else does this.", "rank": 4, "score": 9.0, "movement": "down", "weeks_on_list": 7},
+        ],
+        "posts": [
+            {"author": "u4", "title": "Blade Runner 2049", "caption": "Every time I rewatch this I catch a new Deakins detail. Frame-by-frame filmmaking.", "likes": 203, "comments": ["The protein farm sequence is haunting.", "Shot selection is insane.", "No other cinematographer comes close."]},
+            {"author": "u10", "title": "Dune: Part Two", "caption": "The sandworm ride scene in IMAX was the closest I’ve ever felt to being inside a film.", "likes": 181, "comments": ["IMAX was mandatory.", "Hans Zimmer going feral again.", "Zendaya barely speaks and still owns every scene."]},
+            {"author": "u8", "title": "Arrival", "caption": "If you didn’t cry at the ending you didn’t understand the ending.", "likes": 144, "comments": ["The linguistic theory was so well researched.", "Amy Adams underrated performance.", "That twist recontextualizes everything."]},
+        ],
+    },
+    {
+        "name": "Comfort Rewatch Club",
+        "slug": "demo-comfort-rewatch",
+        "description": "No prestige guilt. Just comfort, cozy rewatches, and seasonal TV rotations.",
+        "invite_code": "cozy99",
+        "icon": "🛋️",
+        "members": ["u_demo", "u3", "u9", "u7", "u1"],
+        "titles": [
+            {"title": "Ted Lasso", "added_by": "u3", "note": "The antidote to every cynical show. Watch it when the world is too much.", "rank": 1, "score": 9.0, "movement": "same", "weeks_on_list": 10},
+            {"title": "Gilmore Girls", "added_by": "u9", "note": "Fall rewatch is non-negotiable.", "rank": 2, "score": 8.8, "movement": "up", "weeks_on_list": 8},
+            {"title": "The Office", "added_by": "u_demo", "note": "Background comfort show since forever.", "rank": 3, "score": 8.6, "movement": "same", "weeks_on_list": 12},
+            {"title": "Friends", "added_by": "u7", "note": "I know every episode. Still watch every episode.", "rank": 4, "score": 8.2, "movement": "down", "weeks_on_list": 9},
+        ],
+        "posts": [
+            {"author": "u3", "title": "Ted Lasso", "caption": "Started a rewatch and remembered how much I needed this show. Optimism as a radical act.", "likes": 178, "comments": ["The Roy Kent arc gets me every time.", "Season 2 finale destroyed me.", "This show is a warm hug."]},
+            {"author": "u9", "title": "Gilmore Girls", "caption": "It’s October so Stars Hollow season begins. No further explanation needed.", "likes": 155, "comments": ["Annual tradition.", "I still think Luke and Lorelai are endgame.", "The dialogue speed is peak television."]},
+            {"author": "u7", "title": "Friends", "caption": "Okay but the Chandler and Monica proposal scene gets better every single rewatch. That writing still holds.", "likes": 122, "comments": ["The ‘she’s my lobster’ rival.", "Chandler’s face when she walks in.", "Early 2000s emotional damage."]},
+        ],
+    },
+    {
+        "name": "A24 Inner Circle",
+        "slug": "demo-a24-inner-circle",
+        "description": "Grief disguised as horror. Longing disguised as cinema. A24 is the studio of the decade.",
+        "invite_code": "a24cult",
+        "icon": "🎞️",
+        "members": ["u_demo", "u1", "u5", "u6", "u7"],
+        "titles": [
+            {"title": "Hereditary", "added_by": "u5", "note": "The most suffocating family drama ever made. Grief as pure horror.", "rank": 1, "score": 9.5, "movement": "same", "weeks_on_list": 7},
+            {"title": "Midsommar", "added_by": "u1", "note": "Daylight shouldn’t be this terrifying.", "rank": 2, "score": 9.2, "movement": "up", "weeks_on_list": 5},
+            {"title": "Aftersun", "added_by": "u6", "note": "This film knows what it’s doing to you the whole time.", "rank": 3, "score": 9.0, "movement": "up", "weeks_on_list": 4},
+            {"title": "Everything Everywhere All At Once", "added_by": "u7", "note": "Chaos and love as the same thing.", "rank": 4, "score": 8.9, "movement": "down", "weeks_on_list": 6},
+            {"title": "Portrait of a Lady on Fire", "added_by": "u_demo", "note": "Visual restraint as emotional maximum.", "rank": 5, "score": 8.8, "movement": "same", "weeks_on_list": 9},
+        ],
+        "posts": [
+            {"author": "u5", "title": "Hereditary", "caption": "Hereditary is not a horror film. It’s a grief film that horror happens to.", "likes": 247, "comments": ["Toni Collette was robbed of every award.", "That dinner scene lingers forever.", "Second watch is even more devastating."]},
+            {"author": "u6", "title": "Aftersun", "caption": "The camcorder footage at the end of Aftersun destroyed something in me that hasn’t healed. Paul Mescal is generational.", "likes": 198, "comments": ["That disco scene is haunting.", "The whole film is a memory playing back wrong.", "I needed days to process this."]},
+            {"author": "u7", "title": "Everything Everywhere All At Once", "caption": "It shouldn’t work. A24 decided to make the most maximalist thing imaginable and somehow it’s their most emotional film.", "likes": 176, "comments": ["Michelle Yeoh is the greatest of all time.", "The hot dog fingers universe broke me.", "Cried for 40 minutes straight."]},
+        ],
+    },
+    {
+        "name": "Crime Scene",
+        "slug": "demo-crime-scene",
+        "description": "Slow burn detectives, unreliable narrators, and writers who respect the audience.",
+        "invite_code": "detect7",
+        "icon": "🔍",
+        "members": ["u_demo", "u8", "u2", "u4", "u9"],
+        "titles": [
+            {"title": "Mindhunter", "added_by": "u8", "note": "The most methodical TV ever made. Fincher touch on every frame.", "rank": 1, "score": 9.6, "movement": "same", "weeks_on_list": 9},
+            {"title": "True Detective S1", "added_by": "u2", "note": "McConaughey monologues as a whole genre.", "rank": 2, "score": 9.4, "movement": "same", "weeks_on_list": 11},
+            {"title": "Breaking Bad", "added_by": "u4", "note": "The only show where every single episode moves the story forward.", "rank": 3, "score": 9.3, "movement": "up", "weeks_on_list": 8},
+            {"title": "Zodiac", "added_by": "u9", "note": "Fincher understood that the unsolved case IS the story.", "rank": 4, "score": 9.1, "movement": "up", "weeks_on_list": 5},
+            {"title": "The Sopranos", "added_by": "u_demo", "note": "Everything descended from this. Nothing has surpassed it.", "rank": 5, "score": 9.0, "movement": "down", "weeks_on_list": 14},
+        ],
+        "posts": [
+            {"author": "u8", "title": "Mindhunter", "caption": "Mindhunter season 3 will never happen and I will never fully accept it. Holden Ford deserved his ending.", "likes": 312, "comments": ["The BTK episodes were chilling.", "Fincher’s pacing is another language.", "Criminally cancelled."]},
+            {"author": "u2", "title": "True Detective S1", "caption": "Rust Cohle’s monologue about time being a flat circle is still the most quotable TV writing in the last 20 years. Change my mind.", "likes": 289, "comments": ["Woody Harrelson was criminally underrated in this.", "The aerial long take at the end of episode 4.", "Dark philosophy as genre entertainment."]},
+            {"author": "u4", "title": "Zodiac", "caption": "Zodiac works because Fincher commits to the anti-catharsis. No resolution. Pure obsession. That IS the movie.", "likes": 201, "comments": ["Robert Graysmith’s spiral is terrifying.", "Still one of the most unsettling watch experiences.", "2:40 that flies by."]},
         ],
     },
 ]
@@ -304,9 +423,11 @@ def _upsert_user(db: Session, user_data: dict) -> User:
     email = DEMO_EMAIL if user_data["code"] == "u_demo" else f"{user_data['username'].lower()}@demo.seensnap.local"
     user = db.scalar(select(User).where(func.lower(User.email) == email))
     if user is None:
-        user = User(email=email, auth_provider="demo")
+        user = User(email=email, auth_provider="demo", is_demo=True)
         db.add(user)
         db.flush()
+    elif not user.is_demo:
+        user.is_demo = True
 
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
     if profile is None:
@@ -461,6 +582,7 @@ def _delete_seeded_teams(db: Session) -> None:
         db.execute(delete(FeedReaction).where(FeedReaction.event_id.in_(team_event_ids)))
         db.execute(delete(FeedComment).where(FeedComment.event_id.in_(team_event_ids)))
     db.execute(delete(FeedEvent).where(FeedEvent.team_id.in_(team_ids)))
+    db.execute(delete(TeamAnalyticsSnapshot).where(TeamAnalyticsSnapshot.team_id.in_(team_ids)))
     db.execute(delete(TeamActivity).where(TeamActivity.team_id.in_(team_ids)))
     db.execute(delete(TeamRanking).where(TeamRanking.team_id.in_(team_ids)))
     db.execute(delete(TeamTitle).where(TeamTitle.team_id.in_(team_ids)))
@@ -607,7 +729,9 @@ def seed_demo_feed() -> None:
         for entry in DEMO_USERS:
             hydrated_entry = dict(entry)
             if hydrated_entry["code"] not in SCENESNAP_ACCOUNT_CODES:
-                hydrated_entry["avatar"] = avatar_map.get(hydrated_entry["code"], hydrated_entry["avatar"])
+                existing_avatar = hydrated_entry.get("avatar", "") or ""
+                if not existing_avatar.startswith("https://"):
+                    hydrated_entry["avatar"] = avatar_map.get(hydrated_entry["code"], existing_avatar)
             users_by_code[entry["code"]] = _upsert_user(db, hydrated_entry)
 
         demo_user_ids = {user.id for user in users_by_code.values()}

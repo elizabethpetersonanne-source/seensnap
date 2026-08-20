@@ -7,6 +7,11 @@ class GoogleAuthRequest(BaseModel):
     id_token: str
 
 
+class AppleAuthRequest(BaseModel):
+    identity_token: str
+    display_name: str | None = None
+
+
 class DevAuthRequest(BaseModel):
     email: str = "dev@seensnap.local"
     display_name: str = "Local Dev"

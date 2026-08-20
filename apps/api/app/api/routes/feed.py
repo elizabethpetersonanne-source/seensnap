@@ -61,7 +61,7 @@ def get_discover_feed(
     db: DbSession,
     limit: int = Query(default=50, ge=1, le=100),
 ) -> list[FeedEventResponse]:
-    events = list_feed_discover(db, limit)
+    events = list_feed_discover(db, current_user.id, limit)
     return _feed_response(events, db, current_user.id)
 
 

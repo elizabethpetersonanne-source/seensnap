@@ -1,3 +1,4 @@
+import * as AppleAuthentication from "expo-apple-authentication";
 import Constants from "expo-constants";
 import * as SecureStore from "expo-secure-store";
 import * as WebBrowser from "expo-web-browser";
@@ -5,12 +6,17 @@ import { useIdTokenAuthRequest } from "expo-auth-session/providers/google";
 import { Platform } from "react-native";
 import { createContext, PropsWithChildren, useContext, useEffect, useState } from "react";
 
+import { deactivatePushToken } from "@/lib/notifications";
+import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
+import { setAnalyticsToken } from "@/lib/analytics";
+
 import { apiRequest } from "@/lib/api";
 
 WebBrowser.maybeCompleteAuthSession();
 
 const SESSION_TOKEN_KEY = "session_token";
 const SESSION_USER_KEY = "session_user";
+const EXPLICIT_SIGN_OUT_KEY = "auth_signed_out";
 const EXPO_PROXY_REDIRECT_URI = "https://auth.expo.io/@gregtusar/seensnap";
 const DEMO_EMAILS = new Set(["demo@seensnap.app", "seensnap.demo@demo.seensnap.local"]);
 const DEMO_SESSION_TOKEN = "expo-go-demo-session";
@@ -41,6 +47,8 @@ type AuthContextValue = {
   user: SessionUser | null;
   isExpoGo: boolean;
   signInWithGoogle: () => Promise<void>;
+  signInWithApple: () => Promise<void>;
+  signInWithDevEmail: (email: string, displayName?: string) => Promise<void>;
   signInDemo: () => Promise<void>;
   signOut: () => Promise<void>;
   refreshSessionUser: () => Promise<void>;
@@ -54,6 +62,12 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [sessionToken, setSessionToken] = useState<string | null>(null);
   const [user, setUser] = useState<SessionUser | null>(null);
   const isExpoGo = Constants.appOwnership === "expo";
+
+  // Keep the analytics module in sync with the current session so trackEvent can
+  // attach the bearer token without needing React context.
+  useEffect(() => {
+    setAnalyticsToken(sessionToken);
+  }, [sessionToken]);
   const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
   const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
   const androidClientId = process.env.EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID;
@@ -83,12 +97,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
   async function persistSession(session: SessionResponse) {
     await SecureStore.setItemAsync(SESSION_TOKEN_KEY, session.access_token);
     await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(session.user));
+    await SecureStore.deleteItemAsync(EXPLICIT_SIGN_OUT_KEY);
   }
 
   useEffect(() => {
     async function loadSession() {
       try {
+        const signedOut = await SecureStore.getItemAsync(EXPLICIT_SIGN_OUT_KEY);
         if (isExpoGo) {
+          if (signedOut === "1") {
+            setSessionToken(null);
+            setUser(null);
+            return;
+          }
           setSessionToken(DEMO_SESSION_TOKEN);
           setUser(EXPO_GO_FALLBACK_USER);
           await persistSession({
@@ -189,8 +210,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
           method: "POST",
           body: JSON.stringify({ id_token: idToken }),
         });
-        await SecureStore.setItemAsync(SESSION_TOKEN_KEY, session.access_token);
-        await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(session.user));
+        await persistSession(session);
         setSessionToken(session.access_token);
         setUser(session.user);
       } finally {
@@ -209,13 +229,59 @@ export function AuthProvider({ children }: PropsWithChildren) {
           method: "POST",
           body: JSON.stringify({ email: "dev@seensnap.local", display_name: "Local Dev" }),
         });
-        await SecureStore.setItemAsync(SESSION_TOKEN_KEY, session.access_token);
-        await SecureStore.setItemAsync(SESSION_USER_KEY, JSON.stringify(session.user));
+        await persistSession(session);
         setSessionToken(session.access_token);
         setUser(session.user);
         return;
       }
       await promptAsync();
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const signInWithDevEmail = async (email: string, displayName?: string) => {
+    const trimmedEmail = email.trim().toLowerCase();
+    if (!trimmedEmail) {
+      throw new Error("Enter an email to continue.");
+    }
+    const trimmedName = displayName?.trim() || trimmedEmail.split("@")[0];
+    setIsLoading(true);
+    try {
+      const session = await apiRequest<SessionResponse>("/auth/dev", {
+        method: "POST",
+        body: JSON.stringify({ email: trimmedEmail, display_name: trimmedName }),
+      });
+      await persistSession(session);
+      setSessionToken(session.access_token);
+      setUser(session.user);
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const signInWithApple = async () => {
+    setIsLoading(true);
+    try {
+      const credential = await AppleAuthentication.signInAsync({
+        requestedScopes: [
+          AppleAuthentication.AppleAuthenticationScope.FULL_NAME,
+          AppleAuthentication.AppleAuthenticationScope.EMAIL,
+        ],
+      });
+      if (!credential.identityToken) {
+        throw new Error("Apple sign-in did not return an identity token");
+      }
+      const displayName = credential.fullName?.givenName
+        ? [credential.fullName.givenName, credential.fullName.familyName].filter(Boolean).join(" ")
+        : undefined;
+      const session = await apiRequest<SessionResponse>("/auth/apple", {
+        method: "POST",
+        body: JSON.stringify({ identity_token: credential.identityToken, display_name: displayName }),
+      });
+      await persistSession(session);
+      setSessionToken(session.access_token);
+      setUser(session.user);
     } finally {
       setIsLoading(false);
     }
@@ -234,9 +300,14 @@ export function AuthProvider({ children }: PropsWithChildren) {
   };
 
   const signOut = async () => {
+    if (sessionToken && !isExpoGo) {
+      await deactivatePushToken(sessionToken).catch(() => {});
+    }
     await Promise.all([
       SecureStore.deleteItemAsync(SESSION_TOKEN_KEY),
       SecureStore.deleteItemAsync(SESSION_USER_KEY),
+      SecureStore.deleteItemAsync(ONBOARDING_COMPLETED_KEY),
+      SecureStore.setItemAsync(EXPLICIT_SIGN_OUT_KEY, "1"),
     ]);
     setSessionToken(null);
     setUser(null);
@@ -279,6 +350,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
         user,
         isExpoGo,
         signInWithGoogle,
+        signInWithApple,
+        signInWithDevEmail,
         signInDemo,
         signOut,
         refreshSessionUser,

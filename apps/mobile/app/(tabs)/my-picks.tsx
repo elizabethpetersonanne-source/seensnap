@@ -10,16 +10,22 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { useFocusEffect } from "@react-navigation/native";
 
-import { Screen } from "@/components/screen";
+import { SSAnimatedRule } from "@/components/ss-animated-rule";
+import { SSPosterContact } from "@/components/ss-poster-contact";
+import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { shareList } from "@/lib/share";
+import { ShareComposerSheet } from "@/components/share-composer-sheet";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
-import { colors, radii, spacing } from "@/constants/theme";
+import { colors, fonts, rules, spacing } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
-import { apiRequest, resolvedApiBaseUrl } from "@/lib/api";
+import { apiRequest, resolveMediaUrl, resolvedApiBaseUrl } from "@/lib/api";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
 type WatchlistSummary = {
@@ -59,9 +65,20 @@ type WatchlistResponse = {
 
 export default function MyPicksScreen() {
   const { sessionToken } = useAuth();
+  const { width: windowWidth } = useWindowDimensions();
+  // Poster grid: 3 columns. Percentage widths + `gap` overflow because gap adds
+  // to total row width; compute exact cell width so 3 tiles actually fit.
+  const gridGap = 8;
+  const gridColumns = 3;
+  const gridHorizontalPadding = spacing.xl * 2; // matches styles.content paddingHorizontal
+  const posterWidth = Math.floor(
+    (windowWidth - gridHorizontalPadding - gridGap * (gridColumns - 1)) / gridColumns,
+  );
   const [lists, setLists] = useState<WatchlistSummary[]>([]);
   const [selectedListId, setSelectedListId] = useState<string | null>(null);
   const [selectedList, setSelectedList] = useState<WatchlistResponse | null>(null);
+  // Share-to-Feed composer for the currently open list.
+  const [showShareToFeed, setShowShareToFeed] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -77,19 +94,31 @@ export default function MyPicksScreen() {
   const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
 
+  const [isFocused, setIsFocused] = useState(false);
+
   const totals = useMemo(() => {
     const totalTitles = lists.reduce((acc, item) => acc + item.title_count, 0);
-    return {
-      totalTitles,
-      listCount: lists.length,
-    };
+    return { totalTitles, listCount: lists.length };
   }, [lists]);
+
+  const savedPosters = useMemo(
+    () => [...new Set(lists.flatMap((l) => l.preview_posters))].slice(0, 4),
+    [lists]
+  );
+  const hasSavedPosters = savedPosters.length >= 2;
 
   const loadLists = useCallback(async () => {
     if (!sessionToken) return;
     const summaries = await apiRequest<WatchlistSummary[]>("/me/watchlist/lists", { token: sessionToken });
     setLists(summaries);
-    const nextSelected = selectedListId && summaries.some((item) => item.id === selectedListId) ? selectedListId : summaries[0]?.id ?? null;
+    const defaultList =
+      summaries.find((s) => s.name.toLowerCase() === "my next watch") ??
+      summaries.find((s) => s.is_default) ??
+      summaries[0];
+    const nextSelected =
+      selectedListId && summaries.some((item) => item.id === selectedListId)
+        ? selectedListId
+        : defaultList?.id ?? null;
     setSelectedListId(nextSelected);
     if (nextSelected) {
       const detail = await apiRequest<WatchlistResponse>(`/me/watchlist/lists/${nextSelected}`, { token: sessionToken });
@@ -101,6 +130,7 @@ export default function MyPicksScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      setIsFocused(true);
       async function load() {
         if (!sessionToken) return;
         setIsLoading(true);
@@ -114,6 +144,7 @@ export default function MyPicksScreen() {
         }
       }
       void load();
+      return () => setIsFocused(false);
     }, [loadLists, sessionToken])
   );
 
@@ -210,64 +241,137 @@ export default function MyPicksScreen() {
   }
 
   return (
-    <Screen title="My Picks" subtitle="Your saved titles, organized by mood, moment, or obsession.">
-      <ScrollView contentContainerStyle={styles.content}>
-        <View style={styles.summary}>
-          <Text style={styles.summaryText}>{totals.totalTitles} saved • {totals.listCount} lists</Text>
-          <Text style={styles.summarySub}>Updated today</Text>
-        </View>
+    <SafeAreaView style={styles.safeArea} edges={[]}>
+      {/* When the user has saved posters, use a cinematic header with a moving
+          poster collage of their real archive behind the title (per audit:
+          "tasteful moving collage from recently saved / representative titles,
+          behind a protected text zone"). Otherwise, the tighter compact header
+          keeps the archive starting sooner. */}
+      {/* Unified Header §7 + §13 — H1 "My Picks", utility subtitle showing
+          real counts. Artwork is a poster mosaic from the user's ACTUAL saves
+          (personalized header). When there are no saves yet the header
+          gracefully falls back to the SeenSnap brand texture. */}
+      <SeenSnapHeader
+        title="My Picks"
+        subtitle={
+          totals.totalTitles > 0
+            ? {
+                text: `${totals.totalTitles} titles · ${totals.listCount} lists`,
+                style: "utility",
+              }
+            : "Your personal archive."
+        }
+        fallbackSeed={7}
+        artworkNode={
+          hasSavedPosters ? (
+            <SSPosterContact posters={savedPosters} active={isFocused} style={{ flex: 1, opacity: 0.55 }} />
+          ) : undefined
+        }
+      />
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
 
-        <View style={styles.headerRow}>
-          <Text style={styles.sectionTitle}>Lists</Text>
-          <Pressable style={styles.createButton} onPress={() => {
-            setListName("");
-            setListDescription("");
-            setShowCreate(true);
-          }}>
-            <Text style={styles.createButtonText}>Create New List</Text>
+        {/* Lists section header */}
+        <View style={styles.sectionHeaderRow}>
+          <Text style={styles.sectionLabel}>SHELVES</Text>
+          <Pressable style={styles.newListBtn} onPress={() => { setListName(""); setListDescription(""); setShowCreate(true); }}>
+            <Ionicons name="add" size={12} color={colors.accent} />
+            <Text style={styles.newListText}>NEW LIST</Text>
           </Pressable>
         </View>
 
+        {/* List cards — horizontal scroll */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.listRow}>
-          {lists.map((list) => (
-            <Pressable
-              key={list.id}
-              style={[styles.listCard, selectedListId === list.id && styles.listCardActive]}
-              onPress={() => void openList(list.id)}
-            >
-              <Text style={styles.listName}>{list.name}</Text>
-              <Text style={styles.listMeta}>{list.title_count} titles</Text>
-              {list.description ? <Text style={styles.listDesc} numberOfLines={2}>{list.description}</Text> : null}
-              <View style={styles.previewRow}>
-                {list.preview_posters.slice(0, 4).map((poster, idx) => (
-                  <Image key={poster + idx} source={{ uri: poster }} style={styles.previewPoster} />
-                ))}
-              </View>
-            </Pressable>
-          ))}
+          {lists.map((list, idx) => {
+            const isActive = selectedListId === list.id;
+            return (
+              <Pressable
+                key={list.id}
+                style={[styles.listCard, isActive && styles.listCardActive]}
+                onPress={() => void openList(list.id)}
+              >
+                {/* Index number */}
+                <Text style={styles.listIndex}>{String(idx + 1).padStart(2, "0")}</Text>
+
+                {/* Poster stack */}
+                <View style={styles.listPosters}>
+                  {list.preview_posters.slice(0, 3).map((poster, pIdx) => (
+                    <Image
+                      key={poster + pIdx}
+                      source={{ uri: resolveMediaUrl(poster) ?? poster }}
+                      style={[styles.stackPoster, pIdx > 0 && { marginLeft: -12 }]}
+                      resizeMode="cover"
+                    />
+                  ))}
+                  {list.preview_posters.length === 0 ? (
+                    <View style={[styles.stackPoster, styles.stackPosterEmpty]}>
+                      <Ionicons name="bookmark-outline" size={14} color={colors.muted2} />
+                    </View>
+                  ) : null}
+                </View>
+
+                {/* Active indicator */}
+                {isActive ? <View style={styles.listActiveRule} /> : null}
+
+                <Text style={styles.listName} numberOfLines={2}>{list.name}</Text>
+                <Text style={styles.listMeta}>{list.title_count} {list.title_count === 1 ? "title" : "titles"}</Text>
+              </Pressable>
+            );
+          })}
         </ScrollView>
 
-        <View style={styles.headerRow}>
-          <Text style={styles.sectionTitle}>{selectedList?.name ?? "Select a list"}</Text>
-          {selectedList ? (
+        {/* Selected list header */}
+        <View style={styles.listDetailRule} />
+        {selectedList ? (
+          <View style={styles.selectedListHeader}>
+            <View style={styles.selectedListInfo}>
+              <Text style={styles.selectedListName}>{selectedList.name}</Text>
+              {selectedList.description ? (
+                <Text style={styles.selectedListDesc}>{selectedList.description}</Text>
+              ) : null}
+            </View>
             <View style={styles.actionsRow}>
+              {/* Post to Feed — Social brief §9. Primary action for surfacing
+                  the list to followers via a real social post (references the
+                  canonical list, not a copy). */}
               <Pressable
-                style={styles.iconButton}
+                style={({ pressed }) => [
+                  styles.sharePill,
+                  pressed && styles.sharePillPressed,
+                ]}
+                hitSlop={8}
                 onPress={() => {
-                  setListName(selectedList.name);
-                  setListDescription(selectedList.description || "");
-                  setShowRename(true);
+                  if (!sessionToken || !selectedList) return;
+                  setShowShareToFeed(true);
                 }}
               >
-                <Ionicons name="create-outline" color={colors.ink} size={16} />
+                <Ionicons name="megaphone-outline" color={colors.accent} size={14} />
+                <Text style={styles.sharePillText}>POST</Text>
+              </Pressable>
+              {/* External Share — native OS share sheet with the public list URL. */}
+              <Pressable
+                hitSlop={8}
+                style={{ paddingHorizontal: 6 }}
+                onPress={() => {
+                  if (!sessionToken || !selectedList) return;
+                  void shareList({
+                    token: sessionToken,
+                    listId: selectedList.id,
+                    listName: selectedList.name,
+                    entryPoint: "my_picks_shelf",
+                  });
+                }}
+              >
+                <Ionicons name="share-outline" color={colors.muted} size={16} />
+              </Pressable>
+              <Pressable onPress={() => { setListName(selectedList.name); setListDescription(selectedList.description || ""); setShowRename(true); }} hitSlop={8}>
+                <Ionicons name="create-outline" color={colors.muted} size={16} />
               </Pressable>
               {!selectedList.is_default ? (
                 <Pressable
-                  style={styles.iconButton}
                   onPress={() =>
                     Alert.alert(
                       "Delete this list?",
-                      "Titles will only be removed from this list, not from your other saved lists.",
+                      "Titles will only be removed from this list.",
                       [
                         { text: "Cancel", style: "cancel" },
                         { text: "Delete", style: "destructive", onPress: () => void deleteList() },
@@ -279,42 +383,68 @@ export default function MyPicksScreen() {
                 </Pressable>
               ) : null}
             </View>
-          ) : null}
-        </View>
+          </View>
+        ) : (
+          <View style={styles.selectedListHeader}>
+            <Text style={styles.selectedListName}>Select a shelf</Text>
+          </View>
+        )}
 
-        {isLoading ? <ActivityIndicator color={colors.accent} /> : null}
-        {error ? <Text style={styles.error}>{error} ({resolvedApiBaseUrl})</Text> : null}
+        {isLoading ? <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.lg }} /> : null}
+        {error ? <Text style={styles.errorText}>{error} ({resolvedApiBaseUrl})</Text> : null}
+
+        {/* Empty state */}
         {!isLoading && selectedList && selectedList.items.length === 0 ? (
-          <View style={styles.empty}>
+          <View style={styles.emptyState}>
+            <Text style={styles.emptyIndex}>00 / 00</Text>
+            <View style={styles.emptyRule} />
             <Text style={styles.emptyTitle}>Nothing here yet</Text>
-            <Text style={styles.emptyBody}>Save titles from Home, the Social Feed, Watch Teams, or Discover to fill this list.</Text>
+            <Text style={styles.emptyBody}>
+              Save titles from Discover, Watch Teams, or the Swipe deck to fill this shelf.
+            </Text>
           </View>
         ) : null}
 
+        {/* Items grid — archive style */}
         <View style={styles.grid}>
           {selectedList?.items.map((item) => (
-            <View key={item.id} style={styles.posterCard}>
-              <Pressable onPress={() => void openDetails(item)}>
-                {item.title.poster_url ? (
-                  <Image source={{ uri: item.title.poster_url }} style={styles.poster} />
-                ) : (
-                  <View style={styles.posterFallback}><Ionicons name="film" size={18} color={colors.muted} /></View>
-                )}
+            <Pressable
+              key={item.id}
+              style={[styles.posterCard, { width: posterWidth }]}
+              onPress={() => void openDetails(item)}
+            >
+              {item.title.poster_url ? (
+                <Image source={{ uri: item.title.poster_url }} style={styles.poster} resizeMode="cover" />
+              ) : (
+                <View style={styles.posterFallback}>
+                  <Ionicons name="film" size={22} color={colors.muted2} />
+                </View>
+              )}
+              {/* Remove button */}
+              <Pressable
+                style={styles.removeBtn}
+                onPress={() => void removeFromList(item)}
+                hitSlop={8}
+              >
+                <Ionicons name="close" size={10} color={colors.muted} />
               </Pressable>
-              <Text numberOfLines={1} style={styles.title}>{item.title.title}</Text>
-              <Text style={styles.meta}>{item.title.content_type}</Text>
-              <Pressable style={styles.removeButton} onPress={() => void removeFromList(item)}>
-                <Text style={styles.removeButtonLabel}>Remove</Text>
-              </Pressable>
-            </View>
+              {/* Metadata */}
+              <View style={styles.posterMeta}>
+                <Text numberOfLines={1} style={styles.posterTitle}>{item.title.title}</Text>
+                <Text style={styles.posterMetaLine}>
+                  {item.title.content_type === "movie" ? "FILM" : "SERIES"}{"  ·  "}{formatSavedDate(item.created_at)}
+                </Text>
+              </View>
+            </Pressable>
           ))}
         </View>
+
       </ScrollView>
 
       <ListEditorModal
         visible={showCreate}
-        title="Create New List"
-        confirmLabel="Create New List"
+        title="New Shelf"
+        confirmLabel="Create"
         name={listName}
         description={listDescription}
         onChangeName={setListName}
@@ -325,8 +455,8 @@ export default function MyPicksScreen() {
 
       <ListEditorModal
         visible={showRename}
-        title="Edit List"
-        confirmLabel="Save Changes"
+        title="Edit Shelf"
+        confirmLabel="Save"
         name={listName}
         description={listDescription}
         onChangeName={setListName}
@@ -344,8 +474,28 @@ export default function MyPicksScreen() {
           setSaveTitleId(detail.id);
           setShowSaveSheet(true);
         }}
-        onPost={() => setShowDetails(false)}
       />
+
+      {selectedList ? (
+        <ShareComposerSheet
+          visible={showShareToFeed}
+          token={sessionToken}
+          sourceSurface="my_picks_shelf"
+          entityType="list"
+          listId={selectedList.id}
+          listName={selectedList.name}
+          listDescription={selectedList.description}
+          itemCount={selectedList.items?.length ?? 0}
+          previewPosters={
+            (selectedList.items ?? [])
+              .map((i) => i.title.poster_url)
+              .filter((u): u is string => Boolean(u))
+              .slice(0, 5)
+          }
+          onClose={() => setShowShareToFeed(false)}
+          onPosted={() => setToast(`Shared "${selectedList.name}" to your feed`)}
+        />
+      ) : null}
 
       <SaveToListSheet
         visible={showSaveSheet}
@@ -356,19 +506,19 @@ export default function MyPicksScreen() {
           setShowSaveSheet(false);
           setSaveTitleId(null);
         }}
-        onSaved={(listName, alreadySaved) => {
+        onSaved={(listNameSaved, alreadySaved) => {
           void loadLists();
-          setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
+          setToast(alreadySaved ? `Already in ${listNameSaved}` : `Saved to ${listNameSaved}`);
         }}
         onError={(message) => setError(message)}
       />
 
       {toast ? (
-        <View style={styles.toast}>
+        <View style={styles.toast} pointerEvents="none">
           <Text style={styles.toastText}>{toast}</Text>
         </View>
       ) : null}
-    </Screen>
+    </SafeAreaView>
   );
 }
 
@@ -397,13 +547,32 @@ function ListEditorModal({
     <Modal transparent visible={visible} animationType="slide" onRequestClose={onCancel}>
       <Pressable style={styles.modalBackdrop} onPress={onCancel} />
       <View style={styles.modalSheet}>
+        <View style={styles.modalHeaderRule} />
         <Text style={styles.modalTitle}>{title}</Text>
-        <TextInput value={name} onChangeText={onChangeName} placeholder="List name" placeholderTextColor={colors.muted} style={styles.input} />
-        <TextInput value={description} onChangeText={onChangeDescription} placeholder="Description (optional)" placeholderTextColor={colors.muted} style={styles.input} />
+        <TextInput
+          value={name}
+          onChangeText={onChangeName}
+          placeholder="Shelf name"
+          placeholderTextColor={colors.muted2}
+          style={styles.input}
+        />
+        <TextInput
+          value={description}
+          onChangeText={onChangeDescription}
+          placeholder="Description (optional)"
+          placeholderTextColor={colors.muted2}
+          style={styles.input}
+        />
         <View style={styles.modalActions}>
-          <Pressable style={styles.modalCancel} onPress={onCancel}><Text style={styles.modalCancelText}>Cancel</Text></Pressable>
-          <Pressable style={[styles.modalConfirm, !name.trim() && styles.modalConfirmDisabled]} onPress={onConfirm} disabled={!name.trim()}>
-            <Text style={styles.modalConfirmText}>{confirmLabel}</Text>
+          <Pressable style={styles.modalCancel} onPress={onCancel}>
+            <Text style={styles.modalCancelText}>CANCEL</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.modalConfirm, !name.trim() && styles.modalConfirmDisabled]}
+            onPress={onConfirm}
+            disabled={!name.trim()}
+          >
+            <Text style={styles.modalConfirmText}>{confirmLabel.toUpperCase()}</Text>
           </Pressable>
         </View>
       </View>
@@ -411,47 +580,324 @@ function ListEditorModal({
   );
 }
 
+function formatSavedDate(isoDate: string): string {
+  const date = new Date(isoDate);
+  const diffDays = Math.floor((Date.now() - date.getTime()) / 86400000);
+  if (diffDays === 0) return "Today";
+  if (diffDays === 1) return "Yesterday";
+  if (diffDays < 7) return `${diffDays}d ago`;
+  if (diffDays < 30) return `${Math.floor(diffDays / 7)}w ago`;
+  return `${Math.floor(diffDays / 30)}mo ago`;
+}
+
 const styles = StyleSheet.create({
-  content: { gap: spacing.md, paddingBottom: spacing.xl },
-  summary: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface, padding: spacing.md },
-  summaryText: { color: colors.ink, fontWeight: "800", fontSize: 14 },
-  summarySub: { color: colors.muted, marginTop: 4, fontSize: 12 },
-  headerRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  sectionTitle: { color: colors.ink, fontSize: 20, fontWeight: "900" },
-  createButton: { borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, paddingHorizontal: 12, paddingVertical: 8 },
-  createButtonText: { color: colors.accent, fontSize: 12, fontWeight: "800" },
-  listRow: { gap: spacing.sm, paddingRight: spacing.lg },
-  listCard: { width: 220, borderRadius: radii.md, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.md, gap: 4 },
-  listCardActive: { borderColor: colors.accent },
-  listName: { color: colors.ink, fontSize: 15, fontWeight: "900" },
-  listMeta: { color: colors.muted, fontSize: 12 },
-  listDesc: { color: colors.muted, fontSize: 12, lineHeight: 17, marginTop: 2 },
-  previewRow: { flexDirection: "row", gap: 6, marginTop: 4 },
-  previewPoster: { width: 32, height: 44, borderRadius: 6, backgroundColor: colors.backgroundElevated },
-  actionsRow: { flexDirection: "row", gap: 8 },
-  iconButton: { width: 32, height: 32, borderRadius: 16, alignItems: "center", justifyContent: "center", borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface },
-  empty: { borderWidth: 1, borderColor: colors.border, borderRadius: radii.md, backgroundColor: colors.surface, padding: spacing.lg },
-  emptyTitle: { color: colors.ink, fontSize: 16, fontWeight: "800" },
-  emptyBody: { color: colors.muted, marginTop: 4, lineHeight: 20 },
-  grid: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
-  posterCard: { width: "48%", borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: colors.surface, padding: 8 },
-  poster: { width: "100%", height: 190, borderRadius: 10, backgroundColor: colors.backgroundElevated },
-  posterFallback: { width: "100%", height: 190, borderRadius: 10, backgroundColor: colors.backgroundElevated, alignItems: "center", justifyContent: "center" },
-  title: { color: colors.ink, marginTop: 8, fontSize: 13, fontWeight: "800" },
-  meta: { color: colors.muted, fontSize: 11, marginTop: 2 },
-  removeButton: { borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundElevated, alignSelf: "flex-start", paddingHorizontal: 10, paddingVertical: 6, marginTop: 8 },
-  removeButtonLabel: { color: colors.ink, fontSize: 11, fontWeight: "700" },
-  error: { color: colors.danger },
+  safeArea: { flex: 1, backgroundColor: colors.background },
+  content: { paddingHorizontal: spacing.xl, paddingTop: spacing.lg, paddingBottom: 120 },
+
+  // Editorial header
+  pageHeader: { gap: 5, paddingBottom: spacing.lg },
+  pageEyebrow: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.4,
+    color: colors.accent,
+  },
+  pageTitle: {
+    fontFamily: fonts.serif,
+    fontSize: 36,
+    lineHeight: 40,
+    color: colors.ink,
+    letterSpacing: -0.5,
+  },
+  headerPosterContact: { height: 110, marginBottom: spacing.sm, borderRadius: 12, overflow: "hidden" },
+
+  // Section header
+  sectionHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingBottom: spacing.md,
+  },
+  sectionLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.4,
+    color: colors.muted2,
+  },
+  newListBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderWidth: 1,
+    borderColor: rules.gold,
+    borderRadius: 2,
+  },
+  newListText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.0,
+    color: colors.accent,
+  },
+
+  // List cards (horizontal scroll)
+  listRow: { gap: 10, paddingBottom: spacing.md, paddingLeft: 0 },
+  listCard: {
+    width: 148,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: rules.default,
+    backgroundColor: colors.surface,
+    borderRadius: 2,
+    gap: 8,
+  },
+  listCardActive: {
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.04)",
+  },
+  listIndex: {
+    fontFamily: fonts.mono,
+    fontSize: 9,
+    letterSpacing: 0.8,
+    color: colors.muted2,
+  },
+  listPosters: { flexDirection: "row", alignItems: "flex-end" },
+  stackPoster: {
+    width: 40,
+    height: 58,
+    borderRadius: 1,
+    backgroundColor: colors.surfaceSoft,
+    overflow: "hidden",
+  },
+  stackPosterEmpty: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  listActiveRule: {
+    height: 2,
+    backgroundColor: colors.accent,
+    marginHorizontal: -12,
+  },
+  listName: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 13,
+    lineHeight: 17,
+    color: colors.ink,
+  },
+  listMeta: {
+    fontFamily: fonts.mono,
+    fontSize: 9,
+    letterSpacing: 0.6,
+    color: colors.muted2,
+  },
+
+  // Selected list
+  listDetailRule: {
+    height: 1,
+    backgroundColor: rules.default,
+    marginBottom: spacing.md,
+  },
+  selectedListHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    gap: spacing.sm,
+    paddingBottom: spacing.md,
+  },
+  selectedListInfo: { flex: 1, gap: 4 },
+  selectedListName: {
+    fontFamily: fonts.serifBold,
+    fontSize: 24,
+    lineHeight: 28,
+    color: colors.ink,
+    letterSpacing: -0.3,
+  },
+  selectedListDesc: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    lineHeight: 18,
+    color: colors.muted,
+  },
+  actionsRow: { flexDirection: "row", alignItems: "center", gap: spacing.md, paddingTop: 4 },
+  sharePill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.06)",
+    borderRadius: 2,
+  },
+  sharePillPressed: {
+    backgroundColor: "rgba(244,196,48,0.14)",
+  },
+  sharePillText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.2,
+    color: colors.accent,
+  },
+
+  // Loading / error
+  errorText: { fontFamily: fonts.sans, color: colors.danger, fontSize: 12, marginTop: spacing.sm },
+
+  // Empty state
+  emptyState: { paddingVertical: spacing.xxl, gap: spacing.md },
+  emptyIndex: {
+    fontFamily: fonts.mono,
+    fontSize: 9,
+    letterSpacing: 1.2,
+    color: colors.muted2,
+  },
+  emptyRule: { height: 1, width: 32, backgroundColor: rules.default },
+  emptyTitle: {
+    fontFamily: fonts.serif,
+    fontSize: 26,
+    lineHeight: 30,
+    color: colors.ink,
+    letterSpacing: -0.4,
+  },
+  emptyBody: {
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.muted,
+    maxWidth: 280,
+  },
+
+  // Grid
+  grid: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 8,
+  },
+  posterCard: {
+    // width is applied inline at render time (computed from window dimensions
+    // so 3 columns actually fit — % + gap overflows on standard phone widths).
+    borderRadius: 2,
+    overflow: "hidden",
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: rules.default,
+  },
+  poster: { width: "100%", aspectRatio: 2 / 3 },
+  posterFallback: {
+    width: "100%",
+    aspectRatio: 2 / 3,
+    backgroundColor: colors.backgroundElevated,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  removeBtn: {
+    position: "absolute",
+    top: 6,
+    right: 6,
+    width: 20,
+    height: 20,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(7,11,18,0.72)",
+    borderWidth: 1,
+    borderColor: rules.default,
+  },
+  posterMeta: { padding: 8, gap: 3 },
+  posterTitle: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 12,
+    lineHeight: 15,
+    color: colors.ink,
+  },
+  posterMetaLine: {
+    fontFamily: fonts.mono,
+    fontSize: 9,
+    letterSpacing: 0.5,
+    color: colors.muted2,
+  },
+
+  // Modal
   modalBackdrop: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5,10,16,0.72)" },
-  modalSheet: { marginTop: "auto", borderTopLeftRadius: 22, borderTopRightRadius: 22, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, padding: spacing.lg, gap: spacing.sm },
-  modalTitle: { color: colors.ink, fontSize: 20, fontWeight: "900" },
-  input: { borderWidth: 1, borderColor: colors.border, borderRadius: 12, backgroundColor: colors.backgroundElevated, color: colors.ink, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14 },
-  modalActions: { flexDirection: "row", gap: spacing.sm },
-  modalCancel: { flex: 1, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.backgroundElevated, alignItems: "center", paddingVertical: 10 },
-  modalCancelText: { color: colors.ink, fontSize: 12, fontWeight: "700" },
-  modalConfirm: { flex: 1, borderRadius: radii.pill, backgroundColor: colors.accent, alignItems: "center", paddingVertical: 10 },
-  modalConfirmDisabled: { opacity: 0.45 },
-  modalConfirmText: { color: colors.background, fontSize: 12, fontWeight: "800" },
-  toast: { position: "absolute", left: spacing.lg, right: spacing.lg, bottom: spacing.xl, borderRadius: radii.pill, borderWidth: 1, borderColor: colors.border, backgroundColor: colors.surface, alignItems: "center", paddingVertical: 10 },
-  toastText: { color: colors.success, fontWeight: "800", fontSize: 12 },
+  modalSheet: {
+    marginTop: "auto",
+    borderTopWidth: 1,
+    borderTopColor: rules.default,
+    borderLeftWidth: 1,
+    borderLeftColor: rules.default,
+    borderRightWidth: 1,
+    borderRightColor: rules.default,
+    backgroundColor: colors.backgroundElevated,
+    padding: spacing.xl,
+    gap: spacing.md,
+    borderTopLeftRadius: 2,
+    borderTopRightRadius: 2,
+  },
+  modalHeaderRule: { height: 1, backgroundColor: rules.gold, marginBottom: spacing.xs },
+  modalTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 22,
+    lineHeight: 26,
+    color: colors.ink,
+    letterSpacing: -0.3,
+  },
+  input: {
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: 2,
+    backgroundColor: colors.surface,
+    color: colors.ink,
+    fontFamily: fonts.sans,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    fontSize: 14,
+  },
+  modalActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
+  modalCancel: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: 2,
+    alignItems: "center",
+    paddingVertical: 11,
+  },
+  modalCancelText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.0,
+    color: colors.muted,
+  },
+  modalConfirm: {
+    flex: 1,
+    borderRadius: 2,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    paddingVertical: 11,
+  },
+  modalConfirmDisabled: { opacity: 0.4 },
+  modalConfirmText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.0,
+    color: colors.paperInk,
+  },
+
+  // Toast
+  toast: {
+    position: "absolute",
+    left: spacing.xl,
+    right: spacing.xl,
+    bottom: 96,
+    borderWidth: 1,
+    borderColor: rules.gold,
+    backgroundColor: colors.surface,
+    alignItems: "center",
+    paddingVertical: 11,
+    borderRadius: 2,
+  },
+  toastText: {
+    fontFamily: fonts.sansMedium,
+    fontSize: 12,
+    color: colors.ink,
+  },
 });

@@ -6,11 +6,13 @@ import {
   Alert,
   Image,
   KeyboardAvoidingView,
+  Linking,
   Modal,
   Platform,
   Pressable,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -18,10 +20,21 @@ import {
 import { useFocusEffect } from "@react-navigation/native";
 
 import { SafeAreaView } from "react-native-safe-area-context";
-import { colors, radii, spacing } from "@/constants/theme";
+import { Avatar } from "@/components/avatar";
+import { SSAnimatedRule } from "@/components/ss-animated-rule";
+import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { SSPosterContact } from "@/components/ss-poster-contact";
+import { colors, fonts, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
+import { useProfileArtwork } from "@/lib/header-artwork";
+import {
+  fetchNotificationPrefs,
+  getNotificationPermissionStatus,
+  type NotificationPrefs,
+  updateNotificationPrefs,
+} from "@/lib/notifications";
 import { STREAMING_SERVICES } from "@/lib/streaming";
 
 type Profile = {
@@ -49,13 +62,16 @@ type Preferences = {
 };
 
 export default function ProfileScreen() {
-  const { sessionToken, user, updateSessionUser } = useAuth();
+  const { sessionToken, user, updateSessionUser, signOut } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [posts, setPosts] = useState<PublicPost[]>([]);
   const [preferences, setPreferences] = useState<Preferences>({ connected_streaming_services: [] });
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [isSavingPreferences, setIsSavingPreferences] = useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [notifPrefs, setNotifPrefs] = useState<NotificationPrefs | null>(null);
+  const [pushPermissionState, setPushPermissionState] = useState<string>("undetermined");
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [showEdit, setShowEdit] = useState(false);
@@ -85,6 +101,10 @@ export default function ProfileScreen() {
           setPreferences(prefs);
           const history = await apiRequest<PublicPost[]>(`/profiles/${me.user_id}/posts`, { token: sessionToken });
           setPosts(history);
+          const notifPrefsData = await fetchNotificationPrefs(sessionToken).catch(() => null);
+          if (notifPrefsData) setNotifPrefs(notifPrefsData);
+          const permStatus = await getNotificationPermissionStatus().catch(() => "undetermined");
+          setPushPermissionState(permStatus);
         } catch (loadError) {
           setError(loadError instanceof Error ? loadError.message : "Failed to load profile");
         } finally {
@@ -96,6 +116,32 @@ export default function ProfileScreen() {
   );
 
   const firstName = useMemo(() => profile?.display_name?.split(" ")[0] ?? "You", [profile?.display_name]);
+
+  // Profile header backdrop — pull from the user's saved-list posters (same
+  // source My Picks uses) so the mosaic reflects their actual taste. Prior
+  // implementation only used posters from posts the user had published,
+  // which meant demo/new accounts fell back to the brand orbs while every
+  // other tab had rich imagery — that's the "doesn't match the rest"
+  // complaint. `useProfileArtwork` returns saved-list posters (§16 in the
+  // Header brief: personalized artwork per destination).
+  const profileArtworkPosters = useProfileArtwork(6);
+
+  const profilePosters = useMemo(() => {
+    // Prefer the shared artwork source (saves). Fall back to the user's own
+    // posts if for some reason /me/watchlist/lists returned nothing.
+    if (profileArtworkPosters.length > 0) return profileArtworkPosters;
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const p of posts) {
+      const url = p.title_poster_url;
+      if (url && !seen.has(url)) {
+        seen.add(url);
+        out.push(url);
+      }
+      if (out.length >= 6) break;
+    }
+    return out;
+  }, [posts]);
 
   function openEditModal() {
     if (!profile) {
@@ -227,6 +273,32 @@ export default function ProfileScreen() {
     }
   }
 
+  async function handleDeleteAccount() {
+    Alert.alert(
+      "Delete Account",
+      "This permanently deletes your SeenSnap account, all picks, swipes, and team history. This cannot be undone.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete Forever",
+          style: "destructive",
+          onPress: async () => {
+            if (!sessionToken) return;
+            setIsDeletingAccount(true);
+            try {
+              await apiRequest("/auth/me", { method: "DELETE", token: sessionToken });
+              await signOut();
+            } catch (deleteError) {
+              setError(deleteError instanceof Error ? deleteError.message : "Account deletion failed");
+            } finally {
+              setIsDeletingAccount(false);
+            }
+          },
+        },
+      ]
+    );
+  }
+
   async function removeAvatar() {
     if (!sessionToken || isUploadingAvatar) {
       return;
@@ -254,7 +326,25 @@ export default function ProfileScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={[]}>
+      {/* Unified Header §7 + §15 — H1 "Profile", utility subtitle "@handle".
+          Fixes the duplicate "SeenSnap Demo" identity block by making the
+          header the destination name and letting the profile body render the
+          user's display name / avatar / bio without repeating the title. */}
+      <SeenSnapHeader
+        title="Profile"
+        subtitle={
+          profile?.username
+            ? { text: `@${profile.username}`, style: "utility" }
+            : undefined
+        }
+        fallbackSeed={8}
+        artworkNode={
+          profilePosters.length > 0 ? (
+            <SSPosterContact posters={profilePosters} active style={{ flex: 1, opacity: 0.5 }} />
+          ) : undefined
+        }
+      />
       <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
         {isLoading ? <ActivityIndicator color={colors.accent} /> : null}
         {error ? <Text style={styles.error}>{error}</Text> : null}
@@ -285,11 +375,12 @@ export default function ProfileScreen() {
               </Pressable>
             </View>
 
-            <View style={styles.bioCard}>
-              <Text style={styles.sectionKicker}>Your Subscriptions</Text>
-              <Text style={styles.sectionLabel}>Streaming Services</Text>
-              <Text style={styles.bioText}>
-                Select the platforms you subscribe to so SeenSnap can show where you can watch instantly.
+            {/* Streaming Services — cleaner inline chip row under a serif section
+                heading (audit remediation: kill the "another large dark box"). */}
+            <View style={styles.streamingSection}>
+              <Text style={styles.streamingSectionTitle}>Streaming</Text>
+              <Text style={styles.streamingSectionHint}>
+                Select platforms you subscribe to so Watch Now knows where to send you.
               </Text>
               <View style={styles.streamingSummaryRow}>
                 {preferences.connected_streaming_services.length ? (
@@ -299,7 +390,11 @@ export default function ProfileScreen() {
                       return null;
                     }
                     return (
-                      <View key={service.id} style={[styles.streamingSummaryChip, { borderColor: service.color }]}>
+                      <View
+                        key={service.id}
+                        style={[styles.streamingSummaryChip, { borderColor: service.color }]}
+                      >
+                        <View style={[styles.streamingDot, { backgroundColor: service.color }]} />
                         <Text style={styles.streamingSummaryText}>{service.name}</Text>
                       </View>
                     );
@@ -339,6 +434,76 @@ export default function ProfileScreen() {
             )}
           </>
         ) : null}
+
+        {/* Notification preferences */}
+        {notifPrefs !== null && (
+          <View style={styles.notifSection}>
+            <Text style={styles.sectionKicker}>NOTIFICATIONS</Text>
+            <View style={styles.sectionRule} />
+
+            {pushPermissionState === "denied" && (
+              <Pressable
+                style={styles.notifDeniedBanner}
+                onPress={() => void Linking.openSettings()}
+              >
+                <Ionicons name="notifications-off-outline" size={14} color={colors.muted} />
+                <Text style={styles.notifDeniedText}>
+                  Notifications are disabled in system settings.{" "}
+                  <Text style={styles.notifDeniedLink}>Open Settings</Text>
+                </Text>
+              </Pressable>
+            )}
+
+            {[
+              { key: "team_activity" as const, label: "Watch Teams", desc: "Invites, joins, and team activity" },
+              { key: "direct_engagement" as const, label: "Replies & Comments", desc: "Direct replies to you" },
+            ].map((pref) => (
+              <View key={pref.key} style={styles.notifRow}>
+                <View style={styles.notifRowText}>
+                  <Text style={styles.notifRowLabel}>{pref.label}</Text>
+                  <Text style={styles.notifRowDesc}>{pref.desc}</Text>
+                </View>
+                <Switch
+                  value={notifPrefs[pref.key]}
+                  onValueChange={async (value) => {
+                    const updated = { ...notifPrefs, [pref.key]: value };
+                    setNotifPrefs(updated);
+                    if (sessionToken) {
+                      await updateNotificationPrefs(sessionToken, { [pref.key]: value }).catch(() => {});
+                    }
+                    trackEvent("notification_preferences_changed", { category: pref.key, enabled: value });
+                  }}
+                  trackColor={{ false: colors.surface, true: colors.accent }}
+                  thumbColor={colors.ink}
+                  ios_backgroundColor={colors.surface}
+                />
+              </View>
+            ))}
+          </View>
+        )}
+
+        {/* Account actions */}
+        <View style={styles.accountSection}>
+          <Text style={styles.sectionKicker}>ACCOUNT</Text>
+          <View style={styles.accountRule} />
+          <Pressable
+            style={({ pressed }) => [styles.accountBtn, pressed && styles.accountBtnPressed]}
+            onPress={() => {
+              void signOut();
+            }}
+          >
+            <Text style={styles.accountBtnLabel}>SIGN OUT</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.accountBtn, styles.accountBtnDanger, pressed && styles.accountBtnPressed]}
+            disabled={isDeletingAccount}
+            onPress={() => void handleDeleteAccount()}
+          >
+            <Text style={[styles.accountBtnLabel, styles.accountBtnLabelDanger]}>
+              {isDeletingAccount ? "DELETING..." : "DELETE ACCOUNT"}
+            </Text>
+          </Pressable>
+        </View>
       </ScrollView>
 
       <Modal visible={showEdit} transparent animationType="slide" onRequestClose={() => setShowEdit(false)}>
@@ -450,17 +615,7 @@ export default function ProfileScreen() {
       ) : null}
     </SafeAreaView>
   );
-}
 
-function Avatar({ uri, label, size }: { uri?: string | null; label: string; size: number }) {
-  if (uri) {
-    return <Image source={{ uri }} style={{ width: size, height: size, borderRadius: size / 2, backgroundColor: colors.surfaceSoft }} />;
-  }
-  return (
-    <View style={[styles.avatarFallback, { width: size, height: size, borderRadius: size / 2 }]}>
-      <Ionicons name="person" color={colors.ink} size={Math.max(size * 0.42, 18)} />
-    </View>
-  );
 }
 
 function Poster({ uri }: { uri?: string | null }) {
@@ -493,407 +648,533 @@ const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.background },
   content: {
     gap: spacing.md,
-    paddingBottom: spacing.xxl,
-    paddingHorizontal: spacing.lg,
+    paddingBottom: 100,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.lg,
   },
-  error: {
-    color: colors.danger,
-    fontSize: 13,
-  },
+  error: { fontFamily: fonts.sans, color: colors.danger, fontSize: 13 },
+
+  // Profile hero — no glow, no rounded glass card
   profileHero: {
-    borderRadius: 24,
     borderWidth: 1,
-    borderColor: "rgba(46,64,87,0.65)",
+    borderColor: rules.default,
     backgroundColor: colors.surface,
-    padding: spacing.lg,
+    padding: spacing.xl,
     alignItems: "center",
     gap: spacing.sm,
-    overflow: "hidden",
+    borderRadius: 4,
     marginTop: spacing.sm,
   },
-  profileHeroGlow: {
-    position: "absolute",
-    top: -60,
-    width: 240,
-    height: 240,
-    borderRadius: 120,
-    backgroundColor: "rgba(244,196,48,0.065)",
-  },
-  profileAvatarWrap: {
-    marginBottom: 4,
-  },
+  profileHeroGlow: { display: "none" },
+  profileAvatarWrap: { marginBottom: 4 },
   profileName: {
+    fontFamily: fonts.serifBold,
     color: colors.ink,
-    fontWeight: "900",
-    fontSize: 24,
-    letterSpacing: -0.5,
+    fontSize: 26,
+    lineHeight: 30,
+    letterSpacing: -0.4,
   },
   profileHandle: {
-    color: colors.muted,
-    fontSize: 14,
-    fontWeight: "600",
+    fontFamily: fonts.mono,
+    color: colors.muted2,
+    fontSize: 11,
+    letterSpacing: 0.5,
   },
   profileBio: {
-    color: colors.ink,
+    fontFamily: fonts.sans,
+    color: colors.muted,
     fontSize: 13,
     lineHeight: 19,
     textAlign: "center",
-    paddingHorizontal: 20,
-    marginTop: 4,
+    paddingHorizontal: 16,
+    marginTop: 2,
   },
   profileStatsRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 20,
-    marginTop: 8,
-    marginBottom: 4,
+    gap: 24,
+    marginTop: 6,
+    marginBottom: 2,
   },
-  profileStat: {
-    alignItems: "center",
-    gap: 2,
-  },
+  profileStat: { alignItems: "center", gap: 2 },
   profileStatNumber: {
+    fontFamily: fonts.serifBold,
     color: colors.ink,
-    fontWeight: "900",
-    fontSize: 20,
+    fontSize: 22,
+    lineHeight: 26,
   },
   profileStatLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: "700",
-    textTransform: "uppercase",
+    fontFamily: fonts.mono,
+    color: colors.muted2,
+    fontSize: 9,
     letterSpacing: 0.8,
+    textTransform: "uppercase",
   },
-  profileStatDivider: {
-    width: 1,
-    height: 32,
-    backgroundColor: colors.border,
+  profileStatDivider: { width: 1, height: 28, backgroundColor: rules.default },
+  profileActions: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginTop: 2,
   },
   editButton: {
-    borderRadius: radii.pill,
     borderWidth: 1,
-    borderColor: colors.accent,
+    borderColor: rules.gold,
     paddingHorizontal: spacing.md,
-    paddingVertical: 10,
+    paddingVertical: 9,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+    borderRadius: 2,
+  },
+  signOutInline: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 9,
+  },
+  signOutInlineText: {
+    fontFamily: fonts.mono,
+    color: colors.muted,
+    fontSize: 9,
+    letterSpacing: 0.8,
   },
   editButtonText: {
+    fontFamily: fonts.monoSemiBold,
     color: colors.accent,
-    fontWeight: "800",
-    fontSize: 12,
+    fontSize: 9,
+    letterSpacing: 1.0,
   },
+
+  // Services section
   bioCard: {
-    backgroundColor: colors.surfaceMuted,
-    borderRadius: radii.md,
-    borderColor: colors.border,
     borderWidth: 1,
+    borderColor: rules.default,
+    backgroundColor: colors.surface,
     padding: spacing.md,
     gap: 8,
+    borderRadius: 2,
   },
   sectionKicker: {
+    fontFamily: fonts.monoSemiBold,
     color: colors.accent,
-    fontSize: 11,
-    fontWeight: "800",
+    fontSize: 9,
+    letterSpacing: 1.4,
     textTransform: "uppercase",
-    letterSpacing: 1.3,
-    marginBottom: 2,
   },
   sectionLabel: {
+    fontFamily: fonts.serifBold,
     color: colors.ink,
-    fontWeight: "800",
-    fontSize: 16,
+    fontSize: 20,
+    lineHeight: 24,
+    letterSpacing: -0.3,
   },
   bioText: {
-    color: colors.ink,
-    lineHeight: 20,
-  },
-  bioMeta: {
+    fontFamily: fonts.sans,
     color: colors.muted,
-    fontSize: 12,
+    lineHeight: 20,
+    fontSize: 13,
   },
-  streamingSummaryRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
+  bioMeta: { fontFamily: fonts.sans, color: colors.muted, fontSize: 12 },
+  // Streaming section — no boxed card wrapper; just tight typography + chip row.
+  streamingSection: {
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
     gap: spacing.sm,
   },
+  streamingSectionTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 22,
+    lineHeight: 26,
+    color: colors.ink,
+    letterSpacing: -0.2,
+  },
+  streamingSectionHint: {
+    fontFamily: fonts.serif,
+    fontStyle: "italic",
+    fontSize: 13,
+    lineHeight: 19,
+    color: colors.muted,
+  },
+  streamingSummaryRow: { flexDirection: "row", flexWrap: "wrap", gap: spacing.xs },
   streamingSummaryChip: {
-    borderRadius: radii.pill,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
     borderWidth: 1,
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 8,
-    backgroundColor: colors.surface,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 2,
+  },
+  streamingDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
   },
   streamingSummaryText: {
+    fontFamily: fonts.monoMedium,
     color: colors.ink,
-    fontSize: 12,
-    fontWeight: "700",
+    fontSize: 10,
+    letterSpacing: 0.4,
   },
+
+  // Posts section
   postsHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    paddingBottom: spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: rules.default,
   },
   postsCount: {
+    fontFamily: fonts.mono,
     color: colors.accent,
-    fontWeight: "800",
-    fontSize: 14,
+    fontSize: 12,
   },
   postCard: {
-    backgroundColor: colors.surface,
-    borderRadius: radii.md,
-    borderColor: colors.border,
-    borderWidth: 1,
-    padding: spacing.md,
+    borderBottomWidth: 1,
+    borderBottomColor: rules.default,
+    paddingVertical: spacing.md,
     flexDirection: "row",
     gap: spacing.md,
   },
   poster: {
-    width: 58,
-    height: 87,
-    borderRadius: 10,
+    width: 52,
+    height: 78,
+    borderRadius: 2,
     backgroundColor: colors.surfaceSoft,
   },
   posterFallback: {
-    width: 58,
-    height: 87,
-    borderRadius: 10,
+    width: 52,
+    height: 78,
+    borderRadius: 2,
     backgroundColor: colors.surfaceSoft,
     alignItems: "center",
     justifyContent: "center",
   },
-  postCopy: {
-    flex: 1,
-    gap: 4,
-  },
+  postCopy: { flex: 1, gap: 4 },
   postTitle: {
-    color: colors.accent,
-    fontWeight: "800",
-    fontSize: 15,
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 14,
+    lineHeight: 18,
   },
   postCaption: {
-    color: colors.ink,
-    lineHeight: 19,
-  },
-  postMetaRow: {
-    marginTop: 6,
-    flexDirection: "row",
-    gap: spacing.md,
-  },
-  postMeta: {
+    fontFamily: fonts.sans,
     color: colors.muted,
-    fontSize: 12,
+    lineHeight: 18,
+    fontSize: 13,
   },
+  postMetaRow: { marginTop: 4, flexDirection: "row", gap: spacing.sm },
+  postMeta: {
+    fontFamily: fonts.mono,
+    color: colors.muted2,
+    fontSize: 10,
+    letterSpacing: 0.3,
+  },
+
   empty: {
-    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceMuted,
+    borderColor: rules.default,
     padding: spacing.lg,
     gap: 8,
+    borderRadius: 2,
   },
   emptyTitle: {
+    fontFamily: fonts.serif,
     color: colors.ink,
-    fontWeight: "800",
-    fontSize: 16,
+    fontSize: 20,
+    lineHeight: 24,
+    letterSpacing: -0.3,
   },
   emptyBody: {
+    fontFamily: fonts.sans,
     color: colors.muted,
     lineHeight: 20,
+    fontSize: 13,
   },
+
+  // Edit modal
   modalBackdrop: {
     flex: 1,
     justifyContent: "flex-end",
-    backgroundColor: "rgba(2, 6, 12, 0.72)",
+    backgroundColor: "rgba(2,6,12,0.72)",
   },
   modalSheet: {
-    backgroundColor: colors.surface,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderColor: colors.border,
+    backgroundColor: colors.backgroundElevated,
     borderTopWidth: 1,
+    borderTopColor: rules.gold,
+    borderLeftWidth: 1,
+    borderLeftColor: rules.default,
+    borderRightWidth: 1,
+    borderRightColor: rules.default,
     maxHeight: "88%",
     paddingTop: spacing.lg,
+    borderTopLeftRadius: 2,
+    borderTopRightRadius: 2,
   },
   modalTitle: {
+    fontFamily: fonts.serifBold,
     color: colors.ink,
-    fontWeight: "900",
-    fontSize: 20,
-    paddingHorizontal: spacing.lg,
+    fontSize: 22,
+    lineHeight: 26,
+    letterSpacing: -0.3,
+    paddingHorizontal: spacing.xl,
+    marginBottom: spacing.sm,
   },
   helperText: {
+    fontFamily: fonts.sans,
     color: colors.muted,
     fontSize: 12,
     lineHeight: 18,
     marginBottom: 4,
   },
-  streamingGrid: {
-    gap: spacing.sm,
-    marginTop: spacing.xs,
-  },
+  streamingGrid: { gap: spacing.xs, marginTop: spacing.xs },
   streamingCard: {
-    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceMuted,
-    padding: spacing.sm,
+    borderColor: rules.default,
+    backgroundColor: colors.surface,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.sm,
+    borderRadius: 2,
   },
   streamingCardSelected: {
-    borderColor: colors.success,
-    backgroundColor: colors.surface,
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.04)",
   },
   streamingLogo: {
-    width: 42,
-    height: 42,
-    borderRadius: 14,
+    width: 36,
+    height: 36,
+    borderRadius: 2,
     alignItems: "center",
     justifyContent: "center",
   },
   streamingLogoText: {
+    fontFamily: fonts.monoSemiBold,
     color: "#fff",
-    fontSize: 11,
-    fontWeight: "900",
+    fontSize: 9,
+    letterSpacing: 0.5,
   },
-  streamingCardCopy: {
-    flex: 1,
-    gap: 2,
-  },
+  streamingCardCopy: { flex: 1, gap: 2 },
   streamingCardTitle: {
+    fontFamily: fonts.sansMedium,
     color: colors.ink,
-    fontSize: 14,
-    fontWeight: "800",
+    fontSize: 13,
   },
   streamingCardMeta: {
-    color: colors.muted,
-    fontSize: 12,
+    fontFamily: fonts.mono,
+    color: colors.muted2,
+    fontSize: 10,
+    letterSpacing: 0.3,
   },
   modalBody: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.lg,
+    paddingHorizontal: spacing.xl,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xl,
     gap: 8,
   },
   inputLabel: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: "700",
+    fontFamily: fonts.monoSemiBold,
+    color: colors.muted2,
+    fontSize: 9,
     textTransform: "uppercase",
-    letterSpacing: 1,
+    letterSpacing: 1.1,
     marginTop: 6,
   },
   avatarEditor: {
     marginBottom: spacing.xs,
     padding: spacing.sm,
-    borderRadius: radii.sm,
+    borderRadius: 2,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
+    borderColor: rules.default,
+    backgroundColor: colors.surface,
     flexDirection: "row",
     alignItems: "center",
     gap: spacing.md,
   },
-  avatarActions: {
-    flex: 1,
-    gap: spacing.xs,
-  },
+  avatarActions: { flex: 1, gap: spacing.xs },
   avatarButton: {
-    borderRadius: radii.pill,
+    borderRadius: 2,
     backgroundColor: colors.accent,
     paddingVertical: 10,
     alignItems: "center",
   },
   avatarButtonText: {
-    color: colors.background,
-    fontWeight: "800",
-    fontSize: 12,
+    fontFamily: fonts.monoSemiBold,
+    color: colors.paperInk,
+    fontSize: 9,
+    letterSpacing: 1.0,
   },
   avatarGhostButton: {
-    borderRadius: radii.pill,
+    borderRadius: 2,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceMuted,
+    borderColor: rules.default,
     paddingVertical: 9,
     alignItems: "center",
   },
   avatarGhostButtonText: {
-    color: colors.ink,
-    fontWeight: "700",
-    fontSize: 12,
+    fontFamily: fonts.monoMedium,
+    color: colors.muted,
+    fontSize: 10,
   },
   input: {
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.sm,
-    backgroundColor: colors.surfaceMuted,
+    borderColor: rules.default,
+    borderRadius: 2,
+    backgroundColor: colors.surface,
+    fontFamily: fonts.sans,
     color: colors.ink,
     paddingHorizontal: spacing.md,
-    paddingVertical: 12,
+    paddingVertical: 11,
+    fontSize: 14,
   },
-  bioInput: {
-    minHeight: 92,
-    textAlignVertical: "top",
-  },
+  bioInput: { minHeight: 88, textAlignVertical: "top" },
   counter: {
-    color: colors.muted,
-    fontSize: 12,
+    fontFamily: fonts.mono,
+    color: colors.muted2,
+    fontSize: 10,
     textAlign: "right",
   },
   modalActions: {
     borderTopWidth: 1,
-    borderTopColor: colors.border,
+    borderTopColor: rules.default,
     flexDirection: "row",
     gap: spacing.sm,
-    padding: spacing.lg,
-    paddingBottom: spacing.lg + (Platform.OS === "ios" ? 8 : 0),
+    padding: spacing.xl,
+    paddingBottom: spacing.xl + (Platform.OS === "ios" ? 8 : 0),
   },
   modalCancel: {
     flex: 1,
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.pill,
+    borderColor: rules.default,
+    borderRadius: 2,
     paddingVertical: 12,
     alignItems: "center",
   },
   modalCancelText: {
-    color: colors.ink,
-    fontWeight: "700",
+    fontFamily: fonts.monoSemiBold,
+    color: colors.muted,
+    fontSize: 9,
+    letterSpacing: 1.0,
   },
   modalSave: {
     flex: 1,
-    borderRadius: radii.pill,
+    borderRadius: 2,
     backgroundColor: colors.accent,
     paddingVertical: 12,
     alignItems: "center",
   },
-  modalSaveDisabled: {
-    opacity: 0.55,
-  },
+  modalSaveDisabled: { opacity: 0.5 },
   modalSaveText: {
-    color: colors.background,
-    fontWeight: "900",
-  },
-  avatarFallback: {
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: colors.surfaceSoft,
+    fontFamily: fonts.monoSemiBold,
+    color: colors.paperInk,
+    fontSize: 9,
+    letterSpacing: 1.0,
   },
   toast: {
     position: "absolute",
-    left: spacing.lg,
-    right: spacing.lg,
+    left: spacing.xl,
+    right: spacing.xl,
     bottom: spacing.xl,
-    backgroundColor: colors.success,
-    borderRadius: radii.pill,
-    paddingVertical: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: rules.gold,
+    borderRadius: 2,
+    paddingVertical: 11,
     paddingHorizontal: spacing.md,
     alignItems: "center",
   },
   toastText: {
-    color: colors.background,
-    fontWeight: "800",
+    fontFamily: fonts.sansMedium,
+    color: colors.ink,
+    fontSize: 12,
+  },
+  accountSection: {
+    gap: spacing.sm,
+    paddingTop: spacing.md,
+  },
+  accountRule: {
+    height: 1,
+    backgroundColor: rules.default,
+    marginBottom: spacing.xs,
+  },
+  accountBtn: {
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: 2,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  accountBtnDanger: {
+    borderColor: "rgba(224,112,112,0.30)",
+  },
+  accountBtnPressed: {
+    opacity: 0.7,
+  },
+  accountBtnLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.muted,
+    fontSize: 10,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+  },
+  accountBtnLabelDanger: {
+    color: colors.danger,
+  },
+  // Notification preferences
+  notifSection: {
+    gap: spacing.sm,
+    paddingTop: spacing.md,
+  },
+  sectionRule: {
+    height: 1,
+    backgroundColor: rules.default,
+    marginBottom: spacing.xs,
+  },
+  notifDeniedBanner: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: 2,
+    paddingVertical: spacing.sm,
+    paddingHorizontal: spacing.md,
+  },
+  notifDeniedText: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: colors.muted,
+    flex: 1,
+  },
+  notifDeniedLink: {
+    color: colors.accent,
+  },
+  notifRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: rules.default,
+  },
+  notifRowText: {
+    flex: 1,
+    gap: 2,
+  },
+  notifRowLabel: {
+    fontFamily: fonts.sansBold,
+    fontSize: 13,
+    color: colors.ink,
+  },
+  notifRowDesc: {
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    color: colors.muted2,
   },
 });

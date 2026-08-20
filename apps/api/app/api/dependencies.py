@@ -32,7 +32,7 @@ def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing bearer token")
 
     token = authorization.removeprefix("Bearer ").strip()
-    if token == DEMO_TOKEN:
+    if token == DEMO_TOKEN and settings.dev_auth_enabled:
         return ensure_demo_user(db)
 
     try:
@@ -47,3 +47,24 @@ def get_current_user(
 
 
 CurrentUser = Annotated[User, Depends(get_current_user)]
+
+
+def get_optional_current_user(
+    db: DbSession,
+    authorization: Annotated[str | None, Header()] = None,
+) -> User | None:
+    """Like get_current_user but returns None instead of 401 when no/invalid token.
+    Used for endpoints that accept unauthenticated calls (e.g. pre-signup analytics)."""
+    if authorization is None or not authorization.startswith("Bearer "):
+        return None
+    token = authorization.removeprefix("Bearer ").strip()
+    if token == DEMO_TOKEN and settings.dev_auth_enabled:
+        return ensure_demo_user(db)
+    try:
+        payload = decode_access_token(token)
+    except jwt.InvalidTokenError:
+        return None
+    return db.scalar(select(User).where(User.id == payload.sub))
+
+
+OptionalCurrentUser = Annotated[User | None, Depends(get_optional_current_user)]

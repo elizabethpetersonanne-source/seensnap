@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, StyleSheet, Switch, Text, TextInput, View } from "react-native";
 
-import { colors, radii, spacing } from "@/constants/theme";
+import { EditorialSheet } from "@/components/editorial-sheet";
+import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
 
 type TeamSummary = {
@@ -83,130 +84,124 @@ export function AddToTeamSheet({ visible, token, title, onClose, onAdded, onErro
   }
 
   return (
-    <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose}>
-      <View style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={styles.sheet}>
-          <Text style={styles.title}>Add to Watch Team</Text>
-          <Text style={styles.subtitle}>{title?.title ?? "Select a title"}</Text>
-          <Text style={styles.label}>Choose a team</Text>
-          <ScrollView style={{ maxHeight: 180 }} contentContainerStyle={{ gap: 6 }}>
-            {teams.map((team) => (
-              <Pressable
-                key={team.id}
-                style={[styles.teamRow, selectedTeamId === team.id && styles.teamRowSelected]}
-                onPress={() => setSelectedTeamId(team.id)}
-              >
-                <Text style={[styles.teamText, selectedTeamId === team.id && styles.teamTextSelected]}>{team.name}</Text>
-              </Pressable>
-            ))}
-          </ScrollView>
-          <TextInput
-            value={note}
-            onChangeText={setNote}
-            placeholder="Why are you adding this?"
-            placeholderTextColor={colors.muted}
-            style={styles.input}
-          />
-          <View style={styles.switchRow}>
-            <Text style={styles.switchLabel}>Also post to team feed</Text>
-            <Switch value={alsoPost} onValueChange={setAlsoPost} trackColor={{ true: colors.accent }} />
-          </View>
-          {localError ? <Text style={styles.error}>{localError}</Text> : null}
-          <Pressable style={[styles.submit, (!selectedTeamId || busy) && styles.submitDisabled]} disabled={!selectedTeamId || busy} onPress={() => void submit()}>
-            <Text style={styles.submitText}>{busy ? "Adding..." : "Add"}</Text>
-          </Pressable>
-        </View>
+    <EditorialSheet
+      visible={visible}
+      onClose={onClose}
+      title="Add to a Watch Team"
+      supporting={title?.title ? `“${title.title}”` : undefined}
+    >
+      <ScrollView style={{ maxHeight: 200 }} contentContainerStyle={{ gap: 6 }}>
+        {teams.map((team) => {
+          const selected = selectedTeamId === team.id;
+          return (
+            <Pressable
+              key={team.id}
+              style={[styles.teamRow, selected && styles.teamRowSelected]}
+              onPress={() => setSelectedTeamId(team.id)}
+            >
+              <Text style={[styles.teamText, selected && styles.teamTextSelected]}>{team.name}</Text>
+            </Pressable>
+          );
+        })}
+        {teams.length === 0 ? (
+          <Text style={styles.emptyText}>You're not in any teams yet.</Text>
+        ) : null}
+      </ScrollView>
+      <TextInput
+        value={note}
+        onChangeText={setNote}
+        placeholder="Why are you adding this?"
+        placeholderTextColor={colors.muted2}
+        style={styles.input}
+        maxLength={200}
+      />
+      <View style={styles.switchRow}>
+        <Text style={styles.switchLabel}>Also post to team feed</Text>
+        <Switch value={alsoPost} onValueChange={setAlsoPost} trackColor={{ true: colors.accent, false: rules.default }} />
       </View>
-    </Modal>
+      {localError ? <Text style={styles.error}>{localError}</Text> : null}
+      <Pressable
+        style={[styles.submit, (!selectedTeamId || busy) && styles.submitDisabled]}
+        disabled={!selectedTeamId || busy}
+        onPress={() => void submit()}
+      >
+        <Text style={styles.submitText}>{busy ? "Adding..." : "Add"}</Text>
+      </Pressable>
+    </EditorialSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(6, 12, 20, 0.74)",
-    justifyContent: "flex-end",
-  },
-  sheet: {
-    borderTopLeftRadius: 22,
-    borderTopRightRadius: 22,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.lg,
-    gap: spacing.sm,
-    maxHeight: "86%",
-  },
-  title: {
-    color: colors.ink,
-    fontWeight: "900",
-    fontSize: 20,
-  },
-  subtitle: {
-    color: colors.muted,
-    fontSize: 13,
-  },
-  label: {
-    color: colors.ink,
-    fontWeight: "700",
-    fontSize: 13,
-  },
   teamRow: {
-    borderRadius: 10,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    paddingVertical: 9,
+    borderColor: rules.default,
+    backgroundColor: colors.surface,
+    paddingVertical: 11,
     paddingHorizontal: 12,
   },
   teamRowSelected: {
-    borderColor: colors.accent,
-    backgroundColor: "rgba(244,196,48,0.12)",
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.06)",
   },
   teamText: {
     color: colors.muted,
-    fontWeight: "700",
+    fontFamily: fonts.sansSemiBold,
     fontSize: 13,
   },
   teamTextSelected: {
-    color: colors.accent,
+    color: colors.ink,
+  },
+  emptyText: {
+    color: colors.muted2,
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    paddingVertical: spacing.sm,
   },
   input: {
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    backgroundColor: colors.backgroundElevated,
+    borderColor: rules.default,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
     color: colors.ink,
-    paddingVertical: 10,
+    fontFamily: fonts.sans,
+    paddingVertical: 11,
     paddingHorizontal: 12,
     fontSize: 13,
+    marginTop: spacing.sm,
   },
   switchRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
+    marginTop: spacing.sm,
   },
   switchLabel: {
     color: colors.muted,
-    fontSize: 12,
+    fontFamily: fonts.sans,
+    fontSize: 13,
   },
   error: {
     color: colors.danger,
+    fontFamily: fonts.sans,
     fontSize: 12,
+    marginTop: spacing.xs,
   },
   submit: {
-    borderRadius: radii.pill,
+    borderRadius: radii.md,
     backgroundColor: colors.accent,
-    paddingVertical: 10,
+    paddingVertical: 12,
     alignItems: "center",
+    marginTop: spacing.md,
   },
   submitDisabled: {
-    opacity: 0.45,
+    opacity: 0.4,
   },
   submitText: {
-    color: colors.background,
-    fontWeight: "800",
-    fontSize: 13,
+    color: colors.paperInk,
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    textTransform: "uppercase",
   },
 });

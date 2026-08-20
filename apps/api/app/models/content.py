@@ -8,6 +8,29 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.db.base import Base
 
 
+class Collection(Base):
+    __tablename__ = "collections"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    slug: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    title: Mapped[str] = mapped_column(String(255))
+    subtitle: Mapped[str | None] = mapped_column(String(512))
+    thesis: Mapped[str | None] = mapped_column(Text)
+    collection_type: Mapped[str] = mapped_column(String(32))  # dynamic_discover | manual | creator | seasonal
+    media_scope: Mapped[str] = mapped_column(String(8), default="mixed")  # movie | tv | mixed
+    rule_config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    manual_tmdb_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    editorial_rank: Mapped[int] = mapped_column(Integer, default=100)
+    active_from: Mapped[date | None] = mapped_column(Date)
+    active_until: Mapped[date | None] = mapped_column(Date)
+    refresh_policy: Mapped[str] = mapped_column(String(16), default="daily")  # hourly | daily | weekly | manual
+    status: Mapped[str] = mapped_column(String(16), default="active")  # draft | active | archived
+    cached_title_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    cached_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class ContentTitle(Base):
     __tablename__ = "content_titles"
 
@@ -41,6 +64,10 @@ class ContentAvailability(Base):
     web_url: Mapped[str | None] = mapped_column(String(512))
     affiliate_partner: Mapped[str | None] = mapped_column(String(64))
     is_connected_priority: Mapped[bool] = mapped_column(Boolean, default=False)
+    monetization_type: Mapped[str] = mapped_column(String(16), default="flatrate")  # flatrate|free|ads|rent|buy
+    tmdb_provider_id: Mapped[int | None] = mapped_column(Integer)
+    logo_path: Mapped[str | None] = mapped_column(String(512))  # TMDB logo_path e.g. "/abc.jpg"
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     last_synced_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

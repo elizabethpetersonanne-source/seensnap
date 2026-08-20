@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
 from app.models.content import ContentTitle
@@ -58,6 +58,9 @@ def require_team_member(db: Session, team_id: UUID, user_id: UUID) -> Team:
 def list_user_teams(db: Session, user_id: UUID) -> list[tuple[Team, int]]:
     membership_filter = aliased(TeamMember)
     active_members = aliased(TeamMember)
+    # Per Watch Teams brief §6: teams with recent activity float upward — the
+    # Home screen is an inbox of group momentum, not an alphabetical directory.
+    # Teams that never had activity fall to the bottom via created_at tiebreak.
     rows = db.execute(
         select(Team, func.count(active_members.id).label("member_count"))
         .join(membership_filter, membership_filter.team_id == Team.id)
@@ -69,7 +72,7 @@ def list_user_teams(db: Session, user_id: UUID) -> list[tuple[Team, int]]:
             Team.archived_at.is_(None),
         )
         .group_by(Team.id)
-        .order_by(Team.created_at.desc())
+        .order_by(Team.last_activity_at.desc().nulls_last(), Team.created_at.desc())
     ).all()
     return [(team, member_count) for team, member_count in rows]
 
@@ -178,6 +181,89 @@ def get_team_member(db: Session, team_id: UUID, user_id: UUID) -> TeamMember | N
     return db.scalar(select(TeamMember).where(TeamMember.team_id == team_id, TeamMember.user_id == user_id))
 
 
+# Watch Teams overhaul (brief §8) — derived state for the Teams inbox pattern.
+# Kept as simple per-team queries; batch later if it becomes hot. `team_status`
+# thresholds: active if any activity in the last 24h, quiet within a week,
+# dormant beyond that.
+_TEAM_ACTIVE_WINDOW = timedelta(hours=24)
+_TEAM_QUIET_WINDOW = timedelta(days=7)
+
+
+def _derive_team_status(last_activity_at: datetime | None) -> str:
+    if last_activity_at is None:
+        return "dormant"
+    now = datetime.now(UTC)
+    delta = now - last_activity_at
+    if delta <= _TEAM_ACTIVE_WINDOW:
+        return "active"
+    if delta <= _TEAM_QUIET_WINDOW:
+        return "quiet"
+    return "dormant"
+
+
+def compute_team_derived_state(
+    db: Session,
+    team: Team,
+    viewer_user_id: UUID | None,
+) -> dict:
+    """Compute the derived Team fields the overhaul relies on: unread since the
+    viewer's last visit, active-member count in the last 24h, coarse status,
+    and Top 10 freshness. Returns a dict merged into the response schema."""
+    since_24h = datetime.now(UTC) - _TEAM_ACTIVE_WINDOW
+
+    # unread_activity_count — only meaningful when we know the viewer. Members
+    # who've never opened the team see the full recent activity count.
+    unread_count = 0
+    if viewer_user_id is not None:
+        viewer_cursor = db.scalar(
+            select(TeamMember.last_viewed_at).where(
+                TeamMember.team_id == team.id,
+                TeamMember.user_id == viewer_user_id,
+            )
+        )
+        unread_query = select(func.count(TeamActivity.id)).where(
+            TeamActivity.team_id == team.id,
+            TeamActivity.actor_user_id != viewer_user_id,
+        )
+        if viewer_cursor is not None:
+            unread_query = unread_query.where(TeamActivity.created_at > viewer_cursor)
+        unread_count = int(db.scalar(unread_query) or 0)
+
+    # active_member_count_24h — distinct actors on TeamActivity in last 24h.
+    active_members = int(
+        db.scalar(
+            select(func.count(func.distinct(TeamActivity.actor_user_id))).where(
+                TeamActivity.team_id == team.id,
+                TeamActivity.created_at >= since_24h,
+            )
+        )
+        or 0
+    )
+
+    top10_updated_at = db.scalar(
+        select(func.max(TeamRanking.updated_at)).where(TeamRanking.team_id == team.id)
+    )
+
+    return {
+        "unread_activity_count": unread_count,
+        "active_member_count_24h": active_members,
+        "team_status": _derive_team_status(team.last_activity_at),
+        "top10_updated_at": top10_updated_at,
+    }
+
+
+def mark_team_viewed(db: Session, team_id: UUID, user_id: UUID) -> None:
+    """Stamp the viewer's last_viewed_at cursor so unread_activity_count resets
+    the next time the Teams Home refreshes. No-op if user is not a member."""
+    membership = db.scalar(
+        select(TeamMember).where(TeamMember.team_id == team_id, TeamMember.user_id == user_id)
+    )
+    if membership is None:
+        return
+    membership.last_viewed_at = datetime.now(UTC)
+    db.commit()
+
+
 def require_team_admin_or_owner(db: Session, team_id: UUID, user_id: UUID) -> tuple[Team, TeamMember]:
     team = require_team_member(db, team_id, user_id)
     membership = get_team_member(db, team_id, user_id)
@@ -270,7 +356,8 @@ def remove_team_member(db: Session, current_user: User, team_id: UUID, member_us
 
 def search_teams_by_name(db: Session, query: str, user_id: UUID, limit: int = 15) -> list[tuple[Team, int]]:
     membership_filter = aliased(TeamMember)
-    rows = db.execute(
+    viewer_is_demo = bool(db.scalar(select(User.is_demo).where(User.id == user_id)))
+    stmt = (
         select(Team, func.count(TeamMember.id).label("member_count"))
         .join(TeamMember, TeamMember.team_id == Team.id)
         .outerjoin(
@@ -288,7 +375,10 @@ def search_teams_by_name(db: Session, query: str, user_id: UUID, limit: int = 15
         .group_by(Team.id, membership_filter.id)
         .order_by(Team.last_activity_at.desc().nullslast(), Team.created_at.desc())
         .limit(limit)
-    ).all()
+    )
+    if not viewer_is_demo:
+        stmt = stmt.where(Team.owner_user_id.not_in(select(User.id).where(User.is_demo.is_(True))))
+    rows = db.execute(stmt).all()
     return [(team, member_count) for team, member_count in rows]
 
 
@@ -453,7 +543,12 @@ def search_users_for_team(db: Session, *, team_id: UUID, query: str, limit: int 
     q = query.strip()
     if not q:
         return []
-    rows = db.scalars(
+    # If the team is owned by a non-demo user, hide demo users from the search results.
+    team_owner_id = db.scalar(select(Team.owner_user_id).where(Team.id == team_id))
+    owner_is_demo = bool(
+        db.scalar(select(User.is_demo).where(User.id == team_owner_id))
+    ) if team_owner_id is not None else False
+    stmt = (
         select(UserProfile)
         .where(
             (UserProfile.display_name.ilike(f"%{q}%") | UserProfile.username.ilike(f"%{q}%")),
@@ -461,8 +556,10 @@ def search_users_for_team(db: Session, *, team_id: UUID, query: str, limit: int 
         )
         .order_by(UserProfile.display_name.asc())
         .limit(limit)
-    ).all()
-    return rows
+    )
+    if not owner_is_demo:
+        stmt = stmt.where(UserProfile.user_id.not_in(select(User.id).where(User.is_demo.is_(True))))
+    return db.scalars(stmt).all()
 
 
 def list_team_rankings(db: Session, team_id: UUID) -> list[TeamRanking]:

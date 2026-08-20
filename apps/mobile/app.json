@@ -13,22 +13,50 @@
       "resizeMode": "contain",
       "backgroundColor": "#0b1424"
     },
-    "plugins": ["expo-router"],
+    "plugins": [
+      "expo-router",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/branding/seensnap-logo.png",
+          "color": "#f4c430",
+          "defaultChannel": "default",
+          "sounds": []
+        }
+      ]
+    ],
     "experiments": {
       "typedRoutes": true
     },
     "extra": {
-      "apiBaseUrl": "http://192.168.1.188:8000/api/v1"
+      "apiBaseUrl": "https://prepared-rouge-unity-pregnant.trycloudflare.com/api/v1",
+      "easProjectId": ""
     },
     "ios": {
-      "bundleIdentifier": "com.seensnap.app"
+      "bundleIdentifier": "com.seensnap.app",
+      "associatedDomains": ["applinks:seensnap.app"],
+      "infoPlist": {
+        "UIBackgroundModes": ["remote-notification"]
+      }
     },
     "android": {
       "package": "com.seensnap.app",
       "adaptiveIcon": {
         "foregroundImage": "./assets/branding/seensnap-logo.png",
         "backgroundColor": "#0b1424"
-      }
+      },
+      "googleServicesFile": "./google-services.json",
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            { "scheme": "https", "host": "seensnap.app", "pathPrefix": "/lists" },
+            { "scheme": "https", "host": "seensnap.app", "pathPrefix": "/titles" }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ]
     }
   }
 }

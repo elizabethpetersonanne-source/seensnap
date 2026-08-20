@@ -60,6 +60,7 @@ class TitlePersonResponse(BaseModel):
     name: str
     role: str
     headshot_url: str | None = None
+    tmdb_person_id: int | None = None
 
 
 class RelatedTitleResponse(BaseModel):
@@ -70,7 +71,44 @@ class RelatedTitleResponse(BaseModel):
     release_date: date | None = None
 
 
+class PersonCreditResponse(BaseModel):
+    tmdb_id: int
+    title: str
+    media_type: str
+    poster_url: str | None = None
+    release_date: str | None = None
+    character: str | None = None
+    job: str | None = None
+
+
+class PersonDetailResponse(BaseModel):
+    tmdb_person_id: int
+    name: str
+    profile_url: str | None = None
+    biography: str | None = None
+    known_for_department: str | None = None
+    birthday: str | None = None
+    place_of_birth: str | None = None
+    credits: list[PersonCreditResponse]
+
+
+class RecommendationEvidence(BaseModel):
+    """Structured evidence that produced this recommendation. The reasoning engine
+    populates these fields FIRST (from real signals), then a copy layer translates
+    them into the user-facing headline/body/chips. Never let copy invent evidence
+    that doesn't exist here — per spec §20 guardrail."""
+    contributing_titles: list[str] = []          # Real user-side titles that led to this pick
+    contributing_traits: list[str] = []          # e.g. ["Slow Burn", "Prestige Drama", "Wes Anderson"]
+    confidence: float = 0.0                      # 0..1 — how strong the composite signal is
+
+
 class RecommendationResponse(BaseModel):
     title: TitleResponse
     reason: str
     seed_title_id: UUID | None = None
+    # Machine-readable classification per SeenSnap Swipe Intelligence spec §13.
+    # Values: PICKS_SIMILARITY | PICKS_CLUSTER | SCENEDNA_MATCH | PICKS_SCENEDNA_OVERLAP
+    #       | WATCH_TEAM | TRENDING_PERSONALIZED | CREATOR_AFFINITY | TASTE_NEIGHBORS
+    #       | HIDDEN_GEM | SERENDIPITY | NEW_RELEASE_MATCH
+    reason_type: str | None = None
+    evidence: RecommendationEvidence | None = None

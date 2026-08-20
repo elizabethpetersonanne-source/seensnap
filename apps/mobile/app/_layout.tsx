@@ -1,23 +1,109 @@
-import { Redirect, Stack, useSegments } from "expo-router";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { Redirect, Stack, useSegments, router } from "expo-router";
+import * as Notifications from "expo-notifications";
+import * as SecureStore from "expo-secure-store";
+import { useEffect, useRef, useState } from "react";
+import { StyleSheet, View, ActivityIndicator } from "react-native";
+import {
+  BodoniModa_500Medium,
+  BodoniModa_700Bold,
+} from "@expo-google-fonts/bodoni-moda";
+import {
+  InstrumentSans_400Regular,
+  InstrumentSans_500Medium,
+  InstrumentSans_600SemiBold,
+  InstrumentSans_700Bold,
+  useFonts,
+} from "@expo-google-fonts/instrument-sans";
+import {
+  IBMPlexMono_400Regular,
+  IBMPlexMono_500Medium,
+  IBMPlexMono_600SemiBold,
+} from "@expo-google-fonts/ibm-plex-mono";
 
 import { colors } from "@/constants/theme";
 import { AuthProvider, useAuth } from "@/lib/auth";
+import { apiRequest } from "@/lib/api";
+import { BackdropPoolProvider } from "@/lib/backdrop-pool";
+import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
+import { UnreadNotificationsProvider } from "@/lib/unread-notifications";
 
 function BootScreen() {
   return (
     <View style={styles.boot}>
-      <ActivityIndicator color={colors.accent} size="large" />
+      <ActivityIndicator color={colors.accent} size="small" />
     </View>
   );
 }
 
 function AuthGate() {
-  const { isLoading, sessionToken } = useAuth();
+  const { isLoading, sessionToken, isExpoGo } = useAuth();
   const segments = useSegments();
   const inAuthRoute = segments[0] === "sign-in";
+  const inOnboarding = segments[0] === "onboarding";
+  const responseListener = useRef<{ remove: () => void } | null>(null);
 
-  if (isLoading) {
+  useEffect(() => {
+    if (isExpoGo) return;
+
+    responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
+      const route = response.notification.request.content.data?.route as string | undefined;
+      if (route) {
+        try { router.push(route as Parameters<typeof router.push>[0]); } catch { }
+      }
+    });
+
+    void Notifications.getLastNotificationResponseAsync().then((response) => {
+      if (!response) return;
+      const route = response.notification.request.content.data?.route as string | undefined;
+      if (route) {
+        try { router.push(route as Parameters<typeof router.push>[0]); } catch { }
+      }
+    });
+
+    return () => { responseListener.current?.remove(); };
+  }, [isExpoGo]);
+
+  const [onboardingStatus, setOnboardingStatus] = useState<"unknown" | "completed" | "pending">("unknown");
+
+  useEffect(() => {
+    if (!sessionToken) {
+      setOnboardingStatus("unknown");
+      return;
+    }
+
+    let cancelled = false;
+
+    async function checkOnboarding() {
+      try {
+        const cached = await SecureStore.getItemAsync(ONBOARDING_COMPLETED_KEY);
+        if (cached === "true") {
+          if (!cancelled) setOnboardingStatus("completed");
+          return;
+        }
+        const prefs = await apiRequest<{ onboarding_completed: boolean }>("/me/preferences", {
+          token: sessionToken!,
+        });
+        if (!cancelled) {
+          if (prefs.onboarding_completed) {
+            await SecureStore.setItemAsync(ONBOARDING_COMPLETED_KEY, "true");
+            setOnboardingStatus("completed");
+          } else {
+            setOnboardingStatus("pending");
+          }
+        }
+      } catch {
+        // Fail open — don't strand the user on a network error
+        if (!cancelled) setOnboardingStatus("completed");
+      }
+    }
+
+    void checkOnboarding();
+    return () => {
+      cancelled = true;
+    };
+  }, [sessionToken]);
+
+  if (isLoading || (sessionToken && onboardingStatus === "unknown")) {
     return <BootScreen />;
   }
 
@@ -26,23 +112,58 @@ function AuthGate() {
   }
 
   if (sessionToken && inAuthRoute) {
+    if (onboardingStatus === "pending") {
+      return <Redirect href="/onboarding" />;
+    }
     return <Redirect href="/(tabs)" />;
   }
 
-    return (
+  if (sessionToken && !inOnboarding && onboardingStatus === "pending") {
+    return <Redirect href="/onboarding" />;
+  }
+
+  return (
     <Stack screenOptions={{ headerShown: false }}>
       <Stack.Screen name="sign-in" />
       <Stack.Screen name="(tabs)" />
       <Stack.Screen name="profile/[userId]" />
+      <Stack.Screen name="person/[tmdbId]" />
       <Stack.Screen name="what-next" />
+      <Stack.Screen name="onboarding" />
+      <Stack.Screen name="teams/join" />
+      <Stack.Screen name="notifications" options={{ animation: "slide_from_right" }} />
     </Stack>
   );
 }
 
 export default function RootLayout() {
+  const [fontsLoaded] = useFonts({
+    BodoniModa_500Medium,
+    BodoniModa_700Bold,
+    InstrumentSans_400Regular,
+    InstrumentSans_500Medium,
+    InstrumentSans_600SemiBold,
+    InstrumentSans_700Bold,
+    IBMPlexMono_400Regular,
+    IBMPlexMono_500Medium,
+    IBMPlexMono_600SemiBold,
+  });
+
+  if (!fontsLoaded) {
+    return (
+      <View style={styles.boot}>
+        <ActivityIndicator color={colors.accent} size="small" />
+      </View>
+    );
+  }
+
   return (
     <AuthProvider>
-      <AuthGate />
+      <BackdropPoolProvider>
+        <UnreadNotificationsProvider>
+          <AuthGate />
+        </UnreadNotificationsProvider>
+      </BackdropPoolProvider>
     </AuthProvider>
   );
 }

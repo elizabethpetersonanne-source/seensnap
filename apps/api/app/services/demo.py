@@ -21,9 +21,10 @@ def ensure_demo_user(db: Session) -> User:
             if user is not None:
                 user.email = DEMO_EMAIL
                 user.auth_provider = "demo"
+                user.is_demo = True
                 break
     if user is None:
-        user = User(email=DEMO_EMAIL, auth_provider="demo")
+        user = User(email=DEMO_EMAIL, auth_provider="demo", is_demo=True)
         db.add(user)
         db.flush()
 
@@ -41,6 +42,9 @@ def ensure_demo_user(db: Session) -> User:
         db.commit()
         db.refresh(user)
         return user
+
+    if not user.is_demo:
+        user.is_demo = True
 
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
     if profile is None:

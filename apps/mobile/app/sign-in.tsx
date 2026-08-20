@@ -1,16 +1,20 @@
+import * as AppleAuthentication from "expo-apple-authentication";
 import { router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
-import { Image, Pressable, StyleSheet, Text, View } from "react-native";
+import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
-import { Screen } from "@/components/screen";
-import { colors, radii, spacing } from "@/constants/theme";
+import { SSLogo } from "@/components/branding/ss-logo";
+import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { resolvedApiBaseUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 export default function SignInScreen() {
-  const { isExpoGo, isLoading, sessionToken, signInDemo, signInWithGoogle } = useAuth();
+  const { isExpoGo, isLoading, sessionToken, signInDemo, signInWithGoogle, signInWithApple, signInWithDevEmail } =
+    useAuth();
   const [error, setError] = useState<string | null>(null);
+  const [appleAvailable, setAppleAvailable] = useState(false);
+  const [devEmail, setDevEmail] = useState("");
+  const [devMode, setDevMode] = useState(false);
 
   useEffect(() => {
     if (sessionToken) {
@@ -18,12 +22,18 @@ export default function SignInScreen() {
     }
   }, [sessionToken]);
 
+  useEffect(() => {
+    if (Platform.OS === "ios" && !isExpoGo) {
+      void AppleAuthentication.isAvailableAsync().then(setAppleAvailable);
+    }
+  }, [isExpoGo]);
+
   async function handleDemoSignIn() {
     setError(null);
     try {
       await signInDemo();
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : `Demo sign-in failed (${resolvedApiBaseUrl})`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Demo sign-in failed (${resolvedApiBaseUrl})`);
     }
   }
 
@@ -31,132 +41,316 @@ export default function SignInScreen() {
     setError(null);
     try {
       await signInWithGoogle();
-    } catch (nextError) {
-      setError(nextError instanceof Error ? nextError.message : `Sign-in failed (${resolvedApiBaseUrl})`);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `Sign-in failed (${resolvedApiBaseUrl})`);
+    }
+  }
+
+  async function handleAppleSignIn() {
+    setError(null);
+    try {
+      await signInWithApple();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Apple sign-in failed");
+    }
+  }
+
+  async function handleDevEmailSignIn() {
+    setError(null);
+    try {
+      await signInWithDevEmail(devEmail);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Test sign-in failed");
     }
   }
 
   return (
-    <Screen
-      title="Welcome to SeenSnap"
-      subtitle={
-        isExpoGo
-          ? "Expo Go is limited to UI iteration. Use demo sign-in here, and use a native development build for real Google auth."
-          : "Google auth is the first Milestone 2 login path. Apple auth will plug into the same app session flow next."
-      }
-    >
-      <View style={styles.panel}>
-        <Image
-          source={require("../assets/branding/seensnap-logo.png")}
-          style={styles.logo}
-          resizeMode="contain"
-        />
-        <Text style={styles.heading}>Sign in to continue</Text>
-        <Text style={styles.body}>
-          {isExpoGo
-            ? "This environment uses a mock session so you can iterate on the app without hitting unsupported OAuth behavior in Expo Go."
-            : "This flow exchanges a Google ID token for a SeenSnap API session token."}
-        </Text>
-        <View style={styles.points}>
-          <View style={styles.pointRow}>
-            <Ionicons name="flash" color={colors.accent} size={16} />
-            <Text style={styles.pointText}>Snap a scene, identify the title, and save it in one pass.</Text>
+    <View style={styles.root}>
+      <View style={styles.inner}>
+        {/* Editorial header — real SeenSnap gold logo, then serif welcome */}
+        <View style={styles.header}>
+          <SSLogo variant="gold" size="xl" style={{ alignSelf: "flex-start", marginBottom: spacing.md }} />
+          <Text style={styles.title}>Sign in{"\n"}to continue.</Text>
+        </View>
+
+        {/* Value props */}
+        <View style={styles.props}>
+          <View style={styles.propRow}>
+            <Text style={styles.propIndex}>01</Text>
+            <Text style={styles.propText}>Snap a scene — identify the title instantly.</Text>
           </View>
-          <View style={styles.pointRow}>
-            <Ionicons name="people" color={colors.accent} size={16} />
-            <Text style={styles.pointText}>Compare picks with your watch team in a shared social feed.</Text>
+          <View style={styles.propRow}>
+            <Text style={styles.propIndex}>02</Text>
+            <Text style={styles.propText}>Save picks and compare with your watch team.</Text>
+          </View>
+          <View style={styles.propRow}>
+            <Text style={styles.propIndex}>03</Text>
+            <Text style={styles.propText}>Discover what to watch next based on your taste.</Text>
           </View>
         </View>
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-        {isExpoGo ? (
-          <Pressable
-            accessibilityRole="button"
-            disabled={isLoading}
-            onPress={() => void handleDemoSignIn()}
-            style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
-          >
-            <Text style={styles.buttonLabel}>{isLoading ? "Loading..." : "Continue in Demo Mode"}</Text>
-          </Pressable>
-        ) : (
-          <Pressable
-            accessibilityRole="button"
-            disabled={isLoading}
-            onPress={() => void handleGoogleSignIn()}
-            style={({ pressed }) => [styles.button, pressed && styles.buttonPressed]}
-          >
-            <Text style={styles.buttonLabel}>
-              {isLoading ? "Connecting..." : "Continue with Google"}
-            </Text>
-          </Pressable>
-        )}
+
+        {/* Auth actions */}
+        <View style={styles.actions}>
+          {error ? <Text style={styles.error}>{error}</Text> : null}
+
+          {isExpoGo ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={isLoading}
+              onPress={() => void handleDemoSignIn()}
+              style={({ pressed }) => [styles.primaryBtn, pressed && styles.pressed]}
+            >
+              <Text style={styles.primaryBtnLabel}>
+                {isLoading ? "Loading..." : "Continue in Demo Mode"}
+              </Text>
+            </Pressable>
+          ) : (
+            <>
+              {appleAvailable ? (
+                <AppleAuthentication.AppleAuthenticationButton
+                  buttonType={AppleAuthentication.AppleAuthenticationButtonType.SIGN_IN}
+                  buttonStyle={AppleAuthentication.AppleAuthenticationButtonStyle.WHITE}
+                  cornerRadius={radii.sm}
+                  style={styles.appleBtn}
+                  onPress={() => void handleAppleSignIn()}
+                />
+              ) : null}
+              <Pressable
+                accessibilityRole="button"
+                disabled={isLoading}
+                onPress={() => void handleGoogleSignIn()}
+                style={({ pressed }) => [
+                  styles.secondaryBtn,
+                  pressed && styles.pressed,
+                  appleAvailable && styles.secondaryBtnOffset,
+                ]}
+              >
+                <Text style={styles.secondaryBtnLabel}>
+                  {isLoading ? "Connecting..." : "Continue with Google"}
+                </Text>
+              </Pressable>
+            </>
+          )}
+
+          {/* Dev / Expo Go: create or sign into a real test account via /auth/dev */}
+          {devMode ? (
+            <View style={styles.devBox}>
+              <Text style={styles.devLabel}>TEST ACCOUNT</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoComplete="email"
+                autoCorrect={false}
+                keyboardType="email-address"
+                placeholder="you@example.com"
+                placeholderTextColor={colors.muted2}
+                value={devEmail}
+                onChangeText={setDevEmail}
+                style={styles.devInput}
+              />
+              <Pressable
+                accessibilityRole="button"
+                disabled={isLoading || !devEmail.trim()}
+                onPress={() => void handleDevEmailSignIn()}
+                style={({ pressed }) => [
+                  styles.devPrimaryBtn,
+                  (isLoading || !devEmail.trim()) && styles.devPrimaryBtnDisabled,
+                  pressed && styles.pressed,
+                ]}
+              >
+                <Text style={styles.devPrimaryBtnLabel}>
+                  {isLoading ? "Working..." : "Continue with test email"}
+                </Text>
+              </Pressable>
+              <Text style={styles.devHint}>
+                A new email creates a fresh account; a returning email signs you back in.
+              </Text>
+            </View>
+          ) : (
+            <Pressable
+              onPress={() => setDevMode(true)}
+              hitSlop={8}
+              style={styles.devToggle}
+            >
+              <Text style={styles.devToggleText}>Use a test email instead</Text>
+            </Pressable>
+          )}
+        </View>
+
+        {/* Legal */}
+        <Text style={styles.legal}>
+          By continuing you agree to SeenSnap's Terms of Service and Privacy Policy.
+        </Text>
       </View>
-    </Screen>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
-  panel: {
+  root: {
+    flex: 1,
+    backgroundColor: colors.background,
+    justifyContent: "flex-end",
+    paddingHorizontal: spacing.xl,
+    paddingBottom: 48,
+  },
+  inner: {
+    gap: spacing.xl,
+  },
+  header: {
     gap: spacing.sm,
-    padding: spacing.xl,
-    borderRadius: radii.lg,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    shadowColor: colors.shadow,
-    shadowOpacity: 0.25,
-    shadowRadius: 18,
-    shadowOffset: { width: 0, height: 16 },
   },
-  logo: {
-    width: 180,
-    height: 72,
-    alignSelf: "center",
-    marginBottom: 4,
+  eyebrow: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 2,
+    color: colors.accent,
+    textTransform: "uppercase",
   },
-  heading: {
-    fontSize: 22,
-    fontWeight: "800",
+  rule: {
+    height: 1,
+    backgroundColor: rules.gold,
+    width: 48,
+  },
+  title: {
+    fontFamily: fonts.serifBold,
+    fontSize: 42,
+    lineHeight: 48,
     color: colors.ink,
   },
-  body: {
+  props: {
+    gap: spacing.sm,
+  },
+  propRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: spacing.sm,
+  },
+  propIndex: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    color: colors.accent,
+    letterSpacing: 0.5,
+    marginTop: 3,
+    width: 20,
+  },
+  propText: {
+    flex: 1,
+    fontFamily: fonts.sans,
     fontSize: 15,
     lineHeight: 22,
     color: colors.muted,
   },
-  points: {
+  actions: {
     gap: spacing.sm,
-    marginTop: spacing.xs,
-    marginBottom: spacing.sm,
-  },
-  pointRow: {
-    flexDirection: "row",
-    gap: spacing.sm,
-    alignItems: "center",
-  },
-  pointText: {
-    flex: 1,
-    color: colors.ink,
-    lineHeight: 20,
-  },
-  button: {
-    marginTop: 8,
-    borderRadius: radii.pill,
-    backgroundColor: colors.accent,
-    paddingVertical: 14,
-    paddingHorizontal: 18,
-  },
-  buttonPressed: {
-    opacity: 0.9,
-  },
-  buttonLabel: {
-    color: colors.background,
-    fontSize: 16,
-    fontWeight: "800",
-    textAlign: "center",
   },
   error: {
+    fontFamily: fonts.sans,
     color: colors.danger,
     fontSize: 13,
     lineHeight: 18,
+  },
+  appleBtn: {
+    width: "100%",
+    height: 52,
+  },
+  primaryBtn: {
+    backgroundColor: colors.accent,
+    borderRadius: radii.sm,
+    paddingVertical: 16,
+    alignItems: "center",
+  },
+  pressed: {
+    opacity: 0.88,
+  },
+  primaryBtnLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.paperInk,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    textTransform: "uppercase",
+  },
+  secondaryBtn: {
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: radii.sm,
+    paddingVertical: 16,
+    alignItems: "center",
+  },
+  secondaryBtnOffset: {
+    marginTop: 2,
+  },
+  secondaryBtnLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.ink,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    textTransform: "uppercase",
+  },
+  legal: {
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    lineHeight: 16,
+    color: colors.muted2,
+    textAlign: "center",
+  },
+  devToggle: {
+    alignSelf: "center",
+    paddingVertical: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  devToggleText: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    letterSpacing: 0.4,
+    color: colors.muted2,
+    textDecorationLine: "underline",
+  },
+  devBox: {
+    marginTop: spacing.sm,
+    padding: spacing.md,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.04)",
+    gap: spacing.sm,
+  },
+  devLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 9,
+    letterSpacing: 1.8,
+    color: colors.accent,
+  },
+  devInput: {
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: radii.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    color: colors.ink,
+    fontFamily: fonts.sans,
+    fontSize: 14,
+    backgroundColor: colors.background,
+  },
+  devPrimaryBtn: {
+    backgroundColor: colors.ink,
+    borderRadius: radii.sm,
+    paddingVertical: 14,
+    alignItems: "center",
+  },
+  devPrimaryBtnDisabled: {
+    opacity: 0.4,
+  },
+  devPrimaryBtnLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    color: colors.background,
+    textTransform: "uppercase",
+  },
+  devHint: {
+    fontFamily: fonts.sans,
+    fontSize: 11,
+    lineHeight: 16,
+    color: colors.muted2,
   },
 });

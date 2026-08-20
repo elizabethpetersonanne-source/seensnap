@@ -12,6 +12,7 @@ export type TitleSeed = {
 
 type TitleResponse = {
   id: string;
+  tmdb_id: number;
   content_type: string;
   title: string;
   overview?: string | null;
@@ -46,11 +47,13 @@ type TitleResponse = {
     name: string;
     role: string;
     headshot_url?: string | null;
+    tmdb_person_id?: number | null;
   }>;
   creators?: Array<{
     name: string;
     role: string;
     headshot_url?: string | null;
+    tmdb_person_id?: number | null;
   }>;
   related_titles?: Array<{
     id: string;
@@ -63,6 +66,7 @@ type TitleResponse = {
 
 export type UniversalTitle = {
   id: string;
+  tmdbId: number;
   title: string;
   mediaType: "movie" | "tv";
   year: number | null;
@@ -95,11 +99,13 @@ export type UniversalTitle = {
     name: string;
     role: string;
     headshotUrl: string | null;
+    tmdbPersonId: number | null;
   }>;
   creators: Array<{
     name: string;
     role: string;
     headshotUrl: string | null;
+    tmdbPersonId: number | null;
   }>;
   relatedTitles: Array<{
     id: string;
@@ -115,6 +121,7 @@ function normalizeFromApi(data: TitleResponse): UniversalTitle {
   const year = data.release_date ? Number(String(data.release_date).slice(0, 4)) : null;
   return {
     id: data.id,
+    tmdbId: data.tmdb_id,
     title: data.title,
     mediaType,
     year: Number.isFinite(year) ? year : null,
@@ -152,11 +159,13 @@ function normalizeFromApi(data: TitleResponse): UniversalTitle {
       name: entry.name,
       role: entry.role,
       headshotUrl: entry.headshot_url ?? null,
+      tmdbPersonId: entry.tmdb_person_id ?? null,
     })),
     creators: (data.creators ?? []).map((entry) => ({
       name: entry.name,
       role: entry.role,
       headshotUrl: entry.headshot_url ?? null,
+      tmdbPersonId: entry.tmdb_person_id ?? null,
     })),
     relatedTitles: (data.related_titles ?? []).map((entry) => ({
       id: entry.id,
@@ -172,6 +181,7 @@ function normalizeFromSeed(seed: TitleSeed): UniversalTitle {
   const mediaType = seed.content_type === "movie" ? "movie" : "tv";
   return {
     id: seed.id,
+    tmdbId: 0, // seed titles don't carry tmdb_id; sharing falls back to internal id fallback
     title: seed.title,
     mediaType,
     year: null,
@@ -204,6 +214,67 @@ function normalizeFromSeed(seed: TitleSeed): UniversalTitle {
   };
 }
 
+export type PersonCredit = {
+  tmdbId: number;
+  title: string;
+  mediaType: string;
+  posterUrl: string | null;
+  releaseDate: string | null;
+  character: string | null;
+  job: string | null;
+};
+
+export type PersonProfile = {
+  tmdbPersonId: number;
+  name: string;
+  profileUrl: string | null;
+  biography: string | null;
+  knownForDepartment: string | null;
+  birthday: string | null;
+  placeOfBirth: string | null;
+  credits: PersonCredit[];
+};
+
+export async function fetchPersonDetails(token: string, tmdbPersonId: number): Promise<PersonProfile> {
+  const data = await apiRequest<{
+    tmdb_person_id: number;
+    name: string;
+    profile_url: string | null;
+    biography: string | null;
+    known_for_department: string | null;
+    birthday: string | null;
+    place_of_birth: string | null;
+    credits: Array<{
+      tmdb_id: number;
+      title: string;
+      media_type: string;
+      poster_url: string | null;
+      release_date: string | null;
+      character: string | null;
+      job: string | null;
+    }>;
+  }>(`/titles/person/${tmdbPersonId}`, { token });
+
+  return {
+    tmdbPersonId: data.tmdb_person_id,
+    name: data.name,
+    profileUrl: data.profile_url ?? null,
+    biography: data.biography ?? null,
+    knownForDepartment: data.known_for_department ?? null,
+    birthday: data.birthday ?? null,
+    placeOfBirth: data.place_of_birth ?? null,
+    credits: (data.credits ?? []).map((c) => ({
+      tmdbId: c.tmdb_id,
+      title: c.title,
+      mediaType: c.media_type,
+      posterUrl: c.poster_url ?? null,
+      releaseDate: c.release_date ?? null,
+      character: c.character ?? null,
+      job: c.job ?? null,
+    })),
+  };
+}
+
 export async function fetchUniversalTitle(
   token: string,
   titleId: string,
@@ -218,4 +289,17 @@ export async function fetchUniversalTitle(
     }
     throw new Error("Unable to load title details");
   }
+}
+
+export async function fetchUniversalTitleByTmdbId(
+  token: string,
+  mediaType: string,
+  tmdbId: number
+): Promise<UniversalTitle> {
+  // media_type: TMDB uses "movie" or "tv"; server accepts "movie" | "series" | "tv"
+  const data = await apiRequest<TitleResponse>(
+    `/titles/by-tmdb/${encodeURIComponent(mediaType)}/${tmdbId}`,
+    { token }
+  );
+  return normalizeFromApi(data);
 }

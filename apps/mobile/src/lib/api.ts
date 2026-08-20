@@ -16,8 +16,13 @@ function resolveApiBaseUrl() {
   const configApiBaseUrl =
     (Constants.expoConfig?.extra as { apiBaseUrl?: string } | undefined)?.apiBaseUrl?.trim() ?? "";
   const configured = process.env.EXPO_PUBLIC_API_BASE_URL;
+
   if (configured?.trim() && !isLoopbackApiUrl(configured)) {
     return configured.trim();
+  }
+
+  if (configApiBaseUrl && !isLoopbackApiUrl(configApiBaseUrl)) {
+    return configApiBaseUrl;
   }
 
   const expoManifest = Constants as typeof Constants & {
@@ -27,10 +32,6 @@ function resolveApiBaseUrl() {
   const host = hostUri?.split(":")[0];
   if (host) {
     return `http://${host}:8000/api/v1`;
-  }
-
-  if (configApiBaseUrl && !isLoopbackApiUrl(configApiBaseUrl)) {
-    return configApiBaseUrl;
   }
 
   return configured?.trim() || configApiBaseUrl || "http://127.0.0.1:8000/api/v1";
@@ -64,6 +65,9 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
 
   if (options.token) {
     headers.set("Authorization", `Bearer ${options.token}`);
+  }
+  if (apiBaseUrl.includes(".loca.lt")) {
+    headers.set("bypass-tunnel-reminder", "true");
   }
 
   let response: Response;

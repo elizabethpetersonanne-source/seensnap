@@ -1,8 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useRouter } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ActivityIndicator,
   Animated,
   Image,
   Linking,
@@ -15,7 +14,9 @@ import {
 } from "react-native";
 
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
+import { GoldButton } from "@/components/gold-button";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
+import { WhatNextSkeleton } from "@/components/shimmer";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, radii, spacing } from "@/constants/theme";
 import { trackEvent } from "@/lib/analytics";
@@ -54,10 +55,32 @@ type PreferencesResponse = {
 
 const SWIPE_X_THRESHOLD = 110;
 const SWIPE_UP_THRESHOLD = 100;
-const SESSION_LENGTH = 10;
+const SESSION_LENGTH = 20;
+const SUPPRESSION_SWIPES = 50;
+
+// Module-level — persists across re-renders and deck reloads within the app session.
+const suppressedTitles = new Map<string, number>();
+let globalSwipeCount = 0;
+
+function applySuppression(items: RecommendationItem[]): RecommendationItem[] {
+  return items.filter((item) => {
+    const suppressedAt = suppressedTitles.get(item.title.id);
+    return suppressedAt === undefined || globalSwipeCount - suppressedAt >= SUPPRESSION_SWIPES;
+  });
+}
+
+function lightShuffle<T>(arr: T[]): T[] {
+  const out = [...arr];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
 
 export default function WhatNextScreen() {
   const router = useRouter();
+  const { genre: genreParam } = useLocalSearchParams<{ genre?: string }>();
   const { sessionToken } = useAuth();
   const [deck, setDeck] = useState<RecommendationItem[]>([]);
   const [detailCache, setDetailCache] = useState<Record<string, UniversalTitle>>({});
@@ -75,14 +98,27 @@ export default function WhatNextScreen() {
   const [showAddToTeam, setShowAddToTeam] = useState(false);
   const [sessionId, setSessionId] = useState(() => `what-next-${Date.now()}`);
   const pan = useRef(new Animated.ValueXY()).current;
+  const progressAnim = useRef(new Animated.Value(0)).current;
+  const nextCardEntry = useRef(new Animated.Value(1)).current;
+  const revealEntry = useRef(new Animated.Value(0)).current;
   const cardStartRef = useRef(Date.now());
   const currentIndexRef = useRef(0);
+  const nextWatchListIdRef = useRef<string | null>(null);
+  // Refs to always call latest versions from the stale panResponder closure
+  const animateSwipeRef = useRef<(direction: SwipeDirection) => Promise<void>>(async () => {});
+  const openDetailsForActiveRef = useRef<() => void>(() => {});
+  const [toastVisible, setToastVisible] = useState(false);
+  const [toastMessage, setToastMessage] = useState("");
+  const toastOpacity = useRef(new Animated.Value(0)).current;
+  const toastTranslateY = useRef(new Animated.Value(12)).current;
 
   useEffect(() => {
     currentIndexRef.current = currentIndex;
     cardStartRef.current = Date.now();
     pan.setValue({ x: 0, y: 0 });
-  }, [currentIndex, pan]);
+    nextCardEntry.setValue(0.94);
+    Animated.spring(nextCardEntry, { toValue: 1, bounciness: 8, speed: 14, useNativeDriver: false }).start();
+  }, [currentIndex, pan, nextCardEntry]);
 
   useEffect(() => {
     async function loadDeck() {
@@ -93,11 +129,18 @@ export default function WhatNextScreen() {
       setError(null);
       try {
         const [items, preferences] = await Promise.all([
-          apiRequest<RecommendationItem[]>("/titles/recommendations/for-me?limit=18", { token: sessionToken }),
+          apiRequest<RecommendationItem[]>("/titles/recommendations/for-me?limit=40", { token: sessionToken }),
           apiRequest<PreferencesResponse>("/me/preferences", { token: sessionToken }).catch(() => ({ connected_streaming_services: [] })),
         ]);
         const deduped = dedupeRecommendations(items);
-        setDeck(deduped);
+        const suppressed = applySuppression(deduped);
+        const shuffled = lightShuffle(suppressed.length >= 8 ? suppressed : deduped);
+        const filtered = genreParam
+          ? shuffled.filter((item) =>
+              (item.title.genres ?? []).some((g) => g.toLowerCase().includes(genreParam.toLowerCase()))
+            )
+          : shuffled;
+        setDeck(filtered.length >= 5 ? filtered : shuffled);
         setPreferredServices(preferences.connected_streaming_services ?? []);
         setCurrentIndex(0);
         setSwipes([]);
@@ -119,6 +162,21 @@ export default function WhatNextScreen() {
   const revealVisible = swipes.length >= SESSION_LENGTH || (!activeCard && swipes.length > 0);
   const revealDetail = revealCandidate ? detailCache[revealCandidate.title.id] ?? null : null;
   const progress = Math.min(swipes.length, SESSION_LENGTH);
+
+  useEffect(() => {
+    Animated.timing(progressAnim, {
+      toValue: progress / SESSION_LENGTH,
+      duration: 300,
+      useNativeDriver: false,
+    }).start();
+  }, [progress, progressAnim]);
+
+  useEffect(() => {
+    if (revealVisible) {
+      revealEntry.setValue(0);
+      Animated.spring(revealEntry, { toValue: 1, damping: 18, stiffness: 140, useNativeDriver: true }).start();
+    }
+  }, [revealVisible, revealEntry]);
 
   useEffect(() => {
     async function hydrateCard() {
@@ -154,22 +212,42 @@ export default function WhatNextScreen() {
     inputRange: [-140, -60, 0],
     outputRange: [1, 0.2, 0],
   });
+  const backdropParallax = pan.x.interpolate({
+    inputRange: [-250, 0, 250],
+    outputRange: [15, 0, -15],
+    extrapolate: "clamp",
+  });
+  const badgeScale = pan.x.interpolate({
+    inputRange: [-SWIPE_X_THRESHOLD, -50, 0, 50, SWIPE_X_THRESHOLD],
+    outputRange: [1.18, 1.0, 1.0, 1.0, 1.18],
+    extrapolate: "clamp",
+  });
+  const superlikeScale = pan.y.interpolate({
+    inputRange: [-SWIPE_UP_THRESHOLD, -50, 0],
+    outputRange: [1.18, 1.0, 1.0],
+    extrapolate: "clamp",
+  });
 
   const panResponder = useRef(
     PanResponder.create({
-      onMoveShouldSetPanResponder: (_, gesture) => Math.abs(gesture.dx) > 8 || Math.abs(gesture.dy) > 8,
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
       onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], { useNativeDriver: false }),
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dx > SWIPE_X_THRESHOLD) {
-          void animateSwipe("right");
+          void animateSwipeRef.current("right");
           return;
         }
         if (gesture.dx < -SWIPE_X_THRESHOLD) {
-          void animateSwipe("left");
+          void animateSwipeRef.current("left");
           return;
         }
         if (gesture.dy < -SWIPE_UP_THRESHOLD) {
-          void animateSwipe("up");
+          void animateSwipeRef.current("up");
+          return;
+        }
+        if (Math.abs(gesture.dx) < 8 && Math.abs(gesture.dy) < 8) {
+          openDetailsForActiveRef.current();
           return;
         }
         Animated.spring(pan, {
@@ -198,11 +276,13 @@ export default function WhatNextScreen() {
       }).start(() => resolve());
     });
 
-    await commitSwipe(direction);
+    // commitSwipe is synchronous for state updates; the API telemetry fires in the
+    // background so pan reset below is not delayed by a network round-trip.
+    commitSwipe(direction);
     pan.setValue({ x: 0, y: 0 });
   }
 
-  async function commitSwipe(direction: SwipeDirection) {
+  function commitSwipe(direction: SwipeDirection) {
     if (!sessionToken) {
       return;
     }
@@ -211,29 +291,32 @@ export default function WhatNextScreen() {
       return;
     }
     const pauseMs = Math.max(Date.now() - cardStartRef.current, 0);
+    globalSwipeCount++;
+    if (direction === "left") {
+      suppressedTitles.set(item.title.id, globalSwipeCount);
+    }
     setSwipes((current) => [...current, { item, direction, pauseMs }]);
     setCurrentIndex((current) => current + 1);
+    if (direction === "right") {
+      void saveToNextWatch(item.title.id, item.title.title);
+    }
     trackEvent(`swipe_${direction}`, {
       title_id: item.title.id,
       session_id: sessionId,
       pause_ms: pauseMs,
     });
 
-    try {
-      await apiRequest("/titles/swipes", {
-        method: "POST",
-        token: sessionToken,
-        body: JSON.stringify({
-          title_id: item.title.id,
-          direction,
-          pause_ms: pauseMs,
-          session_id: sessionId,
-          reason: item.reason,
-        }),
-      });
-    } catch {
-      // do not block the flow on telemetry failure
-    }
+    void apiRequest("/titles/swipes", {
+      method: "POST",
+      token: sessionToken,
+      body: JSON.stringify({
+        title_id: item.title.id,
+        direction,
+        pause_ms: pauseMs,
+        session_id: sessionId,
+        reason: item.reason,
+      }),
+    }).catch(() => {});
   }
 
   async function openDetails(item: RecommendationItem | null) {
@@ -277,6 +360,54 @@ export default function WhatNextScreen() {
     await Linking.openURL(target);
   }
 
+  function showToast(message: string) {
+    setToastMessage(message);
+    setToastVisible(true);
+    toastOpacity.setValue(0);
+    toastTranslateY.setValue(12);
+    Animated.parallel([
+      Animated.timing(toastOpacity, { toValue: 1, duration: 180, useNativeDriver: true }),
+      Animated.timing(toastTranslateY, { toValue: 0, duration: 180, useNativeDriver: true }),
+    ]).start(() => {
+      setTimeout(() => {
+        Animated.parallel([
+          Animated.timing(toastOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
+          Animated.timing(toastTranslateY, { toValue: 12, duration: 220, useNativeDriver: true }),
+        ]).start(() => setToastVisible(false));
+      }, 2200);
+    });
+  }
+
+  async function saveToNextWatch(titleId: string, titleName: string) {
+    if (!sessionToken) {
+      return;
+    }
+    try {
+      if (!nextWatchListIdRef.current) {
+        const lists = await apiRequest<Array<{ id: string; name: string }>>("/me/watchlist/lists", { token: sessionToken });
+        const existing = lists.find((l) => l.name.toLowerCase() === "my next watch");
+        if (existing) {
+          nextWatchListIdRef.current = existing.id;
+        } else {
+          const created = await apiRequest<{ id: string; name: string }>("/me/watchlist/lists", {
+            method: "POST",
+            token: sessionToken,
+            body: JSON.stringify({ name: "My Next Watch", description: "Titles to watch next, from What's Next" }),
+          });
+          nextWatchListIdRef.current = created.id;
+        }
+      }
+      await apiRequest("/me/watchlist/items", {
+        method: "POST",
+        token: sessionToken,
+        body: JSON.stringify({ content_title_id: titleId, list_id: nextWatchListIdRef.current, added_via: "what_next_heart" }),
+      });
+      showToast(`"${titleName}" added to My Next Watch`);
+    } catch {
+      // silent — don't interrupt the swipe flow
+    }
+  }
+
   async function restartSession() {
     if (!sessionToken) {
       return;
@@ -284,8 +415,10 @@ export default function WhatNextScreen() {
     setLoading(true);
     setError(null);
     try {
-      const items = await apiRequest<RecommendationItem[]>("/titles/recommendations/for-me?limit=18", { token: sessionToken });
-      setDeck(dedupeRecommendations(items));
+      const items = await apiRequest<RecommendationItem[]>("/titles/recommendations/for-me?limit=40", { token: sessionToken });
+      const deduped = dedupeRecommendations(items);
+      const suppressed = applySuppression(deduped);
+      setDeck(lightShuffle(suppressed.length >= 8 ? suppressed : deduped));
       setCurrentIndex(0);
       setSwipes([]);
       setSessionId(`what-next-${Date.now()}`);
@@ -302,10 +435,20 @@ export default function WhatNextScreen() {
   const activeTags = buildTasteTags(activeCard, currentDetail);
   const activeStreaming = rankStreamingOptions(currentDetail?.streamingAvailability ?? [], preferredServices).slice(0, 3);
 
+  // Sync refs so panResponder (created once) always calls latest closures
+  animateSwipeRef.current = animateSwipe;
+  openDetailsForActiveRef.current = () => { void openDetails(activeCard); };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.background}>
-        {activeBackdrop ? <Image source={{ uri: activeBackdrop }} style={styles.backdrop} resizeMode="cover" /> : null}
+        {activeBackdrop ? (
+          <Animated.Image
+            source={{ uri: activeBackdrop }}
+            style={[styles.backdrop, { transform: [{ translateX: backdropParallax }] }]}
+            resizeMode="cover"
+          />
+        ) : null}
         <View style={styles.backdropShade} />
         <View style={styles.backdropGlowTop} />
         <View style={styles.backdropGlowBottom} />
@@ -319,18 +462,18 @@ export default function WhatNextScreen() {
           <Text style={styles.headerKicker}>What&apos;s Next?</Text>
           <Text style={styles.headerTitle}>Pick something for tonight.</Text>
         </View>
-        <View style={styles.progressPill}>
-          <Text style={styles.progressText}>{progress}/{SESSION_LENGTH}</Text>
-        </View>
+        <Text style={styles.progressCount}>{progress}/{SESSION_LENGTH}</Text>
+      </View>
+      <View style={styles.progressBarTrack}>
+        <Animated.View
+          style={[
+            styles.progressBarFill,
+            { width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }) },
+          ]}
+        />
       </View>
 
-      {loading ? (
-        <View style={styles.centerState}>
-          <ActivityIndicator color={colors.accent} size="large" />
-          <Text style={styles.stateTitle}>Building your queue</Text>
-          <Text style={styles.stateBody}>We&apos;re pulling together the most on-brand picks first.</Text>
-        </View>
-      ) : null}
+      {loading ? <WhatNextSkeleton /> : null}
 
       {!loading && error ? (
         <View style={styles.errorBanner}>
@@ -339,7 +482,17 @@ export default function WhatNextScreen() {
       ) : null}
 
       {!loading && revealVisible && revealCandidate ? (
-        <View style={styles.revealWrap}>
+        <Animated.View
+          style={[
+            styles.revealWrap,
+            {
+              opacity: revealEntry,
+              transform: [
+                { scale: revealEntry.interpolate({ inputRange: [0, 1], outputRange: [0.93, 1] }) },
+              ],
+            },
+          ]}
+        >
           <Text style={styles.revealEyebrow}>We think this is your move tonight.</Text>
           <Pressable style={styles.revealCard} onPress={() => void openDetails(revealCandidate)}>
             {resolveMediaUrl(revealDetail?.backdropUrl || revealCandidate.title.backdrop_url || revealCandidate.title.poster_url || null) ? (
@@ -357,10 +510,13 @@ export default function WhatNextScreen() {
               <Text style={styles.revealMeta}>{buildRevealMeta(revealCandidate, revealDetail)}</Text>
               <Text style={styles.revealBody}>{revealDetail?.description || revealCandidate.title.overview || humanizeReason(revealCandidate.reason)}</Text>
               <View style={styles.revealActionRow}>
-                <Pressable style={styles.primaryAction} onPress={() => void streamReveal()}>
-                  <Ionicons name="play" size={16} color={colors.background} />
-                  <Text style={styles.primaryActionText}>Stream Now</Text>
-                </Pressable>
+                <GoldButton
+                  label="Stream Now"
+                  icon="play"
+                  size="md"
+                  onPress={() => void streamReveal()}
+                  style={{ flex: 1 }}
+                />
                 <Pressable
                   style={styles.secondaryAction}
                   onPress={() => {
@@ -390,41 +546,68 @@ export default function WhatNextScreen() {
               </View>
             </View>
           </Pressable>
-        </View>
+        </Animated.View>
       ) : null}
 
       {!loading && !revealVisible ? (
         <View style={styles.deckArea}>
-          {nextCards.slice(0, 2).reverse().map((item, index) => (
-            <View
-              key={item.title.id}
-              style={[
-                styles.stackCard,
-                index === 0 ? styles.stackCardBack : styles.stackCardFar,
-              ]}
-            />
-          ))}
+          {nextCards.slice(0, 2).reverse().map((item, index) => {
+            const stackUri = resolveMediaUrl(item.title.backdrop_url || item.title.poster_url);
+            return (
+              <View
+                key={item.title.id}
+                pointerEvents="none"
+                style={[
+                  styles.stackCard,
+                  index === 0 ? styles.stackCardBack : styles.stackCardFar,
+                ]}
+              >
+                {stackUri ? (
+                  <Image source={{ uri: stackUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                ) : null}
+                <View style={styles.stackCardShade} />
+              </View>
+            );
+          })}
 
           {activeCard ? (
             <Animated.View
               style={[
                 styles.card,
                 {
-                  transform: [...pan.getTranslateTransform(), { rotate: rotation }],
+                  transform: [...pan.getTranslateTransform(), { rotate: rotation }, { scale: nextCardEntry }],
                 },
               ]}
               {...panResponder.panHandlers}
             >
-              <Pressable style={styles.cardPressable} onPress={() => void openDetails(activeCard)}>
+              <View style={styles.cardPressable}>
                 {activeBackdrop ? <Image source={{ uri: activeBackdrop }} style={styles.cardBackdrop} resizeMode="cover" /> : null}
                 <View style={styles.cardShade} />
-                <Animated.View style={[styles.choiceBadge, styles.choiceBadgeLeft, { opacity: choiceOpacity }]}> 
+                <Animated.View
+                  style={[
+                    styles.choiceBadge,
+                    styles.choiceBadgeLeft,
+                    { opacity: choiceOpacity, transform: [{ scale: badgeScale }] },
+                  ]}
+                >
                   <Text style={styles.choiceText}>Not for me</Text>
                 </Animated.View>
-                <Animated.View style={[styles.choiceBadge, styles.choiceBadgeRight, { opacity: choiceOpacity }]}> 
+                <Animated.View
+                  style={[
+                    styles.choiceBadge,
+                    styles.choiceBadgeRight,
+                    { opacity: choiceOpacity, transform: [{ scale: badgeScale }] },
+                  ]}
+                >
                   <Text style={styles.choiceText}>Interested</Text>
                 </Animated.View>
-                <Animated.View style={[styles.choiceBadge, styles.choiceBadgeUp, { opacity: superlikeOpacity }]}> 
+                <Animated.View
+                  style={[
+                    styles.choiceBadge,
+                    styles.choiceBadgeUp,
+                    { opacity: superlikeOpacity, transform: [{ scale: superlikeScale }] },
+                  ]}
+                >
                   <Text style={styles.choiceText}>Watch now</Text>
                 </Animated.View>
 
@@ -468,7 +651,7 @@ export default function WhatNextScreen() {
                     </Text>
                   </View>
                 </View>
-              </Pressable>
+              </View>
             </Animated.View>
           ) : (
             <View style={styles.centerState}>
@@ -481,10 +664,13 @@ export default function WhatNextScreen() {
 
       {!loading && !revealVisible ? (
         <View style={styles.controls}>
-          <Pressable style={[styles.controlButton, styles.controlReject]} onPress={() => void animateSwipe("left")}>
+          <AnimatedControl
+            style={[styles.controlButton, styles.controlReject]}
+            onPress={() => void animateSwipe("left")}
+          >
             <Ionicons name="close" size={24} color={colors.ink} />
-          </Pressable>
-          <Pressable
+          </AnimatedControl>
+          <AnimatedControl
             style={[styles.controlButton, styles.controlSave]}
             onPress={() => {
               if (!activeCard) {
@@ -495,13 +681,19 @@ export default function WhatNextScreen() {
             }}
           >
             <Ionicons name="bookmark-outline" size={21} color={colors.ink} />
-          </Pressable>
-          <Pressable style={[styles.controlButton, styles.controlLike]} onPress={() => void animateSwipe("right")}>
+          </AnimatedControl>
+          <AnimatedControl
+            style={[styles.controlButton, styles.controlLike]}
+            onPress={() => void animateSwipe("right")}
+          >
             <Ionicons name="heart" size={22} color={colors.background} />
-          </Pressable>
-          <Pressable style={[styles.controlButton, styles.controlPlay]} onPress={() => void animateSwipe("up")}>
+          </AnimatedControl>
+          <AnimatedControl
+            style={[styles.controlButton, styles.controlPlay]}
+            onPress={() => void animateSwipe("up")}
+          >
             <Ionicons name="play" size={20} color={colors.background} />
-          </Pressable>
+          </AnimatedControl>
         </View>
       ) : null}
 
@@ -514,7 +706,6 @@ export default function WhatNextScreen() {
           setSaveTitleId(detail.id);
           setShowSaveSheet(true);
         }}
-        onPost={() => {}}
       />
       <SaveToListSheet
         visible={showSaveSheet}
@@ -537,7 +728,41 @@ export default function WhatNextScreen() {
         }}
         onError={(message) => setError(message)}
       />
+
+      {toastVisible ? (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.toast,
+            { opacity: toastOpacity, transform: [{ translateY: toastTranslateY }] },
+          ]}
+        >
+          <Ionicons name="heart" size={14} color={colors.accent} />
+          <Text style={styles.toastText}>{toastMessage}</Text>
+        </Animated.View>
+      ) : null}
     </SafeAreaView>
+  );
+}
+
+function AnimatedControl({
+  style,
+  children,
+  onPress,
+}: {
+  style: object;
+  children: React.ReactNode;
+  onPress: () => void;
+}) {
+  const scale = useRef(new Animated.Value(1)).current;
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => Animated.spring(scale, { toValue: 0.87, bounciness: 0, useNativeDriver: true }).start()}
+      onPressOut={() => Animated.spring(scale, { toValue: 1, bounciness: 14, useNativeDriver: true }).start()}
+    >
+      <Animated.View style={[style, { transform: [{ scale }] }]}>{children}</Animated.View>
+    </Pressable>
   );
 }
 
@@ -653,25 +878,25 @@ const styles = StyleSheet.create({
   },
   backdropShade: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(5, 8, 14, 0.74)",
+    backgroundColor: "rgba(5, 8, 14, 0.68)",
   },
   backdropGlowTop: {
     position: "absolute",
-    top: -80,
+    top: -90,
     right: -30,
-    width: 220,
-    height: 220,
-    borderRadius: 110,
-    backgroundColor: "rgba(244, 196, 48, 0.12)",
+    width: 260,
+    height: 260,
+    borderRadius: 130,
+    backgroundColor: "rgba(244, 196, 48, 0.14)",
   },
   backdropGlowBottom: {
     position: "absolute",
-    bottom: -90,
+    bottom: -100,
     left: -50,
-    width: 280,
-    height: 280,
-    borderRadius: 140,
-    backgroundColor: "rgba(46, 196, 182, 0.1)",
+    width: 320,
+    height: 320,
+    borderRadius: 160,
+    backgroundColor: "rgba(46, 196, 182, 0.11)",
   },
   header: {
     flexDirection: "row",
@@ -706,18 +931,27 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: "800",
   },
-  progressPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: radii.pill,
-    backgroundColor: "rgba(11, 20, 36, 0.7)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  progressText: {
-    color: colors.ink,
-    fontSize: 12,
+  progressCount: {
+    color: colors.muted,
+    fontSize: 13,
     fontWeight: "800",
+  },
+  progressBarTrack: {
+    height: 3,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderRadius: 2,
+    marginHorizontal: spacing.lg,
+    marginTop: 10,
+    overflow: "hidden",
+  },
+  progressBarFill: {
+    height: 3,
+    borderRadius: 2,
+    backgroundColor: colors.accent,
+    shadowColor: colors.accent,
+    shadowOpacity: 0.6,
+    shadowRadius: 6,
+    shadowOffset: { width: 0, height: 0 },
   },
   centerState: {
     flex: 1,
@@ -764,17 +998,22 @@ const styles = StyleSheet.create({
     right: spacing.lg + 10,
     height: "73%",
     borderRadius: 34,
-    backgroundColor: "rgba(255,255,255,0.05)",
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.06)",
+    borderColor: "rgba(255,255,255,0.07)",
+    overflow: "hidden",
+  },
+  stackCardShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(7, 11, 19, 0.55)",
   },
   stackCardBack: {
     transform: [{ scale: 0.96 }, { translateY: 14 }],
-    opacity: 0.45,
+    opacity: 0.55,
   },
   stackCardFar: {
     transform: [{ scale: 0.92 }, { translateY: 28 }],
-    opacity: 0.28,
+    opacity: 0.32,
   },
   card: {
     height: "78%",
@@ -782,11 +1021,11 @@ const styles = StyleSheet.create({
     overflow: "hidden",
     backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "rgba(255,255,255,0.11)",
     shadowColor: colors.shadow,
-    shadowOpacity: 0.45,
-    shadowRadius: 24,
-    shadowOffset: { width: 0, height: 18 },
+    shadowOpacity: 0.55,
+    shadowRadius: 28,
+    shadowOffset: { width: 0, height: 20 },
   },
   cardPressable: {
     flex: 1,
@@ -796,7 +1035,7 @@ const styles = StyleSheet.create({
   },
   cardShade: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(7, 11, 19, 0.62)",
+    backgroundColor: "rgba(7, 11, 19, 0.52)",
   },
   choiceBadge: {
     position: "absolute",
@@ -1013,21 +1252,6 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.xs,
   },
-  primaryAction: {
-    flex: 1,
-    borderRadius: radii.pill,
-    backgroundColor: colors.accent,
-    paddingVertical: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  primaryActionText: {
-    color: colors.background,
-    fontWeight: "900",
-    fontSize: 14,
-  },
   secondaryAction: {
     flex: 1,
     borderRadius: radii.pill,
@@ -1065,5 +1289,24 @@ const styles = StyleSheet.create({
   posterFallback: {
     alignItems: "center",
     justifyContent: "center",
+  },
+  toast: {
+    position: "absolute",
+    bottom: 110,
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(11, 20, 36, 0.92)",
+    borderWidth: 1,
+    borderColor: "rgba(244,196,48,0.3)",
+  },
+  toastText: {
+    color: colors.ink,
+    fontSize: 13,
+    fontWeight: "700",
   },
 });

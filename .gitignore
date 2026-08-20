@@ -15,6 +15,7 @@ htmlcov/
 node_modules/
 .expo/
 .expo-shared/
+.claude/
 apps/api/alembic/versions/*.pyc
 apps/mobile/.npm/
 apps/api/uploads/

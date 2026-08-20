@@ -3,6 +3,8 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+import httpx
+import jwt
 from google.auth.transport import requests as google_requests
 from google.oauth2 import id_token as google_id_token
 from sqlalchemy import func, select
@@ -10,12 +12,19 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.security import create_access_token
-from app.models.social import Watchlist
 from app.models.user import AuthIdentity, User, UserPreferences, UserProfile
 from app.schemas.auth import SessionResponse, SessionUserResponse
+from app.services.watchlists import ensure_default_watchlists
+
+APPLE_JWKS_URL = "https://appleid.apple.com/auth/keys"
+APPLE_ISSUER = "https://appleid.apple.com"
 
 
 class GoogleAuthError(Exception):
+    pass
+
+
+class AppleAuthError(Exception):
     pass
 
 
@@ -73,6 +82,138 @@ def _build_unique_username(db: Session, base_value: str) -> str:
     return f"{base_slug}-{suffix}"
 
 
+@dataclass
+class AppleIdentity:
+    subject: str
+    email: str | None
+    display_name: str | None
+
+
+def verify_apple_identity_token(token: str, *, audience: str | None = None) -> AppleIdentity:
+    if not settings.apple_bundle_id and not audience:
+        raise AppleAuthError("APPLE_BUNDLE_ID is not configured")
+
+    try:
+        header = jwt.get_unverified_header(token)
+    except Exception as exc:
+        raise AppleAuthError("Invalid Apple identity token") from exc
+
+    try:
+        resp = httpx.get(APPLE_JWKS_URL, timeout=10)
+        resp.raise_for_status()
+        jwks = resp.json()
+    except Exception as exc:
+        raise AppleAuthError("Failed to fetch Apple public keys") from exc
+
+    matching_key = next((k for k in jwks.get("keys", []) if k.get("kid") == header.get("kid")), None)
+    if matching_key is None:
+        raise AppleAuthError("No matching Apple public key found")
+
+    try:
+        public_key = jwt.algorithms.RSAAlgorithm.from_jwk(matching_key)
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],
+            audience=audience or settings.apple_bundle_id,
+            issuer=APPLE_ISSUER,
+        )
+    except Exception as exc:
+        raise AppleAuthError("Apple identity token verification failed") from exc
+
+    subject = payload.get("sub")
+    if not subject:
+        raise AppleAuthError("Apple identity token missing subject claim")
+
+    return AppleIdentity(
+        subject=subject,
+        email=payload.get("email"),
+        display_name=None,
+    )
+
+
+def _ensure_post_auth_state(db: Session, user: User) -> None:
+    """Idempotently self-heal the required account objects after any successful auth.
+
+    Called from every provider (Google, Apple, Dev) so that a partially-provisioned account
+    can never persist. Safe to call repeatedly.
+    """
+    prefs = db.scalar(select(UserPreferences).where(UserPreferences.user_id == user.id))
+    if prefs is None:
+        db.add(UserPreferences(user_id=user.id))
+    ensure_default_watchlists(db, user.id)
+
+
+def authenticate_with_apple(db: Session, token: str, *, display_name: str | None = None) -> SessionResponse:
+    identity = verify_apple_identity_token(token)
+
+    auth_identity = db.scalar(
+        select(AuthIdentity).where(
+            AuthIdentity.provider == "apple",
+            AuthIdentity.provider_subject == identity.subject,
+        )
+    )
+
+    if auth_identity is not None:
+        user = db.scalar(select(User).where(User.id == auth_identity.user_id))
+        profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
+    else:
+        email = identity.email or f"apple_{identity.subject[:16]}@private.apple.com"
+        user = db.scalar(select(User).where(func.lower(User.email) == email.lower()))
+        if user is None:
+            user = User(email=email, auth_provider="apple")
+            db.add(user)
+            db.flush()
+
+            resolved_name = display_name or (email.split("@", 1)[0])
+            profile = UserProfile(
+                user_id=user.id,
+                username=_build_unique_username(db, email.split("@", 1)[0]),
+                display_name=resolved_name,
+                avatar_url=None,
+                favorite_genres=[],
+                country_code="US",
+            )
+            db.add(profile)
+        else:
+            profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
+
+        db.add(
+            AuthIdentity(
+                user_id=user.id,
+                provider="apple",
+                provider_subject=identity.subject,
+                email=email,
+            )
+        )
+
+    if profile is None:
+        resolved_name = display_name or user.email.split("@", 1)[0]
+        profile = UserProfile(
+            user_id=user.id,
+            username=_build_unique_username(db, user.email.split("@", 1)[0]),
+            display_name=resolved_name,
+            avatar_url=None,
+            favorite_genres=[],
+            country_code="US",
+        )
+        db.add(profile)
+
+    _ensure_post_auth_state(db, user)
+    db.commit()
+
+    access_token = create_access_token(user.id, user.email, "apple")
+    return SessionResponse(
+        access_token=access_token,
+        user=SessionUserResponse(
+            user_id=user.id,
+            email=user.email,
+            display_name=profile.display_name,
+            avatar_url=profile.avatar_url,
+        ),
+    )
+
+
 def authenticate_with_google(db: Session, token: str) -> SessionResponse:
     identity = verify_google_identity_token(token)
 
@@ -102,8 +243,6 @@ def authenticate_with_google(db: Session, token: str) -> SessionResponse:
                 country_code="US",
             )
             db.add(profile)
-            db.add(UserPreferences(user_id=user.id))
-            db.add(Watchlist(owner_user_id=user.id, name="My Picks", is_default=True))
         else:
             profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user.id))
 
@@ -127,6 +266,7 @@ def authenticate_with_google(db: Session, token: str) -> SessionResponse:
         )
         db.add(profile)
 
+    _ensure_post_auth_state(db, user)
     db.commit()
 
     access_token = create_access_token(user.id, user.email, "google")

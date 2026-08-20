@@ -9,6 +9,8 @@ from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentAvailability, ContentTitle
 from app.models.social import Watchlist, WatchlistItem
 from app.schemas.content import (
+    PersonCreditResponse,
+    PersonDetailResponse,
     RecommendationResponse,
     RelatedTitleResponse,
     StreamingAvailabilityResponse,
@@ -18,11 +20,13 @@ from app.schemas.content import (
     TitleResponse,
 )
 from app.schemas.taste import SwipeRecordCreate, SwipeRecordResponse
-from app.services.taste import get_social_recommendations, record_swipe
+from app.services.taste import build_swipe_feedback, get_social_recommendations, record_swipe
 from app.services.tmdb import (
     TmdbConfigurationError,
     discover_titles_by_genre,
+    fetch_person_details,
     fetch_title_gallery,
+    fetch_title_videos,
     list_tmdb_genres,
     fetch_related_titles,
     fetch_trending_titles,
@@ -68,6 +72,134 @@ def discover_titles(
     return [_to_title_response(title) for title in titles]
 
 
+@router.get("/trending", response_model=list[TitleResponse])
+def get_trending_titles(
+    db: DbSession,
+    limit: int = Query(default=20, ge=6, le=40),
+) -> list[TitleResponse]:
+    try:
+        titles = fetch_trending_titles(db, limit=limit)
+    except TmdbConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    return [_to_title_response(title) for title in titles]
+
+
+@router.get("/calibration-candidates", response_model=list[TitleResponse])
+def get_calibration_candidates(
+    db: DbSession,
+    _current_user: CurrentUser,
+) -> list[TitleResponse]:
+    """Balanced pool of 50 diverse titles for onboarding taste calibration."""
+    import random
+
+    seen: set[UUID] = set()
+    pool: list = []
+
+    try:
+        trending = fetch_trending_titles(db, limit=20)
+        for t in trending:
+            if t.id not in seen:
+                seen.add(t.id)
+                pool.append(t)
+    except TmdbConfigurationError:
+        pass
+
+    calibration_genres = ["drama", "action", "comedy", "thriller", "animation"]
+    for genre in calibration_genres:
+        if len(pool) >= 60:
+            break
+        try:
+            batch = discover_titles_by_genre(db, genre=genre, media_type="all", limit=10)
+            for t in batch:
+                if t.id not in seen:
+                    seen.add(t.id)
+                    pool.append(t)
+        except TmdbConfigurationError:
+            continue
+
+    random.shuffle(pool)
+    return [_to_title_response(t) for t in pool[:50]]
+
+
+@router.get("/person/{tmdb_person_id}", response_model=PersonDetailResponse)
+def get_person_details(tmdb_person_id: int) -> PersonDetailResponse:
+    try:
+        data = fetch_person_details(tmdb_person_id)
+    except TmdbConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="TMDB person lookup failed") from exc
+
+    return PersonDetailResponse(
+        tmdb_person_id=data["tmdb_person_id"],
+        name=data["name"],
+        profile_url=data.get("profile_url"),
+        biography=data.get("biography"),
+        known_for_department=data.get("known_for_department"),
+        birthday=data.get("birthday"),
+        place_of_birth=data.get("place_of_birth"),
+        credits=[
+            PersonCreditResponse(
+                tmdb_id=c["tmdb_id"],
+                title=c["title"],
+                media_type=c["media_type"],
+                poster_url=c.get("poster_url"),
+                release_date=c.get("release_date"),
+                character=c.get("character"),
+                job=c.get("job"),
+            )
+            for c in data.get("credits", [])
+        ],
+    )
+
+
+@router.get("/by-tmdb/{media_type}/{tmdb_id}", response_model=TitleResponse)
+def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession) -> TitleResponse:
+    """Look up (or create) a ContentTitle from a TMDB id + media type.
+    Used when the client only has a TMDB id (e.g. Person Detail filmography credits).
+    Returns the full TitleResponse so the client can open the canonical detail modal."""
+    mt = media_type.lower()
+    if mt in ("movie", "tv"):
+        content_type = "movie" if mt == "movie" else "series"
+    elif mt in ("movie", "series"):
+        content_type = mt
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="media_type must be movie|series|tv")
+
+    title = db.scalar(select(ContentTitle).where(ContentTitle.tmdb_id == tmdb_id))
+    if title is None:
+        title = ContentTitle(
+            tmdb_id=tmdb_id,
+            content_type=content_type,
+            title="",
+            metadata_raw={},
+        )
+        db.add(title)
+        db.flush()
+    try:
+        title = refresh_title_details(db, title)
+    except TmdbConfigurationError as exc:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail="TMDB title lookup failed") from exc
+    db.commit()
+
+    try:
+        gallery = fetch_title_gallery(title, limit=14)
+    except TmdbConfigurationError:
+        gallery = []
+    try:
+        related_titles = fetch_related_titles(db, title, limit=10)
+    except TmdbConfigurationError:
+        related_titles = []
+    availability = db.scalars(
+        select(ContentAvailability)
+        .where(ContentAvailability.content_title_id == title.id)
+        .order_by(ContentAvailability.provider_name.asc())
+    ).all()
+    return _to_title_response(title, None, availability, gallery, related_titles)
+
+
 @router.get("/{title_id}", response_model=TitleResponse)
 def get_title(title_id: UUID, db: DbSession) -> TitleResponse:
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
@@ -106,6 +238,19 @@ def get_title(title_id: UUID, db: DbSession) -> TitleResponse:
     return _to_title_response(title, wikipedia_metadata, availability, gallery, related_titles)
 
 
+@router.get("/{title_id}/videos")
+def get_title_videos(title_id: UUID, db: DbSession) -> list[dict]:
+    title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
+    if title is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
+    try:
+        return fetch_title_videos(title)
+    except TmdbConfigurationError:
+        return []
+    except httpx.HTTPError:
+        return []
+
+
 @router.get("/{title_id}/streaming-options", response_model=list[StreamingOptionResponse])
 def get_streaming_options(title_id: UUID, db: DbSession) -> list[StreamingOptionResponse]:
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
@@ -125,14 +270,15 @@ def get_my_recommendations(
     db: DbSession,
     limit: int = Query(default=24, ge=6, le=60),
     preferred_type: str | None = Query(default=None, pattern="^(movie|show)$"),
+    session_id: str | None = Query(default=None, max_length=80),
 ) -> list[RecommendationResponse]:
-    ranked: dict[UUID, dict] = {}
     try:
         return get_social_recommendations(
             db,
             current_user.id,
             limit=limit,
             preferred_type=preferred_type,
+            session_id=session_id,
         )
     except TmdbConfigurationError as exc:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
@@ -156,13 +302,16 @@ def record_title_swipe(
             pause_ms=payload.pause_ms,
             session_id=payload.session_id,
             reason=payload.reason,
+            source_surface=payload.source_surface,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    feedback = build_swipe_feedback(db, current_user.id, payload.title_id, payload.direction)
     return SwipeRecordResponse(
         title_id=payload.title_id,
         direction=payload.direction,
         updated_at=record.created_at,
+        scene_dna_feedback=feedback,
     )
 
 
@@ -200,11 +349,10 @@ def _to_title_response(
         if wikipedia_metadata and wikipedia_metadata.genres
         else title.genres
     )
-    overview = (
-        wikipedia_metadata.synopsis
-        if wikipedia_metadata and wikipedia_metadata.synopsis
-        else title.overview
-    )
+    # Per spec: TMDB is the canonical overview source. Never silently substitute
+    # scraped Wikipedia copy. If TMDB has no overview, the client shows an
+    # intentional unavailable state rather than a synthetic description.
+    overview = title.overview
     runtime = (
         wikipedia_metadata.runtime_minutes
         if wikipedia_metadata and wikipedia_metadata.runtime_minutes
@@ -243,10 +391,11 @@ def _to_title_response(
             headshot_url=f"https://image.tmdb.org/t/p/w185{person['profile_path']}"
             if person.get("profile_path")
             else None,
+            tmdb_person_id=person.get("id") if isinstance(person.get("id"), int) else None,
         )
         for person in cast
         if isinstance(person, dict) and person.get("name")
-    ][:5]
+    ][:8]
     creators_people = []
     creator_roles = ["Creator", "Director", "Writer", "Screenplay", "Executive Producer"]
     seen_creator_keys: set[tuple[str, str]] = set()
@@ -268,9 +417,10 @@ def _to_title_response(
                 headshot_url=f"https://image.tmdb.org/t/p/w185{person['profile_path']}"
                 if person.get("profile_path")
                 else None,
+                tmdb_person_id=person.get("id") if isinstance(person.get("id"), int) else None,
             )
         )
-        if len(creators_people) >= 3:
+        if len(creators_people) >= 4:
             break
 
     return TitleResponse(

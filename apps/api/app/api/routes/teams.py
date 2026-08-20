@@ -1,15 +1,22 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Response, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
 from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
+from app.db.session import SessionLocal
 from app.models.content import ContentTitle
 from app.models.social import TeamActivity
 from app.models.social import Team as TeamModel
 from app.models.social import TeamMember
 from app.models.social import TeamRanking, TeamTitle
-from app.models.user import UserProfile
+from app.models.user import User, UserProfile
+from app.services.notifications import (
+    notify_team_comment,
+    notify_team_member_added,
+    notify_team_member_joined,
+)
+from app.services.push_delivery import send_pending_push_notifications
 from app.schemas.team import (
     TeamActivityResponse,
     TeamActivityCommentCreateRequest,
@@ -33,6 +40,7 @@ from app.services.compatibility import get_team_analytics, to_team_analytics_res
 from app.services.teams import (
     add_title_to_team,
     add_team_member,
+    compute_team_derived_state,
     create_team_feed_post,
     create_team as create_team_record,
     get_team,
@@ -43,6 +51,7 @@ from app.services.teams import (
     list_team_members,
     list_team_titles,
     list_user_teams,
+    mark_team_viewed,
     remove_team_member,
     require_team_admin_or_owner,
     require_team_member,
@@ -56,14 +65,20 @@ router = APIRouter()
 
 @router.get("", response_model=list[TeamSummaryResponse])
 def list_teams(current_user: CurrentUser, db: DbSession) -> list[TeamSummaryResponse]:
-    return [_to_team_summary(db, team, member_count) for team, member_count in list_user_teams(db, current_user.id)]
+    return [
+        _to_team_summary(db, team, member_count, viewer_user_id=current_user.id)
+        for team, member_count in list_user_teams(db, current_user.id)
+    ]
 
 
 @router.get("/search", response_model=list[TeamSummaryResponse])
 def search_teams(q: str, current_user: CurrentUser, db: DbSession) -> list[TeamSummaryResponse]:
     if not q.strip():
         return []
-    return [_to_team_summary(db, team, member_count) for team, member_count in search_teams_by_name(db, q, current_user.id)]
+    return [
+        _to_team_summary(db, team, member_count, viewer_user_id=current_user.id)
+        for team, member_count in search_teams_by_name(db, q, current_user.id)
+    ]
 
 
 @router.post("", response_model=TeamResponse, status_code=status.HTTP_201_CREATED)
@@ -73,8 +88,34 @@ def create_team(payload: TeamCreateRequest, current_user: CurrentUser, db: DbSes
 
 
 @router.post("/join", response_model=TeamResponse, status_code=status.HTTP_200_OK)
-def join_team(payload: TeamJoinRequest, current_user: CurrentUser, db: DbSession) -> TeamResponse:
+def join_team(
+    payload: TeamJoinRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+    background_tasks: BackgroundTasks,
+) -> TeamResponse:
+    existing_member_ids = [
+        m.user_id
+        for m in db.scalars(
+            select(TeamMember).where(TeamMember.team_id.in_(
+                select(TeamModel.id).where(TeamModel.invite_code == payload.invite_code.strip().lower())
+            ), TeamMember.status == "active")
+        ).all()
+    ]
+
     team = join_team_by_invite_code(db, current_user, payload.invite_code)
+
+    notify_team_member_joined(
+        db,
+        joiner=current_user,
+        team_id=team.id,
+        team_name=team.name,
+        existing_member_ids=existing_member_ids,
+        is_demo=current_user.is_demo,
+    )
+    db.commit()
+    background_tasks.add_task(_deliver_push)
+
     return _load_team_response(db, team)
 
 
@@ -96,7 +137,20 @@ def get_team_detail(team_id: UUID, current_user: CurrentUser, db: DbSession) -> 
     team = get_team(db, team_id)
     if team is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Team not found")
-    return _load_team_response(db, team)
+    return _load_team_response(db, team, viewer_user_id=current_user.id)
+
+
+@router.post("/{team_id}/view", status_code=status.HTTP_204_NO_CONTENT, response_class=Response)
+def mark_team_viewed_route(
+    team_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> Response:
+    """Stamp the member's last_viewed_at cursor. Called by the mobile client
+    when the user opens a team so unread_activity_count resets on next fetch."""
+    require_team_member(db, team_id, current_user.id)
+    mark_team_viewed(db, team_id, current_user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{team_id}/analytics", response_model=TeamAnalyticsResponse)
@@ -186,8 +240,9 @@ def add_team_activity_comment(
     payload: TeamActivityCommentCreateRequest,
     current_user: CurrentUser,
     db: DbSession,
+    background_tasks: BackgroundTasks,
 ) -> TeamActivityResponse:
-    require_team_member(db, team_id, current_user.id)
+    team = require_team_member(db, team_id, current_user.id)
     target_activity = get_team_activity_by_id(db, team_id, activity_id)
     if target_activity is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Activity not found")
@@ -204,8 +259,22 @@ def add_team_activity_comment(
         payload={"comment": comment},
     )
     db.add(created)
+    db.flush()
+
+    notify_team_comment(
+        db,
+        commenter=current_user,
+        team_id=team_id,
+        team_name=team.name,
+        activity_id=activity_id,
+        activity_actor_id=target_activity.actor_user_id,
+        comment_excerpt=comment,
+        is_demo=current_user.is_demo,
+    )
     db.commit()
     db.refresh(created)
+    background_tasks.add_task(_deliver_push)
+
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == created.actor_user_id))
     return _to_activity_response(created, profile)
 
@@ -264,6 +333,7 @@ def add_member_to_team(
     payload: TeamMemberAddRequest,
     current_user: CurrentUser,
     db: DbSession,
+    background_tasks: BackgroundTasks,
 ) -> TeamResponse:
     team, _ = require_team_admin_or_owner(db, team_id, current_user.id)
     updated = add_team_member(
@@ -273,6 +343,18 @@ def add_member_to_team(
         member_user_id=payload.user_id,
         role=payload.role,
     )
+
+    notify_team_member_added(
+        db,
+        actor=current_user,
+        team_id=team.id,
+        team_name=team.name,
+        recipient_id=payload.user_id,
+        is_demo=current_user.is_demo,
+    )
+    db.commit()
+    background_tasks.add_task(_deliver_push)
+
     return _load_team_response(db, updated)
 
 
@@ -296,13 +378,32 @@ def search_users_to_add(
     ]
 
 
-def _load_team_response(db: DbSession, team: TeamModel) -> TeamResponse:
+def _deliver_push() -> None:
+    db = SessionLocal()
+    try:
+        send_pending_push_notifications(db)
+    finally:
+        db.close()
+
+
+def _load_team_response(
+    db: DbSession,
+    team: TeamModel,
+    *,
+    viewer_user_id: UUID | None = None,
+) -> TeamResponse:
     members = list_team_members(db, team.id)
     profiles = list_team_member_profiles(db, team.id)
-    return _to_team_response(db, team, members, profiles)
+    return _to_team_response(db, team, members, profiles, viewer_user_id=viewer_user_id)
 
 
-def _to_team_summary(db: DbSession, team: TeamModel, member_count: int) -> TeamSummaryResponse:
+def _to_team_summary(
+    db: DbSession,
+    team: TeamModel,
+    member_count: int,
+    *,
+    viewer_user_id: UUID | None = None,
+) -> TeamSummaryResponse:
     latest = db.scalar(
         select(TeamActivity).where(TeamActivity.team_id == team.id).order_by(TeamActivity.created_at.desc()).limit(1)
     )
@@ -314,6 +415,7 @@ def _to_team_summary(db: DbSession, team: TeamModel, member_count: int) -> TeamS
         .limit(4)
     ).all()
     latest_text = _activity_summary(latest) if latest is not None else None
+    derived = compute_team_derived_state(db, team, viewer_user_id)
     return TeamSummaryResponse(
         id=team.id,
         name=team.name,
@@ -329,6 +431,7 @@ def _to_team_summary(db: DbSession, team: TeamModel, member_count: int) -> TeamS
         last_activity_at=team.last_activity_at,
         latest_activity=latest_text,
         recent_member_avatars=[avatar for avatar in avatars if avatar],
+        **derived,
     )
 
 
@@ -337,10 +440,18 @@ def _to_team_response(
     team: TeamModel,
     members: list[TeamMember],
     profiles: dict[UUID, UserProfile],
+    *,
+    viewer_user_id: UUID | None = None,
 ) -> TeamResponse:
     analytics = to_team_analytics_response(get_team_analytics(db, team.id))
+    summary = _to_team_summary(
+        db,
+        team,
+        len([member for member in members if member.status == "active"]),
+        viewer_user_id=viewer_user_id,
+    )
     return TeamResponse(
-        **_to_team_summary(db, team, len([member for member in members if member.status == "active"])).model_dump(),
+        **summary.model_dump(),
         members=[
             TeamMemberSummaryResponse(
                 user_id=member.user_id,

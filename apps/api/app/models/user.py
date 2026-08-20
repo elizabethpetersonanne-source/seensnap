@@ -15,6 +15,7 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True)
     auth_provider: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(32), default="active")
+    is_demo: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -51,7 +52,12 @@ class Device(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     platform: Mapped[str] = mapped_column(String(16))
-    push_token: Mapped[str | None] = mapped_column(String(255))
+    expo_push_token: Mapped[str | None] = mapped_column(String(255))
+    app_env: Mapped[str | None] = mapped_column(String(16))
+    app_build: Mapped[str | None] = mapped_column(String(32))
+    permission_state: Mapped[str | None] = mapped_column(String(16))
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
@@ -64,5 +70,6 @@ class UserPreferences(Base):
     preferred_regions: Mapped[list[str]] = mapped_column(JSONB, default=lambda: ["US"])
     connected_streaming_services: Mapped[list[str]] = mapped_column(JSONB, default=list)
     instagram_share_default: Mapped[bool] = mapped_column(Boolean, default=True)
+    onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

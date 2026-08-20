@@ -22,10 +22,12 @@ class PreferencesResponse(BaseModel):
     preferred_regions: list[str]
     connected_streaming_services: list[str]
     instagram_share_default: bool
+    onboarding_completed: bool = False
 
 
 class PreferencesUpdateRequest(BaseModel):
     connected_streaming_services: list[str] | None = None
+    onboarding_completed: bool | None = None
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -33,6 +35,7 @@ class ProfileUpdateRequest(BaseModel):
     username: str | None = Field(default=None, min_length=3, max_length=40)
     bio: str | None = Field(default=None, max_length=280)
     avatar_url: str | None = Field(default=None, max_length=4096)
+    country_code: str | None = Field(default=None, min_length=2, max_length=2)
 
 
 class PublicProfileResponse(BaseModel):

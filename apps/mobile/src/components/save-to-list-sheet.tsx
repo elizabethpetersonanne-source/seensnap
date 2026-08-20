@@ -1,7 +1,6 @@
 import { useEffect, useState } from "react";
 import {
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -11,7 +10,8 @@ import {
   View,
 } from "react-native";
 
-import { colors, radii, spacing } from "@/constants/theme";
+import { EditorialSheet } from "@/components/editorial-sheet";
+import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
 
 type WatchlistSummary = {
@@ -133,156 +133,191 @@ export function SaveToListSheet({ visible, token, titleId, source, onClose, onSa
   }
 
   return (
-    <Modal transparent visible={visible} animationType="slide" onRequestClose={onClose}>
-      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.backdrop}>
-        <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
-        <View style={styles.sheet}>
-          <Text style={styles.title}>Save to a List</Text>
-          {!creating ? (
-            <View style={styles.listBody}>
-              <Text style={styles.subtitle}>Choose where to save this title.</Text>
-              <ScrollView contentContainerStyle={styles.listScroller}>
-                {lists.map((list) => (
+    <EditorialSheet
+      visible={visible}
+      onClose={onClose}
+      title={creating ? "New list" : "Save to a list"}
+      supporting={creating ? "Give it a name — you can always change it later." : "Where should this live?"}
+    >
+      <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined}>
+        {!creating ? (
+          <View style={styles.listBody}>
+            <ScrollView style={styles.listScroll} contentContainerStyle={styles.listScroller}>
+              {lists.map((list) => {
+                const selected = selectedListId === list.id;
+                return (
                   <Pressable
                     key={list.id}
-                    style={[styles.listRow, selectedListId === list.id && styles.listRowSelected]}
+                    style={[styles.listRow, selected && styles.listRowSelected]}
                     onPress={() => setSelectedListId(list.id)}
                   >
-                    <View>
+                    <View style={{ flex: 1 }}>
                       <Text style={styles.listName}>{list.name}</Text>
                       <Text style={styles.listMeta}>{list.title_count} titles</Text>
                     </View>
-                    <Text style={styles.selectLabel}>{selectedListId === list.id ? "Selected" : "Select"}</Text>
+                    <Text style={[styles.selectLabel, !selected && styles.selectLabelIdle]}>
+                      {selected ? "Selected" : "Select"}
+                    </Text>
                   </Pressable>
-                ))}
-                {!lists.length ? <Text style={styles.emptyText}>No lists yet. Create one to save this title.</Text> : null}
-              </ScrollView>
-              <Pressable style={styles.createButton} onPress={() => setCreating(true)}>
-                <Text style={styles.createButtonText}>+ Create New List</Text>
+                );
+              })}
+              {!lists.length ? (
+                <Text style={styles.emptyText}>No lists yet. Create one to save this title.</Text>
+              ) : null}
+            </ScrollView>
+            <Pressable style={styles.createButton} onPress={() => setCreating(true)}>
+              <Text style={styles.createButtonText}>+ Create new list</Text>
+            </Pressable>
+            <View style={styles.footerActions}>
+              <Pressable style={styles.secondary} onPress={onClose}>
+                <Text style={styles.secondaryText}>Cancel</Text>
               </Pressable>
-              <View style={styles.footerActions}>
-                <Pressable style={styles.secondary} onPress={onClose}>
-                  <Text style={styles.secondaryText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.primary, (!selectedListId || isBusy) && styles.disabled]}
-                  disabled={!selectedListId || isBusy}
-                  onPress={() => void saveToList()}
-                >
-                  <Text style={styles.primaryText}>{isBusy ? "Saving..." : "Save"}</Text>
-                </Pressable>
-              </View>
+              <Pressable
+                style={[styles.primary, (!selectedListId || isBusy) && styles.disabled]}
+                disabled={!selectedListId || isBusy}
+                onPress={() => void saveToList()}
+              >
+                <Text style={styles.primaryText}>{isBusy ? "Saving..." : "Save"}</Text>
+              </Pressable>
             </View>
-          ) : (
-            <View style={styles.createBody}>
-              <TextInput
-                value={newName}
-                onChangeText={setNewName}
-                placeholder="List name"
-                placeholderTextColor={colors.muted}
-                style={styles.input}
-              />
-              <TextInput
-                value={newDescription}
-                onChangeText={setNewDescription}
-                placeholder="Description (optional)"
-                placeholderTextColor={colors.muted}
-                style={styles.input}
-              />
-              <View style={styles.createActions}>
-                <Pressable style={styles.secondary} onPress={() => setCreating(false)}>
-                  <Text style={styles.secondaryText}>Cancel</Text>
-                </Pressable>
-                <Pressable
-                  style={[styles.primary, (!newName.trim() || isBusy) && styles.disabled]}
-                  disabled={!newName.trim() || isBusy}
-                  onPress={() => void createListAndSave()}
-                >
-                  <Text style={styles.primaryText}>Create New List</Text>
-                </Pressable>
-              </View>
+          </View>
+        ) : (
+          <View style={styles.createBody}>
+            <TextInput
+              value={newName}
+              onChangeText={setNewName}
+              placeholder="List name"
+              placeholderTextColor={colors.muted2}
+              style={styles.input}
+              maxLength={60}
+            />
+            <TextInput
+              value={newDescription}
+              onChangeText={setNewDescription}
+              placeholder="Description (optional)"
+              placeholderTextColor={colors.muted2}
+              style={styles.input}
+              maxLength={120}
+            />
+            <View style={styles.createActions}>
+              <Pressable style={styles.secondary} onPress={() => setCreating(false)}>
+                <Text style={styles.secondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={[styles.primary, (!newName.trim() || isBusy) && styles.disabled]}
+                disabled={!newName.trim() || isBusy}
+                onPress={() => void createListAndSave()}
+              >
+                <Text style={styles.primaryText}>{isBusy ? "Creating..." : "Create and save"}</Text>
+              </Pressable>
             </View>
-          )}
-        </View>
+          </View>
+        )}
       </KeyboardAvoidingView>
-    </Modal>
+    </EditorialSheet>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: { flex: 1, backgroundColor: "rgba(4,9,16,0.72)", justifyContent: "flex-end" },
-  sheet: {
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
-    borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surface,
-    padding: spacing.lg,
-    gap: spacing.sm,
-    maxHeight: "86%",
-  },
-  title: { color: colors.ink, fontSize: 20, fontWeight: "900" },
-  subtitle: { color: colors.muted, fontSize: 13, lineHeight: 20 },
-  listBody: { gap: 8, paddingBottom: spacing.sm },
+  listBody: { gap: spacing.sm, paddingBottom: spacing.sm },
+  listScroll: { maxHeight: 320 },
   listScroller: { gap: 8, paddingBottom: spacing.sm },
   listRow: {
-    borderRadius: 12,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
+    borderColor: rules.default,
+    backgroundColor: colors.surface,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     flexDirection: "row",
     alignItems: "center",
-    justifyContent: "space-between",
+    gap: spacing.sm,
   },
   listRowSelected: {
-    borderColor: colors.accent,
-    backgroundColor: "rgba(244,196,48,0.12)",
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.06)",
   },
-  listName: { color: colors.ink, fontWeight: "800", fontSize: 14 },
-  listMeta: { color: colors.muted, fontSize: 12, marginTop: 2 },
-  selectLabel: { color: colors.accent, fontWeight: "700", fontSize: 12 },
-  emptyText: { color: colors.muted, fontSize: 13, lineHeight: 20, paddingVertical: 6 },
+  listName: {
+    color: colors.ink,
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 14,
+  },
+  listMeta: {
+    color: colors.muted,
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    marginTop: 2,
+    letterSpacing: 0.3,
+  },
+  selectLabel: {
+    color: colors.accent,
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+  },
+  selectLabelIdle: { color: colors.muted2 },
+  emptyText: {
+    color: colors.muted,
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    lineHeight: 20,
+    paddingVertical: 6,
+  },
   createButton: {
-    borderRadius: radii.pill,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.surfaceSoft,
-    paddingVertical: 10,
+    borderColor: rules.default,
+    paddingVertical: 12,
     alignItems: "center",
   },
-  createButtonText: { color: colors.ink, fontWeight: "700", fontSize: 13 },
-  footerActions: { flexDirection: "row", gap: spacing.sm },
+  createButtonText: {
+    color: colors.ink,
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 13,
+  },
+  footerActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
   createBody: { gap: spacing.sm },
   input: {
     borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: 12,
-    backgroundColor: colors.backgroundElevated,
+    borderColor: rules.default,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
     color: colors.ink,
+    fontFamily: fonts.sans,
     paddingHorizontal: 12,
-    paddingVertical: 10,
+    paddingVertical: 12,
     fontSize: 14,
   },
-  createActions: { flexDirection: "row", gap: spacing.sm },
+  createActions: { flexDirection: "row", gap: spacing.sm, marginTop: spacing.xs },
   secondary: {
     flex: 1,
-    borderRadius: radii.pill,
+    borderRadius: radii.md,
     borderWidth: 1,
-    borderColor: colors.border,
-    backgroundColor: colors.backgroundElevated,
-    paddingVertical: 10,
+    borderColor: rules.default,
+    paddingVertical: 12,
     alignItems: "center",
   },
-  secondaryText: { color: colors.ink, fontSize: 12, fontWeight: "700" },
+  secondaryText: {
+    color: colors.ink,
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    textTransform: "uppercase",
+  },
   primary: {
     flex: 1,
-    borderRadius: radii.pill,
+    borderRadius: radii.md,
     backgroundColor: colors.accent,
-    paddingVertical: 10,
+    paddingVertical: 12,
     alignItems: "center",
   },
-  primaryText: { color: colors.background, fontSize: 12, fontWeight: "800" },
-  disabled: { opacity: 0.5 },
+  primaryText: {
+    color: colors.paperInk,
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    textTransform: "uppercase",
+  },
+  disabled: { opacity: 0.4 },
 });

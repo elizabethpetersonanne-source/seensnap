@@ -51,6 +51,12 @@ class TeamSummaryResponse(BaseModel):
     last_activity_at: datetime | None = None
     latest_activity: str | None = None
     recent_member_avatars: list[str] = Field(default_factory=list)
+    # Watch Teams overhaul (brief §8): fields that power the "inbox of group
+    # momentum" pattern on Teams Home + the sticky pulse header on detail.
+    unread_activity_count: int = 0
+    active_member_count_24h: int = 0
+    team_status: str = "quiet"  # 'active' | 'quiet' | 'dormant'
+    top10_updated_at: datetime | None = None
 
 
 class TeamResponse(TeamSummaryResponse):

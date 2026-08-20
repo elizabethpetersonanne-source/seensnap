@@ -3,7 +3,7 @@ from __future__ import annotations
 from uuid import UUID
 
 from fastapi import HTTPException, status
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.social import UserFollow
@@ -11,20 +11,9 @@ from app.models.user import User
 
 
 def ensure_follows_table(db: Session) -> None:
-    db.execute(
-        text(
-            """
-            CREATE TABLE IF NOT EXISTS user_follows (
-              id UUID PRIMARY KEY,
-              follower_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              following_user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-              CONSTRAINT uq_user_follow UNIQUE (follower_user_id, following_user_id)
-            )
-            """
-        )
-    )
-    db.commit()
+    # Table is now managed by Alembic migration 20260818_0007_user_follows.
+    # This function is kept for call-site compatibility but is a no-op.
+    pass
 
 
 def follow_user(db: Session, follower_user_id: UUID, following_user_id: UUID) -> None:
@@ -49,6 +38,18 @@ def follow_user(db: Session, follower_user_id: UUID, following_user_id: UUID) ->
                 following_user_id=following_user_id,
             )
         )
+        db.flush()
+        # Notify the followed user — dedup key inside the notification
+        # service prevents follow/unfollow/refollow spam.
+        follower = db.scalar(select(User).where(User.id == follower_user_id))
+        if follower is not None:
+            from app.services.notifications import notify_social_new_follower
+            notify_social_new_follower(
+                db,
+                follower=follower,
+                followed_user_id=following_user_id,
+                is_demo=follower.is_demo,
+            )
         db.commit()
 
 

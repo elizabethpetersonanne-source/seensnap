@@ -1,4 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
+import * as WebBrowser from "expo-web-browser";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
@@ -6,6 +8,7 @@ import {
   Image,
   Linking,
   Modal,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -15,17 +18,64 @@ import {
   type NativeScrollEvent,
 } from "react-native";
 
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
+import { AddToTeamSheet } from "@/components/add-to-team-sheet";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
-import { colors, radii, spacing } from "@/constants/theme";
+import { TasteSignal } from "@/components/taste-signal";
+import { shareTitle } from "@/lib/share";
+import { ShareComposerSheet } from "@/components/share-composer-sheet";
+import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
 import {
-  getStreamingServiceMeta,
-  type StreamingAvailability,
-  type StreamingServiceMeta,
-} from "@/lib/streaming";
-import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
+  fetchPersonDetails,
+  fetchUniversalTitle,
+  type PersonProfile,
+  type UniversalTitle,
+} from "@/lib/universal-title";
+
+type WatchAction = {
+  intent: string;
+  label: string;
+  destination_quality: string;
+  outbound_url: string | null;
+};
+
+type WatchProvider = {
+  provider_id: number | null;
+  provider_code: string;
+  provider_name: string;
+  logo_url: string | null;
+  logo_path: string | null;
+  availability_types: string[];
+  subscription_cta_allowed: boolean;
+  actions: WatchAction[];
+};
+
+type WatchOptionsGroups = {
+  my_services: WatchProvider[];
+  free: WatchProvider[];
+  rent_buy: WatchProvider[];
+  other_subscriptions: WatchProvider[];
+};
+
+type WatchOptionsResponse = {
+  content_id: string;
+  region: string;
+  source: string;
+  source_attribution: string;
+  fetched_at: string | null;
+  groups: WatchOptionsGroups;
+};
+
+const WATCH_GROUP_CONFIG: Array<{ key: keyof WatchOptionsGroups; label: string }> = [
+  { key: "my_services", label: "On Your Services" },
+  { key: "free", label: "Free" },
+  { key: "rent_buy", label: "Rent or Buy" },
+  { key: "other_subscriptions", label: "Other Subscriptions" },
+];
 
 type Props = {
   visible: boolean;
@@ -35,12 +85,11 @@ type Props = {
   onClose: () => void;
   onSaveTitle?: ((title: UniversalTitle) => void) | null;
   onSave?: () => void;
-  onPost: (title: UniversalTitle) => void;
   onAddToTeam?: ((title: UniversalTitle) => void) | null;
 };
 
 const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
-const HERO_HEIGHT = Math.min(460, Math.max(360, screenHeight * 0.48));
+const HERO_HEIGHT = Math.min(480, Math.max(380, screenHeight * 0.5));
 
 export function UniversalTitleModal({
   visible,
@@ -50,20 +99,35 @@ export function UniversalTitleModal({
   onClose,
   onSaveTitle,
   onSave,
-  onPost,
   onAddToTeam,
 }: Props) {
   const { sessionToken, user } = useAuth();
-  const [preferredServices, setPreferredServices] = useState<string[]>([]);
+  const insets = useSafeAreaInsets();
+  const [watchOptions, setWatchOptions] = useState<WatchOptionsResponse | null>(null);
+  const [watchOptionsLoading, setWatchOptionsLoading] = useState(false);
   const [expandedDescription, setExpandedDescription] = useState(false);
   const [activeImageIndex, setActiveImageIndex] = useState(0);
   const [rendered, setRendered] = useState(visible);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
+  const [showAddToTeam, setShowAddToTeam] = useState(false);
+  // Share-to-Feed composer state — Social brief §8.
+  const [showShareToFeed, setShowShareToFeed] = useState(false);
   const [activeTitle, setActiveTitle] = useState<UniversalTitle | null>(title);
   const [internalLoading, setInternalLoading] = useState(false);
   const [savedState, setSavedState] = useState(isSaved);
   const [savedTitleIds, setSavedTitleIds] = useState<Set<string>>(new Set());
   const [toast, setToast] = useState<string | null>(null);
+  const [selectedPerson, setSelectedPerson] = useState<{
+    name: string;
+    role: string;
+    headshotUrl: string | null;
+    tmdbPersonId: number | null;
+  } | null>(null);
+  const [personProfile, setPersonProfile] = useState<PersonProfile | null>(null);
+  const [personLoading, setPersonLoading] = useState(false);
+  const [trailerKey, setTrailerKey] = useState<string | null>(null);
+  const [trailerLoading, setTrailerLoading] = useState(false);
+  const [trailerFetched, setTrailerFetched] = useState(false);
 
   const heroScrollRef = useRef<ScrollView | null>(null);
   const overlayOpacity = useRef(new Animated.Value(0)).current;
@@ -81,6 +145,9 @@ export function UniversalTitleModal({
     setActiveTitle(title);
     setExpandedDescription(false);
     setActiveImageIndex(0);
+    setTrailerKey(null);
+    setTrailerFetched(false);
+    setWatchOptions(null);
   }, [title]);
 
   useEffect(() => {
@@ -108,57 +175,41 @@ export function UniversalTitleModal({
 
   useEffect(() => {
     let isMounted = true;
-
-    async function loadPreferences() {
-      if (!sessionToken || !visible) {
-        if (isMounted) {
-          setPreferredServices([]);
-        }
+    async function loadWatchOptions() {
+      if (!sessionToken || !visible || !activeTitle?.id) {
+        if (isMounted) setWatchOptions(null);
         return;
       }
+      if (isMounted) setWatchOptionsLoading(true);
       try {
-        const preferences = await apiRequest<{ connected_streaming_services: string[] }>("/me/preferences", {
-          token: sessionToken,
-        });
-        if (isMounted) {
-          setPreferredServices(preferences.connected_streaming_services ?? []);
-        }
+        const data = await apiRequest<WatchOptionsResponse>(
+          `/titles/${activeTitle.id}/watch-options?region=US`,
+          { token: sessionToken }
+        );
+        if (isMounted) setWatchOptions(data);
       } catch {
-        if (isMounted) {
-          setPreferredServices([]);
-        }
+        if (isMounted) setWatchOptions(null);
+      } finally {
+        if (isMounted) setWatchOptionsLoading(false);
       }
     }
-
-    void loadPreferences();
-    return () => {
-      isMounted = false;
-    };
-  }, [sessionToken, visible]);
+    void loadWatchOptions();
+    return () => { isMounted = false; };
+  }, [sessionToken, visible, activeTitle?.id]);
 
   useEffect(() => {
     let isMounted = true;
-
     async function loadSavedTitles() {
-      if (!sessionToken || !visible) {
-        return;
-      }
+      if (!sessionToken || !visible) return;
       try {
         const ids = await apiRequest<string[]>("/me/watchlist/title-ids", { token: sessionToken });
-        if (isMounted) {
-          setSavedTitleIds(new Set(ids));
-        }
+        if (isMounted) setSavedTitleIds(new Set(ids));
       } catch {
-        if (isMounted) {
-          setSavedTitleIds(new Set());
-        }
+        if (isMounted) setSavedTitleIds(new Set());
       }
     }
-
     void loadSavedTitles();
-    return () => {
-      isMounted = false;
-    };
+    return () => { isMounted = false; };
   }, [sessionToken, visible]);
 
   useEffect(() => {
@@ -174,13 +225,7 @@ export function UniversalTitleModal({
 
       Animated.parallel([
         Animated.timing(overlayOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
-        Animated.spring(sheetTranslateY, {
-          toValue: 0,
-          damping: 20,
-          mass: 0.95,
-          stiffness: 170,
-          useNativeDriver: true,
-        }),
+        Animated.spring(sheetTranslateY, { toValue: 0, damping: 20, mass: 0.95, stiffness: 170, useNativeDriver: true }),
       ]).start(() => {
         Animated.sequence([
           Animated.timing(heroOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
@@ -205,14 +250,8 @@ export function UniversalTitleModal({
       Animated.timing(sheetTranslateY, { toValue: screenHeight, duration: 240, useNativeDriver: true }),
     ]).start(() => setRendered(false));
   }, [
-    actionsOpacity,
-    actionsTranslateY,
-    contentOpacity,
-    contentTranslateY,
-    heroOpacity,
-    overlayOpacity,
-    sheetTranslateY,
-    visible,
+    actionsOpacity, actionsTranslateY, contentOpacity, contentTranslateY,
+    heroOpacity, overlayOpacity, sheetTranslateY, visible,
   ]);
 
   const currentTitle = activeTitle;
@@ -222,9 +261,7 @@ export function UniversalTitleModal({
     const entries = currentTitle?.imageGallery ?? [];
     const deduped = entries.reduce<Array<{ url: string; kind: string }>>((acc, item) => {
       const resolved = resolveMediaUrl(item.url);
-      if (!resolved || acc.some((entry) => entry.url === resolved)) {
-        return acc;
-      }
+      if (!resolved || acc.some((entry) => entry.url === resolved)) return acc;
       acc.push({ url: resolved, kind: item.kind });
       return acc;
     }, []);
@@ -258,92 +295,60 @@ export function UniversalTitleModal({
       entries.push({ icon: "globe-outline", label: currentTitle.language });
     }
     return entries;
-  }, [
-    currentTitle?.genres,
-    currentTitle?.language,
-    currentTitle?.mediaType,
-    currentTitle?.ratingTmdb,
-    currentTitle?.runtimeMinutes,
-    currentTitle?.seasons,
-  ]);
+  }, [currentTitle?.genres, currentTitle?.language, currentTitle?.mediaType, currentTitle?.ratingTmdb, currentTitle?.runtimeMinutes, currentTitle?.seasons]);
 
-  const sortedStreamingOptions = useMemo(() => {
-    const entries = currentTitle?.streamingAvailability ?? [];
-    return [...entries].sort((left, right) => {
-      const leftPriority = preferredServices.includes(left.service) ? 0 : 1;
-      const rightPriority = preferredServices.includes(right.service) ? 0 : 1;
-      if (leftPriority !== rightPriority) {
-        return leftPriority - rightPriority;
-      }
-      return left.serviceName.localeCompare(right.serviceName);
-    });
-  }, [currentTitle?.streamingAvailability, preferredServices]);
+  const hasLongDescription = Boolean((currentTitle?.description ?? "").length > 160);
 
-  const matchingStreamingOptions = sortedStreamingOptions.filter((entry) =>
-    preferredServices.includes(entry.service)
-  );
-  const primaryStreamingOption = matchingStreamingOptions.length === 1 ? matchingStreamingOptions[0] : null;
-  const hasLongDescription = Boolean((currentTitle?.description ?? "").length > 220);
+  const allPeople = useMemo(() => [
+    ...(currentTitle?.creators ?? []).slice(0, 4),
+    ...(currentTitle?.cast ?? []).slice(0, 8),
+  ], [currentTitle?.cast, currentTitle?.creators]);
 
   function handleImageScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
     const nextIndex = Math.round(event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1));
-    if (nextIndex !== activeImageIndex) {
-      setActiveImageIndex(nextIndex);
-    }
+    if (nextIndex !== activeImageIndex) setActiveImageIndex(nextIndex);
   }
 
-  async function openStreamingOption(service: { service: string; serviceName: string; appUrl?: string | null; webUrl?: string | null }) {
-    const appUrl = service.appUrl?.trim() || null;
-    const webUrl = service.webUrl?.trim() || null;
-    if (appUrl) {
-      const supported = await Linking.canOpenURL(appUrl).catch(() => false);
+  async function openWatchAction(provider: WatchProvider, action: WatchAction) {
+    const url = action.outbound_url;
+    if (!url) return;
+    const isDeepLink = !url.startsWith("http");
+    if (isDeepLink) {
+      const supported = await Linking.canOpenURL(url).catch(() => false);
       if (supported) {
-        await Linking.openURL(appUrl);
-        trackEvent("stream_now_clicked", {
-          titleId: currentTitle?.id ?? null,
-          service: service.service,
-          userId: user?.user_id ?? null,
-          destination: "app",
-        });
+        await Linking.openURL(url);
+        trackEvent("watch_now_clicked", { titleId: currentTitle?.id ?? null, provider: provider.provider_code, intent: action.intent, userId: user?.user_id ?? null, destination: "app" });
         return;
       }
     }
-    if (webUrl) {
-      await Linking.openURL(webUrl);
-      trackEvent("stream_now_clicked", {
-        titleId: currentTitle?.id ?? null,
-        service: service.service,
-        userId: user?.user_id ?? null,
-        destination: "web",
-      });
-    }
+    await WebBrowser.openBrowserAsync(url, {
+      toolbarColor: colors.background,
+      presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+    });
+    trackEvent("watch_now_clicked", { titleId: currentTitle?.id ?? null, provider: provider.provider_code, intent: action.intent, userId: user?.user_id ?? null, destination: "web" });
   }
 
   function openSaveFlow() {
-    if (!sessionToken || !currentTitle?.id) {
-      setToast("Sign in to save titles");
-      return;
-    }
+    if (!sessionToken || !currentTitle?.id) { setToast("Sign in to save titles"); return; }
     Animated.sequence([
       Animated.timing(saveScale, { toValue: 1.08, duration: 120, useNativeDriver: true }),
       Animated.spring(saveScale, { toValue: 1, useNativeDriver: true }),
     ]).start();
-    if (currentTitle && onSaveTitle) {
-      onSaveTitle(currentTitle);
-      onSave?.();
-      return;
-    }
     setShowSaveSheet(true);
-    onSave?.();
+  }
+
+  function openAddToTeamFlow() {
+    if (!sessionToken) { setToast("Sign in to add to team"); return; }
+    if (currentTitle && onAddToTeam) { onAddToTeam(currentTitle); return; }
+    setShowAddToTeam(true);
   }
 
   async function openRelatedTitle(titleId: string) {
-    if (!sessionToken || !titleId || currentTitle?.id === titleId) {
-      return;
-    }
+    if (!sessionToken || !titleId || currentTitle?.id === titleId) return;
     setInternalLoading(true);
     setExpandedDescription(false);
     setActiveImageIndex(0);
+    setWatchOptions(null);
     try {
       const nextTitle = await fetchUniversalTitle(sessionToken, titleId);
       setActiveTitle(nextTitle);
@@ -355,9 +360,57 @@ export function UniversalTitleModal({
     }
   }
 
-  if (!rendered) {
-    return null;
+  async function openPersonDetail(person: { name: string; role: string; headshotUrl: string | null; tmdbPersonId: number | null }) {
+    // Canonical Person Detail lives at /person/[tmdbId]. If we have a TMDB id, route there.
+    if (person.tmdbPersonId) {
+      onClose();
+      router.push(`/person/${person.tmdbPersonId}` as never);
+      return;
+    }
+    // Fallback: no TMDB id — show the inline sheet with the local data we have.
+    setSelectedPerson(person);
+    setPersonProfile(null);
   }
+
+  async function openTrailer() {
+    if (!sessionToken || !currentTitle?.id) {
+      return;
+    }
+    if (trailerKey) {
+      await WebBrowser.openBrowserAsync(`https://www.youtube.com/watch?v=${trailerKey}`, {
+        presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+        toolbarColor: colors.background,
+      });
+      return;
+    }
+    if (trailerFetched) {
+      return;
+    }
+    setTrailerLoading(true);
+    try {
+      const videos = await apiRequest<Array<{ key: string; site: string; type: string; name: string }>>(
+        `/titles/${currentTitle.id}/videos`,
+        { token: sessionToken }
+      );
+      const first = videos[0] ?? null;
+      setTrailerFetched(true);
+      if (first?.key) {
+        setTrailerKey(first.key);
+        await WebBrowser.openBrowserAsync(`https://www.youtube.com/watch?v=${first.key}`, {
+          presentationStyle: WebBrowser.WebBrowserPresentationStyle.FULL_SCREEN,
+          toolbarColor: colors.background,
+        });
+      } else {
+        setToast("No trailer available for this title");
+      }
+    } catch {
+      setToast("Could not load trailer");
+    } finally {
+      setTrailerLoading(false);
+    }
+  }
+
+  if (!rendered) return null;
 
   return (
     <>
@@ -371,11 +424,12 @@ export function UniversalTitleModal({
               <View style={styles.handle} />
             </View>
 
-            <Pressable style={styles.closeButton} onPress={onClose}>
+            <Pressable style={[styles.closeButton, { top: Math.max(insets.top + 8, 18) }]} onPress={onClose}>
               <Ionicons name="close" size={18} color={colors.ink} />
             </Pressable>
 
             <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+              {/* Hero image carousel */}
               <Animated.View style={[styles.heroCard, { opacity: heroOpacity }]}>
                 <ScrollView
                   ref={heroScrollRef}
@@ -387,40 +441,79 @@ export function UniversalTitleModal({
                 >
                   {(galleryImages.length ? galleryImages : [{ url: "", kind: "backdrop" }]).map((image, index) => (
                     <View key={`${image.url}-${index}`} style={styles.heroSlide}>
-                      {image.url ? <Image source={{ uri: image.url }} style={styles.heroImage} resizeMode="cover" /> : <View style={styles.heroFallback} />}
-                      <View style={styles.heroShadeStrong} />
-                      <View style={styles.heroShadeSoft} />
+                      {image.url
+                        ? <Image source={{ uri: image.url }} style={styles.heroImage} resizeMode="cover" />
+                        : <View style={styles.heroFallback} />
+                      }
+                      <View style={styles.heroShade} />
+                      <View style={styles.heroGradient} />
                     </View>
                   ))}
                 </ScrollView>
 
                 <View style={styles.heroContent}>
                   <View style={styles.heroTopRow}>
-                    <View />
-                    {galleryImages.length > 1 ? (
-                      <Text style={styles.galleryCount}>{activeImageIndex + 1}/{galleryImages.length}</Text>
-                    ) : null}
+                    <Pressable
+                      style={[styles.trailerButton, (trailerFetched && !trailerKey) && styles.trailerButtonDim]}
+                      onPress={() => void openTrailer()}
+                      disabled={trailerLoading || (trailerFetched && !trailerKey)}
+                    >
+                      {trailerLoading
+                        ? <Text style={styles.trailerButtonText}>Loading…</Text>
+                        : (trailerFetched && !trailerKey)
+                          ? null
+                          : (
+                            <>
+                              <Ionicons name="play-circle" size={15} color={colors.background} />
+                              <Text style={styles.trailerButtonText}>Trailer</Text>
+                            </>
+                          )
+                      }
+                    </Pressable>
+                    {galleryImages.length > 1
+                      ? <Text style={styles.galleryCount}>{activeImageIndex + 1}/{galleryImages.length}</Text>
+                      : null
+                    }
                   </View>
-
                   <View style={styles.heroBottomRow}>
                     <View style={styles.posterWrap}>
-                      {posterImage ? (
-                        <Image source={{ uri: posterImage }} style={styles.poster} resizeMode="cover" />
-                      ) : (
-                        <View style={styles.posterFallback}>
-                          <Ionicons name="film-outline" size={28} color={colors.ink} />
-                        </View>
-                      )}
+                      {posterImage
+                        ? <Image source={{ uri: posterImage }} style={styles.poster} resizeMode="cover" />
+                        : <View style={styles.posterFallback}><Ionicons name="film-outline" size={28} color={colors.ink} /></View>
+                      }
                     </View>
-
                     <View style={styles.heroCopy}>
-                      <Text style={styles.title}>{currentTitle?.title ?? "Title"}</Text>
-                      <Text style={styles.subtitle}>
-                        {currentTitle?.year ?? "Unknown"} • {currentTitle?.mediaType === "movie" ? "Movie" : "TV Series"}
+                      <Text style={styles.heroTitle}>{currentTitle?.title ?? "Title"}</Text>
+                      <Text style={styles.heroFacts}>
+                        {[
+                          currentTitle?.year ?? "Unknown",
+                          currentTitle?.mediaType === "movie" ? "Film" : "Series",
+                        ].join("  ·  ")}
                       </Text>
+                      {/* Editorial supporting line — pick the right credit for the medium.
+                          Movies → "A film by {director}". Series → "Created by {creator}"
+                          (falls back to director if TMDB has no creator listed). */}
+                      {(() => {
+                        const isMovie = currentTitle?.mediaType === "movie";
+                        const director = currentTitle?.credits.director[0];
+                        const creator = currentTitle?.credits.creator[0];
+                        let credit: string | null = null;
+                        if (isMovie && director) {
+                          credit = `A film by ${director}`;
+                        } else if (!isMovie && creator) {
+                          credit = `Created by ${creator}`;
+                        } else if (!isMovie && director) {
+                          credit = `Directed by ${director}`;
+                        } else if (director) {
+                          credit = `A film by ${director}`;
+                        }
+                        return credit ? (
+                          <Text style={styles.heroCredit} numberOfLines={1}>{credit}</Text>
+                        ) : null;
+                      })()}
                       <View style={styles.paginationRow}>
                         {galleryImages.slice(0, 8).map((image, index) => (
-                          <View key={`${image.url}-dot`} style={[styles.paginationDot, index === activeImageIndex && styles.paginationDotActive]} />
+                          <View key={`dot-${index}`} style={[styles.paginationDot, index === activeImageIndex && styles.paginationDotActive]} />
                         ))}
                       </View>
                     </View>
@@ -429,20 +522,24 @@ export function UniversalTitleModal({
               </Animated.View>
 
               <Animated.View style={[styles.bodyWrap, { opacity: contentOpacity, transform: [{ translateY: contentTranslateY }] }]}>
+                {/* Metadata chips — canonical TasteSignal component for consistency
+                    across taste labels, genres, and title metadata everywhere. */}
                 <View style={styles.section}>
                   <View style={styles.metaWrap}>
                     {metadataChips.map((item) => (
-                      <View key={`${item.icon}-${item.label}`} style={styles.metaChip}>
-                        <Ionicons name={item.icon} size={13} color={colors.accent} />
-                        <Text style={styles.metaChipText}>{item.label}</Text>
-                      </View>
+                      <TasteSignal
+                        key={`${item.icon}-${item.label}`}
+                        icon={item.icon}
+                        label={item.label}
+                      />
                     ))}
                   </View>
                 </View>
 
+                {/* Overview */}
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Overview</Text>
-                  <Text style={styles.description} numberOfLines={expandedDescription ? undefined : 5}>
+                  <Text style={styles.description} numberOfLines={expandedDescription ? 0 : 5}>
                     {currentTitle?.description ?? "Full details are unavailable right now."}
                   </Text>
                   {hasLongDescription ? (
@@ -452,128 +549,326 @@ export function UniversalTitleModal({
                   ) : null}
                 </View>
 
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>Cast & Creators</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.peopleRail}>
-                    {[...(currentTitle?.creators ?? []).slice(0, 3), ...(currentTitle?.cast ?? []).slice(0, 5)].map((person, index) => (
-                      <PersonCard key={`${person.name}-${person.role}-${index}`} name={person.name} role={person.role} headshotUrl={person.headshotUrl} />
-                    ))}
-                  </ScrollView>
-                </View>
+                {/* Cast & Creators */}
+                {allPeople.length > 0 ? (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Cast & Creators</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.peopleRail}>
+                      {allPeople.map((person, index) => (
+                        <PersonCard
+                          key={`${person.name}-${index}`}
+                          name={person.name}
+                          role={person.role}
+                          headshotUrl={person.headshotUrl}
+                          onPress={() => void openPersonDetail(person)}
+                        />
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
 
+                {/* Where to Watch */}
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Where to Watch</Text>
-                  {primaryStreamingOption ? (
-                    <Pressable
-                      style={[styles.streamCta, { backgroundColor: getStreamingServiceMeta(primaryStreamingOption.service)?.color ?? colors.accent }]}
-                      onPress={() => void openStreamingOption(primaryStreamingOption)}
-                    >
-                      <Text style={styles.streamCtaLabel}>Stream Now on {primaryStreamingOption.serviceName}</Text>
-                      <Ionicons name="play" size={16} color="#fff" />
-                    </Pressable>
-                  ) : null}
-                  {sortedStreamingOptions.length ? (
+                  {watchOptionsLoading ? (
+                    <Text style={styles.emptyText}>Loading…</Text>
+                  ) : watchOptions ? (
                     <>
-                      {!primaryStreamingOption ? (
-                        <Text style={styles.watchLabel}>{matchingStreamingOptions.length > 1 ? "Watch On" : "Available On"}</Text>
+                      {WATCH_GROUP_CONFIG.map(({ key, label }) => {
+                        const providers = watchOptions.groups[key] ?? [];
+                        if (!providers.length) return null;
+                        return (
+                          <View key={key} style={styles.watchGroup}>
+                            <Text style={styles.watchGroupLabel}>{label}</Text>
+                            {providers.map((provider) => (
+                              <WatchProviderCard
+                                key={provider.provider_code}
+                                provider={provider}
+                                onAction={(action) => void openWatchAction(provider, action)}
+                              />
+                            ))}
+                          </View>
+                        );
+                      })}
+                      {!WATCH_GROUP_CONFIG.some(({ key }) => (watchOptions.groups[key] ?? []).length > 0) ? (
+                        <Text style={styles.emptyText}>Not currently available for streaming.</Text>
                       ) : null}
-                      <View style={styles.streamingList}>
-                        {sortedStreamingOptions.map((service) => {
-                          const meta = getStreamingServiceMeta(service.service);
-                          const subscribed = preferredServices.includes(service.service);
-                          return (
-                            <ProviderRow
-                              key={`${service.service}-${service.webUrl}-${service.appUrl}`}
-                              service={service}
-                              subscribed={subscribed}
-                              meta={meta}
-                              onPress={() => void openStreamingOption(service)}
-                            />
-                          );
-                        })}
-                      </View>
+                      <Text style={styles.justWatchAttrib}>Streaming data provided by JustWatch</Text>
                     </>
                   ) : (
                     <Text style={styles.emptyText}>Not currently available for streaming.</Text>
                   )}
                 </View>
 
-                <View style={styles.section}>
-                  <Text style={styles.sectionTitle}>More Like This</Text>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.relatedRail}>
-                    {(currentTitle?.relatedTitles ?? []).map((related) => (
-                      <Pressable key={related.id} style={styles.relatedCard} onPress={() => void openRelatedTitle(related.id)}>
-                        {related.posterUrl ? (
-                          <Image source={{ uri: resolveMediaUrl(related.posterUrl) ?? related.posterUrl }} style={styles.relatedPoster} />
-                        ) : (
-                          <View style={styles.relatedPosterFallback}>
-                            <Ionicons name="film" size={18} color={colors.muted} />
-                          </View>
-                        )}
-                        <Text style={styles.relatedTitle} numberOfLines={2}>{related.title}</Text>
-                        <Text style={styles.relatedMeta}>
-                          {[related.year ?? "—", related.mediaType === "movie" ? "Movie" : "TV"].join(" • ")}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                </View>
+                {/* More Like This */}
+                {(currentTitle?.relatedTitles ?? []).length > 0 ? (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>More Like This</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.relatedRail}>
+                      {(currentTitle?.relatedTitles ?? []).map((related) => (
+                        <Pressable key={related.id} style={styles.relatedCard} onPress={() => void openRelatedTitle(related.id)}>
+                          {related.posterUrl ? (
+                            <Image source={{ uri: resolveMediaUrl(related.posterUrl) ?? related.posterUrl }} style={styles.relatedPoster} />
+                          ) : (
+                            <View style={styles.relatedPosterFallback}>
+                              <Ionicons name="film" size={18} color={colors.muted} />
+                            </View>
+                          )}
+                          <Text style={styles.relatedTitle} numberOfLines={2}>{related.title}</Text>
+                          <Text style={styles.relatedMeta}>{[related.year ?? "—", related.mediaType === "movie" ? "Movie" : "TV"].join(" • ")}</Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
               </Animated.View>
             </ScrollView>
 
+            {/* Action tray */}
             <Animated.View style={[styles.actionTray, { opacity: actionsOpacity, transform: [{ translateY: actionsTranslateY }] }]}>
               <Animated.View style={{ transform: [{ scale: saveScale }] }}>
                 <ActionCard
                   icon={savedState ? "checkmark" : "star"}
                   title={savedState ? "Saved" : "Save to My Picks"}
-                  subtitle={savedState ? "Saved to one of your lists." : "Choose a list and save it instantly."}
+                  subtitle={savedState ? "Already saved to one of your lists." : "Choose a list and save it instantly."}
                   accent="#f4c430"
                   onPress={openSaveFlow}
                   highlighted
                 />
               </Animated.View>
               <ActionCard
-                icon="paper-plane"
-                title="Post to Social Feed"
-                subtitle="Open composer with this title attached."
-                accent="#5fa8ff"
-                onPress={() => currentTitle && onPost(currentTitle)}
+                icon="people"
+                title="Add to Watch Team"
+                subtitle="Pick a team and add it to the conversation."
+                accent="#2ec4b6"
+                onPress={openAddToTeamFlow}
               />
-              {onAddToTeam ? (
-                <ActionCard
-                  icon="people"
-                  title="Add to Watch Team"
-                  subtitle="Pick a team and add it to the conversation."
-                  accent="#2ec4b6"
-                  onPress={() => currentTitle && onAddToTeam(currentTitle)}
-                />
-              ) : null}
+              <ActionCard
+                icon="megaphone-outline"
+                title="Share to Feed"
+                subtitle="Post this to your SeenSnap followers."
+                accent="#f4c430"
+                onPress={() => {
+                  if (!currentTitle) return;
+                  setShowShareToFeed(true);
+                }}
+              />
+              <ActionCard
+                icon="share-outline"
+                title="Share Link"
+                subtitle="Send a SeenSnap link outside the app."
+                accent="#8aa4c8"
+                onPress={() => {
+                  if (!currentTitle) return;
+                  void shareTitle({
+                    titleId: currentTitle.id,
+                    tmdbId: currentTitle.tmdbId ?? 0,
+                    mediaType: currentTitle.mediaType === "movie" ? "movie" : "series",
+                    displayTitle: currentTitle.title,
+                    entryPoint: "title_detail",
+                  });
+                }}
+              />
             </Animated.View>
 
+            {/* Toast */}
             {toast ? (
               <Animated.View style={[styles.toast, { opacity: toastOpacity, transform: [{ translateY: toastTranslateY }] }]}>
                 <Text style={styles.toastText}>{toast}</Text>
               </Animated.View>
             ) : null}
           </Animated.View>
+
+          {/* Secondary sheets — nested inside main modal so iOS stacks them correctly */}
+          <SaveToListSheet
+            visible={showSaveSheet}
+            token={sessionToken}
+            titleId={currentTitle?.id ?? null}
+            source="details"
+            onClose={() => setShowSaveSheet(false)}
+            onSaved={(listName, alreadySaved) => {
+              if (currentTitle?.id) setSavedTitleIds((current) => new Set(current).add(currentTitle.id));
+              setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
+              onSave?.();
+            }}
+            onError={(message) => setToast(message)}
+          />
+
+          <AddToTeamSheet
+            visible={showAddToTeam}
+            token={sessionToken}
+            title={currentTitle ? { id: currentTitle.id, title: currentTitle.title } : null}
+            onClose={() => setShowAddToTeam(false)}
+            onAdded={(teamName) => setToast(`Added to ${teamName}`)}
+            onError={(message) => setToast(message)}
+          />
+
+          {currentTitle ? (
+            <ShareComposerSheet
+              visible={showShareToFeed}
+              token={sessionToken}
+              sourceSurface="title_detail"
+              entityType="title"
+              titleId={currentTitle.id}
+              titleName={currentTitle.title}
+              posterUrl={currentTitle.posterUrl}
+              contentType={currentTitle.mediaType}
+              onClose={() => setShowShareToFeed(false)}
+              onPosted={() => setToast(`Shared ${currentTitle.title} to your feed`)}
+            />
+          ) : null}
+
+          {selectedPerson ? (
+            <PersonDetailSheet
+              person={selectedPerson}
+              profile={personProfile}
+              loading={personLoading}
+              onClose={() => { setSelectedPerson(null); setPersonProfile(null); }}
+              onOpenTitle={(titleId) => {
+                setSelectedPerson(null);
+                setPersonProfile(null);
+                void openRelatedTitle(titleId);
+              }}
+              sessionToken={sessionToken}
+            />
+          ) : null}
         </View>
       </Modal>
-
-      <SaveToListSheet
-        visible={showSaveSheet}
-        token={sessionToken}
-        titleId={currentTitle?.id ?? null}
-        source="details"
-        onClose={() => setShowSaveSheet(false)}
-        onSaved={(listName, alreadySaved) => {
-          if (currentTitle?.id) {
-            setSavedTitleIds((current) => new Set(current).add(currentTitle.id));
-          }
-          setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
-        }}
-        onError={(message) => setToast(message)}
-      />
     </>
+  );
+}
+
+function PersonDetailSheet({
+  person,
+  profile,
+  loading,
+  onClose,
+  onOpenTitle,
+  sessionToken,
+}: {
+  person: { name: string; role: string; headshotUrl: string | null; tmdbPersonId: number | null };
+  profile: PersonProfile | null;
+  loading: boolean;
+  onClose: () => void;
+  onOpenTitle: (titleId: string) => void;
+  sessionToken: string | null;
+}) {
+  const translateY = useRef(new Animated.Value(screenHeight)).current;
+  const opacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    Animated.parallel([
+      Animated.timing(opacity, { toValue: 1, duration: 220, useNativeDriver: true }),
+      Animated.spring(translateY, { toValue: 0, damping: 22, stiffness: 200, useNativeDriver: true }),
+    ]).start();
+  }, [opacity, translateY]);
+
+  function close() {
+    Animated.parallel([
+      Animated.timing(opacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+      Animated.timing(translateY, { toValue: screenHeight, duration: 220, useNativeDriver: true }),
+    ]).start(onClose);
+  }
+
+  const profileUrl = profile?.profileUrl ?? person.headshotUrl;
+  const resolvedProfile = resolveMediaUrl(profileUrl) ?? profileUrl;
+  const bio = profile?.biography;
+  const dept = profile?.knownForDepartment ?? person.role;
+  const birthInfo = [profile?.birthday, profile?.placeOfBirth].filter(Boolean).join(" · ");
+
+  const [imgFailed, setImgFailed] = useState(false);
+
+  return (
+    <Modal transparent animationType="none" visible onRequestClose={close} statusBarTranslucent>
+      <View style={styles.root}>
+        <Animated.View style={[styles.overlay, { opacity }]} />
+        <Pressable style={StyleSheet.absoluteFill} onPress={close} />
+        <Animated.View style={[styles.personSheet, { transform: [{ translateY }] }]}>
+          <View style={styles.handleWrap}><View style={styles.handle} /></View>
+          <Pressable style={styles.closeButton} onPress={close}>
+            <Ionicons name="close" size={18} color={colors.ink} />
+          </Pressable>
+
+          <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.personSheetContent}>
+            {/* Profile header */}
+            <View style={styles.personSheetHeader}>
+              <View style={styles.personSheetImageWrap}>
+                {resolvedProfile && !imgFailed ? (
+                  <Image
+                    source={{ uri: resolvedProfile }}
+                    style={styles.personSheetImage}
+                    resizeMode="cover"
+                    onError={() => setImgFailed(true)}
+                  />
+                ) : (
+                  <View style={styles.personSheetImageFallback}>
+                    <Ionicons name="person" size={44} color={colors.ink} />
+                  </View>
+                )}
+              </View>
+              <View style={styles.personSheetMeta}>
+                <Text style={styles.personSheetName}>{profile?.name ?? person.name}</Text>
+                <Text style={styles.personSheetDept}>{dept}</Text>
+                {birthInfo ? <Text style={styles.personSheetBirth}>{birthInfo}</Text> : null}
+              </View>
+            </View>
+
+            {/* Bio */}
+            {loading ? (
+              <View style={[styles.section, { alignItems: "center", padding: 24 }]}>
+                <Text style={styles.emptyText}>Loading profile…</Text>
+              </View>
+            ) : null}
+
+            {!loading && bio ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Biography</Text>
+                <Text style={styles.description} numberOfLines={6}>{bio}</Text>
+              </View>
+            ) : null}
+
+            {/* Known for / Credits carousel */}
+            {!loading && (profile?.credits ?? []).length > 0 ? (
+              <View style={styles.section}>
+                <Text style={styles.sectionTitle}>Known For</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.relatedRail}>
+                  {(profile?.credits ?? []).slice(0, 16).map((credit, index) => (
+                    <Pressable
+                      key={`${credit.tmdbId}-${index}`}
+                      style={styles.relatedCard}
+                      onPress={() => {
+                        // We need the internal title id — for now search by tmdb_id
+                        // For v1, tap just shows what we have (can't deep-link without SeenSnap ID)
+                      }}
+                    >
+                      {credit.posterUrl ? (
+                        <Image source={{ uri: credit.posterUrl }} style={styles.relatedPoster} />
+                      ) : (
+                        <View style={styles.relatedPosterFallback}>
+                          <Ionicons name="film" size={18} color={colors.muted} />
+                        </View>
+                      )}
+                      <Text style={styles.relatedTitle} numberOfLines={2}>{credit.title}</Text>
+                      {credit.character ? (
+                        <Text style={styles.relatedMeta} numberOfLines={1}>{credit.character}</Text>
+                      ) : credit.job ? (
+                        <Text style={styles.relatedMeta} numberOfLines={1}>{credit.job}</Text>
+                      ) : null}
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null}
+
+            {!loading && !profile ? (
+              <View style={styles.section}>
+                <Text style={styles.emptyText}>Detailed profile not available.</Text>
+              </View>
+            ) : null}
+          </ScrollView>
+        </Animated.View>
+      </View>
+    </Modal>
   );
 }
 
@@ -592,53 +887,71 @@ function ActionCard({
   onPress: () => void;
   highlighted?: boolean;
 }) {
+  const scale = useRef(new Animated.Value(1)).current;
+
   return (
-    <Pressable style={[styles.actionCard, highlighted && styles.actionCardHighlighted]} onPress={onPress}>
-      <View style={[styles.actionIconWrap, { backgroundColor: accent }]}>
-        <Ionicons name={icon} size={17} color="#fff" />
-      </View>
-      <View style={styles.actionCopy}>
-        <Text style={styles.actionTitle}>{title}</Text>
-        <Text style={styles.actionSubtitle}>{subtitle}</Text>
-      </View>
-      <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => Animated.spring(scale, { toValue: 0.97, useNativeDriver: true, bounciness: 0 }).start()}
+      onPressOut={() => Animated.spring(scale, { toValue: 1, useNativeDriver: true, bounciness: 10 }).start()}
+    >
+      <Animated.View style={[styles.actionCard, highlighted && styles.actionCardHighlighted, { transform: [{ scale }] }]}>
+        <View style={[styles.actionIconWrap, { backgroundColor: `${accent}22` }]}>
+          <Ionicons name={icon} size={18} color={accent} />
+        </View>
+        <View style={styles.actionCopy}>
+          <Text style={styles.actionTitle}>{title}</Text>
+          <Text style={styles.actionSubtitle}>{subtitle}</Text>
+        </View>
+        <Ionicons name="chevron-forward" size={16} color={colors.muted} />
+      </Animated.View>
     </Pressable>
   );
 }
 
-function ProviderRow({
-  service,
-  subscribed,
-  meta,
-  onPress,
+function WatchProviderCard({
+  provider,
+  onAction,
 }: {
-  service: StreamingAvailability;
-  subscribed: boolean;
-  meta: StreamingServiceMeta | null;
-  onPress: () => void;
+  provider: WatchProvider;
+  onAction: (action: WatchAction) => void;
 }) {
+  const [logoFailed, setLogoFailed] = useState(false);
+  const showLogo = Boolean(provider.logo_url && !logoFailed);
+
   return (
-    <Pressable style={[styles.providerRow, subscribed && styles.providerRowSubscribed]} onPress={onPress}>
-      <View style={styles.providerRowLeft}>
-        <View
-          style={[
-            styles.providerLogoBadge,
-            { backgroundColor: meta?.color ?? colors.accentSoft, borderColor: meta?.color ?? colors.accentSoft },
-          ]}
-        >
-          <Text style={[styles.providerLogoText, { color: meta?.textColor ?? "#fff" }]} numberOfLines={1}>
-            {meta?.logoText ?? service.serviceName}
-          </Text>
-        </View>
-        <View style={styles.providerCopy}>
-          <Text style={styles.providerName}>{meta?.name ?? service.serviceName}</Text>
-          <Text style={styles.providerHint}>{subscribed ? "Included in your subscriptions" : "Available to stream"}</Text>
-        </View>
+    <View style={styles.providerCard}>
+      <View style={styles.providerLogoWrap}>
+        {showLogo ? (
+          <Image
+            source={{ uri: provider.logo_url! }}
+            style={styles.providerLogoImg}
+            resizeMode="contain"
+            onError={() => setLogoFailed(true)}
+          />
+        ) : (
+          <View style={styles.providerLogoFallback}>
+            <Text style={styles.providerLogoFallbackText} numberOfLines={1}>
+              {provider.provider_name.slice(0, 4).toUpperCase()}
+            </Text>
+          </View>
+        )}
       </View>
-      <View style={styles.providerCta}>
-        <Text style={styles.providerCtaText}>Stream Now</Text>
+      <Text style={[styles.providerName, styles.providerCardName]}>{provider.provider_name}</Text>
+      <View style={styles.providerCardActions}>
+        {provider.actions.map((action) => (
+          <Pressable
+            key={action.intent}
+            style={[styles.watchAction, action.intent === "watch" && styles.watchActionPrimary]}
+            onPress={() => onAction(action)}
+          >
+            <Text style={[styles.watchActionLabel, action.intent === "watch" && styles.watchActionLabelPrimary]}>
+              {action.label}
+            </Text>
+          </Pressable>
+        ))}
       </View>
-    </Pressable>
+    </View>
   );
 }
 
@@ -646,56 +959,64 @@ function PersonCard({
   name,
   role,
   headshotUrl,
+  onPress,
 }: {
   name: string;
   role: string;
   headshotUrl: string | null;
+  onPress: () => void;
 }) {
   const [failed, setFailed] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const scale = useRef(new Animated.Value(1)).current;
   const resolved = resolveMediaUrl(headshotUrl) ?? headshotUrl;
   const showImage = Boolean(resolved && !failed);
 
   return (
-    <View style={styles.personCard}>
-      <View style={styles.personImageWrap}>
-        {showImage ? (
-          <Image
-            source={{ uri: resolved ?? undefined }}
-            style={[styles.personHeadshot, !loaded && styles.personHeadshotHidden]}
-            onError={() => setFailed(true)}
-            onLoad={() => setLoaded(true)}
-          />
-        ) : null}
-        {!showImage || !loaded ? (
-          <View style={styles.personFallback}>
-            <Ionicons name="person" size={22} color={colors.ink} />
-          </View>
-        ) : null}
-      </View>
-      <Text style={styles.personName} numberOfLines={1}>{name}</Text>
-      <Text style={styles.personRole} numberOfLines={2}>{role}</Text>
-    </View>
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => Animated.spring(scale, { toValue: 0.94, useNativeDriver: true, bounciness: 0 }).start()}
+      onPressOut={() => Animated.spring(scale, { toValue: 1, useNativeDriver: true, bounciness: 12 }).start()}
+    >
+      <Animated.View style={[styles.personCard, { transform: [{ scale }] }]}>
+        <View style={styles.personImageWrap}>
+          {showImage ? (
+            <Image
+              source={{ uri: resolved ?? undefined }}
+              style={[styles.personHeadshot, !loaded && styles.personHeadshotHidden]}
+              onError={() => setFailed(true)}
+              onLoad={() => setLoaded(true)}
+            />
+          ) : null}
+          {!showImage || !loaded ? (
+            <View style={styles.personFallback}>
+              <Ionicons name="person" size={22} color={colors.ink} />
+            </View>
+          ) : null}
+        </View>
+        <Text style={styles.personName} numberOfLines={1}>{name}</Text>
+        <Text style={styles.personRole} numberOfLines={2}>{role}</Text>
+      </Animated.View>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
   root: { flex: 1, justifyContent: "flex-end" },
-  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(4, 10, 18, 0.78)" },
+  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(4, 10, 18, 0.82)" },
   shell: {
     height: screenHeight,
     backgroundColor: colors.background,
-    borderTopLeftRadius: 30,
-    borderTopRightRadius: 30,
+    borderTopLeftRadius: radii.xxl,
+    borderTopRightRadius: radii.xxl,
     overflow: "hidden",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: rules.default,
   },
   handleWrap: { position: "absolute", top: 10, width: "100%", alignItems: "center", zIndex: 30 },
   handle: { width: 44, height: 5, borderRadius: 999, backgroundColor: "rgba(255,255,255,0.25)" },
   closeButton: {
     position: "absolute",
-    top: 18,
     right: 16,
     zIndex: 40,
     width: 36,
@@ -708,203 +1029,199 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 240 },
+  scrollContent: { paddingBottom: 260 },
   heroCard: { height: HERO_HEIGHT, backgroundColor: colors.surfaceMuted },
   heroSlide: { width: screenWidth, height: HERO_HEIGHT, backgroundColor: colors.surfaceMuted },
   heroImage: { width: "100%", height: "100%" },
   heroFallback: { width: "100%", height: "100%", backgroundColor: colors.surfaceMuted },
-  heroShadeStrong: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5, 11, 20, 0.18)" },
-  heroShadeSoft: { position: "absolute", left: 0, right: 0, bottom: 0, height: 220, backgroundColor: "rgba(11,20,36,0.72)" },
+  heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5, 11, 20, 0.14)" },
+  heroGradient: { position: "absolute", left: 0, right: 0, bottom: 0, height: 240, backgroundColor: "rgba(9,17,32,0.78)" },
   heroContent: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    top: 0,
-    bottom: 0,
-    paddingTop: 54,
-    paddingHorizontal: spacing.lg,
-    paddingBottom: spacing.lg,
+    position: "absolute", left: 0, right: 0, top: 0, bottom: 0,
+    paddingTop: 54, paddingHorizontal: spacing.lg, paddingBottom: spacing.lg,
     justifyContent: "space-between",
   },
   heroTopRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "center" },
-  galleryCount: {
-    color: colors.ink,
-    fontSize: 12,
-    fontWeight: "700",
-    backgroundColor: "rgba(6,16,29,0.52)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+  trailerButton: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
     borderRadius: 999,
+    backgroundColor: "rgba(244, 196, 48, 0.9)",
+    paddingHorizontal: 13,
+    paddingVertical: 8,
+    shadowColor: "#f4c430",
+    shadowOpacity: 0.45,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 0 },
+  },
+  trailerButtonDim: { opacity: 0 },
+  trailerButtonText: {
+    color: colors.background,
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 12,
+    letterSpacing: 0.3,
+  },
+  galleryCount: {
+    color: colors.ink, fontFamily: fonts.mono, fontSize: 12,
+    backgroundColor: "rgba(6,16,29,0.52)", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
   },
   heroBottomRow: { flexDirection: "row", alignItems: "flex-end", gap: spacing.md },
   posterWrap: {
-    borderRadius: 20,
-    padding: 4,
+    borderRadius: radii.xxl, padding: 4,
     backgroundColor: "rgba(7, 15, 28, 0.52)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.12)",
+    borderWidth: 1, borderColor: "rgba(255,255,255,0.14)",
   },
-  poster: { width: 112, height: 168, borderRadius: 16, backgroundColor: colors.surface },
-  posterFallback: { width: 112, height: 168, borderRadius: 16, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
+  poster: { width: 116, height: 174, borderRadius: 16, backgroundColor: colors.surface },
+  posterFallback: { width: 116, height: 174, borderRadius: 16, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
   heroCopy: { flex: 1, gap: spacing.sm, paddingBottom: 8 },
-  title: { color: colors.ink, fontSize: 32, lineHeight: 38, fontWeight: "900" },
-  subtitle: { color: "rgba(242,244,248,0.9)", fontSize: 15, fontWeight: "700" },
+  heroTitle: { color: colors.ink, fontFamily: fonts.serifBold, fontSize: 34, lineHeight: 40, letterSpacing: -0.3 },
+  heroFacts: {
+    color: "rgba(242,244,248,0.9)",
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+  },
+  heroCredit: {
+    color: "rgba(242,244,248,0.78)",
+    fontFamily: fonts.serif,
+    fontStyle: "italic",
+    fontSize: 13,
+    lineHeight: 18,
+    marginTop: 2,
+  },
+  heroSubtitle: { color: "rgba(242,244,248,0.9)", fontFamily: fonts.sansSemiBold, fontSize: 15 },
   paginationRow: { flexDirection: "row", gap: 6, marginTop: 2 },
   paginationDot: { width: 8, height: 8, borderRadius: 999, backgroundColor: "rgba(255,255,255,0.24)" },
   paginationDotActive: { width: 20, backgroundColor: colors.accent },
   bodyWrap: { gap: spacing.md, paddingHorizontal: spacing.lg, paddingTop: spacing.lg },
   section: {
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(20, 37, 58, 0.72)",
-    padding: spacing.lg,
-    gap: spacing.sm,
+    borderRadius: radii.xxl, borderWidth: 1, borderColor: rules.default,
+    backgroundColor: colors.backgroundElevated,
+    padding: spacing.lg, gap: spacing.sm,
   },
-  sectionTitle: { color: colors.ink, fontSize: 17, fontWeight: "900" },
+  sectionTitle: { color: colors.ink, fontFamily: fonts.sansBold, fontSize: 17 },
   metaWrap: { flexDirection: "row", flexWrap: "wrap", gap: 8 },
   metaChip: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(7, 15, 28, 0.42)",
-    paddingHorizontal: 12,
-    paddingVertical: 9,
+    flexDirection: "row", alignItems: "center", gap: 6,
+    borderRadius: radii.pill, borderWidth: 1, borderColor: rules.default,
+    backgroundColor: "rgba(7, 15, 28, 0.42)", paddingHorizontal: 12, paddingVertical: 9,
   },
-  metaChipText: { color: colors.ink, fontSize: 12, fontWeight: "700" },
-  description: { color: colors.ink, fontSize: 15, lineHeight: 24 },
+  metaChipText: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 12 },
+  description: { color: colors.ink, fontFamily: fonts.sans, fontSize: 15, lineHeight: 24 },
   readMore: { alignSelf: "flex-start", paddingTop: 2 },
-  readMoreText: { color: colors.accent, fontSize: 13, fontWeight: "800" },
+  readMoreText: { color: colors.accent, fontFamily: fonts.sansBold, fontSize: 13 },
   peopleRail: { gap: spacing.sm, paddingRight: spacing.lg },
   personCard: {
-    width: 118,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(7, 15, 28, 0.42)",
-    padding: spacing.sm,
-    gap: spacing.sm,
+    width: 118, borderRadius: radii.xxl, borderWidth: 1, borderColor: rules.default,
+    backgroundColor: "rgba(7, 15, 28, 0.55)", padding: spacing.sm, gap: spacing.sm,
   },
   personImageWrap: { width: "100%", height: 128 },
   personHeadshot: { width: "100%", height: 128, borderRadius: 16, backgroundColor: colors.surfaceMuted },
   personHeadshotHidden: { opacity: 0 },
   personFallback: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: 16,
-    backgroundColor: colors.surfaceMuted,
-    alignItems: "center",
-    justifyContent: "center",
+    ...StyleSheet.absoluteFillObject, borderRadius: 16,
+    backgroundColor: colors.surfaceMuted, alignItems: "center", justifyContent: "center",
   },
-  personName: { color: colors.ink, fontSize: 13, fontWeight: "800" },
-  personRole: { color: colors.muted, fontSize: 12, lineHeight: 18 },
-  streamCta: {
-    borderRadius: 22,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: 16,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+  personName: { color: colors.ink, fontFamily: fonts.sansBold, fontSize: 13 },
+  personRole: { color: colors.muted, fontFamily: fonts.sans, fontSize: 12, lineHeight: 18 },
+  watchGroup: { gap: 8 },
+  watchGroupLabel: {
+    color: colors.muted, fontFamily: fonts.monoSemiBold, fontSize: 10,
+    letterSpacing: 1.4, textTransform: "uppercase",
   },
-  streamCtaLabel: { color: "#fff", fontSize: 15, fontWeight: "900" },
-  watchLabel: { color: colors.muted, fontSize: 12, fontWeight: "800", letterSpacing: 1.1, textTransform: "uppercase" },
-  streamingList: { gap: spacing.sm },
-  providerRow: {
-    borderRadius: 18,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(7, 15, 28, 0.42)",
-    paddingHorizontal: spacing.md,
-    paddingVertical: 12,
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
+  providerCard: {
+    flexDirection: "row", alignItems: "center", gap: spacing.sm,
+    borderRadius: radii.xl, borderWidth: 1, borderColor: rules.default,
+    backgroundColor: "rgba(7, 15, 28, 0.42)", paddingHorizontal: spacing.sm, paddingVertical: 10,
   },
-  providerRowSubscribed: { borderColor: colors.success, backgroundColor: "rgba(46,196,182,0.08)" },
-  providerRowLeft: { flexDirection: "row", alignItems: "center", flex: 1, gap: spacing.sm },
-  providerLogoBadge: {
-    minWidth: 68,
-    height: 42,
-    borderRadius: 14,
-    borderWidth: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: 10,
+  providerLogoWrap: {
+    width: 52, height: 52, borderRadius: radii.xl, overflow: "hidden",
+    backgroundColor: "rgba(255,255,255,0.06)", borderWidth: 1, borderColor: "rgba(255,255,255,0.1)",
+    alignItems: "center", justifyContent: "center",
   },
-  providerLogoText: { fontSize: 11, fontWeight: "900", letterSpacing: 0.2 },
-  providerCopy: { flex: 1, gap: 2 },
-  subscribedPill: { borderRadius: radii.pill, paddingHorizontal: 8, paddingVertical: 5, backgroundColor: "rgba(46,196,182,0.16)" },
-  subscribedPillText: { color: colors.success, fontSize: 10, fontWeight: "900", textTransform: "uppercase", letterSpacing: 0.8 },
-  providerName: { color: colors.ink, fontSize: 14, fontWeight: "800" },
-  providerHint: { color: colors.muted, fontSize: 12, lineHeight: 18 },
-  providerCta: {
-    borderRadius: radii.pill,
-    backgroundColor: "rgba(255,255,255,0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    marginLeft: spacing.sm,
+  providerLogoImg: { width: "100%", height: "100%", borderRadius: radii.xl },
+  providerLogoFallback: { width: "100%", height: "100%", alignItems: "center", justifyContent: "center" },
+  providerLogoFallbackText: { color: colors.ink, fontFamily: fonts.monoSemiBold, fontSize: 11, letterSpacing: 0.3 },
+  providerName: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 14 },
+  providerCardName: { flex: 1 },
+  providerCardActions: { flexDirection: "row", gap: 6, alignItems: "center", flexShrink: 0 },
+  watchAction: {
+    borderRadius: radii.pill, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.08)", paddingHorizontal: 10, paddingVertical: 7,
   },
-  providerCtaText: { color: colors.ink, fontSize: 12, fontWeight: "900" },
-  emptyText: { color: colors.muted, fontSize: 14, lineHeight: 22 },
+  watchActionPrimary: { borderColor: colors.accent, backgroundColor: "rgba(244,196,48,0.14)" },
+  watchActionLabel: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 12 },
+  watchActionLabelPrimary: { color: colors.accent },
+  justWatchAttrib: {
+    color: colors.muted, fontFamily: fonts.mono, fontSize: 11, textAlign: "center", marginTop: 4, letterSpacing: 0.2,
+  },
+  emptyText: { color: colors.muted, fontFamily: fonts.sans, fontSize: 14, lineHeight: 22 },
   relatedRail: { gap: spacing.sm, paddingRight: spacing.lg },
   relatedCard: {
-    width: 132,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(7, 15, 28, 0.42)",
-    padding: spacing.sm,
-    gap: 8,
+    width: 132, borderRadius: radii.xxl, borderWidth: 1, borderColor: rules.default,
+    backgroundColor: "rgba(7, 15, 28, 0.42)", padding: spacing.sm, gap: 8,
   },
-  relatedPoster: { width: "100%", height: 180, borderRadius: 14, backgroundColor: colors.surfaceMuted },
-  relatedPosterFallback: { width: "100%", height: 180, borderRadius: 14, backgroundColor: colors.surfaceMuted, alignItems: "center", justifyContent: "center" },
-  relatedTitle: { color: colors.ink, fontSize: 13, fontWeight: "800", lineHeight: 18 },
-  relatedMeta: { color: colors.muted, fontSize: 11 },
+  relatedPoster: { width: "100%", height: 180, borderRadius: radii.xl, backgroundColor: colors.surfaceMuted },
+  relatedPosterFallback: { width: "100%", height: 180, borderRadius: radii.xl, backgroundColor: colors.surfaceMuted, alignItems: "center", justifyContent: "center" },
+  relatedTitle: { color: colors.ink, fontFamily: fonts.sansBold, fontSize: 13, lineHeight: 18 },
+  relatedMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 11 },
   actionTray: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: 0,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.xl,
-    gap: spacing.sm,
-    backgroundColor: "rgba(11,20,36,0.94)",
-    borderTopWidth: 1,
-    borderTopColor: "rgba(255,255,255,0.08)",
+    position: "absolute", left: 0, right: 0, bottom: 0,
+    paddingHorizontal: spacing.lg, paddingTop: spacing.md, paddingBottom: Platform.OS === "ios" ? 36 : spacing.xl,
+    gap: 8,
+    backgroundColor: "rgba(9,17,32,0.96)",
+    borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.07)",
   },
   actionCard: {
-    borderRadius: 22,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    backgroundColor: "rgba(20, 37, 58, 0.88)",
-    paddingHorizontal: spacing.md,
-    paddingVertical: 14,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
+    borderRadius: radii.xxl, borderWidth: 1, borderColor: rules.default,
+    backgroundColor: colors.backgroundElevated,
+    paddingHorizontal: spacing.md, paddingVertical: 13,
+    flexDirection: "row", alignItems: "center", gap: spacing.md,
+    shadowColor: "#000", shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 3 },
   },
-  actionCardHighlighted: {},
-  actionIconWrap: { width: 40, height: 40, borderRadius: 14, alignItems: "center", justifyContent: "center" },
+  actionCardHighlighted: {
+    borderColor: "rgba(244,196,48,0.22)",
+    backgroundColor: "rgba(244,196,48,0.06)",
+  },
+  actionIconWrap: { width: 40, height: 40, borderRadius: radii.xl, alignItems: "center", justifyContent: "center" },
   actionCopy: { flex: 1, gap: 2 },
-  actionTitle: { color: colors.ink, fontSize: 15, fontWeight: "900" },
-  actionSubtitle: { color: colors.muted, fontSize: 12, lineHeight: 18 },
+  actionTitle: { color: colors.ink, fontFamily: fonts.sansBold, fontSize: 15 },
+  actionSubtitle: { color: colors.muted, fontFamily: fonts.sans, fontSize: 12, lineHeight: 18 },
   toast: {
-    position: "absolute",
-    left: spacing.lg,
-    right: spacing.lg,
-    bottom: 206,
-    borderRadius: 18,
-    backgroundColor: "rgba(15, 31, 49, 0.96)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-    paddingHorizontal: spacing.md,
-    paddingVertical: 12,
-    alignItems: "center",
+    position: "absolute", left: spacing.lg, right: spacing.lg, bottom: 220,
+    borderRadius: radii.xxl, backgroundColor: "rgba(15, 31, 49, 0.96)",
+    borderWidth: 1, borderColor: rules.default,
+    paddingHorizontal: spacing.md, paddingVertical: 12, alignItems: "center",
   },
-  toastText: { color: colors.ink, fontSize: 13, fontWeight: "800" },
+  toastText: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 13 },
+  // Person detail sheet
+  personSheet: {
+    height: screenHeight * 0.88,
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radii.xxl, borderTopRightRadius: radii.xxl,
+    overflow: "hidden",
+    borderWidth: 1, borderColor: rules.default,
+  },
+  personSheetContent: { paddingBottom: 60 },
+  personSheetHeader: {
+    flexDirection: "row", gap: spacing.lg,
+    padding: spacing.lg, paddingTop: 54,
+    borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.07)",
+  },
+  personSheetImageWrap: {
+    width: 120, height: 160, borderRadius: radii.xxl, overflow: "hidden",
+    borderWidth: 1, borderColor: rules.default,
+    backgroundColor: colors.surfaceMuted,
+  },
+  personSheetImage: { width: "100%", height: "100%" },
+  personSheetImageFallback: {
+    width: "100%", height: "100%", alignItems: "center", justifyContent: "center",
+    backgroundColor: colors.surfaceMuted,
+  },
+  personSheetMeta: { flex: 1, justifyContent: "flex-end", gap: 6, paddingBottom: 4 },
+  personSheetName: { color: colors.ink, fontFamily: fonts.serifBold, fontSize: 26, lineHeight: 30 },
+  personSheetDept: { color: colors.accent, fontFamily: fonts.sansSemiBold, fontSize: 14 },
+  personSheetBirth: { color: colors.muted, fontFamily: fonts.sans, fontSize: 12, lineHeight: 18 },
 });

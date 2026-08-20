@@ -10,8 +10,17 @@ from sqlalchemy.orm import Session
 
 from app.models.content import ContentTitle
 from app.models.social import FeedComment, FeedEvent, FeedReaction, Team, TeamMember, UserFollow
-from app.models.user import UserProfile
+from app.models.user import User, UserProfile
 from app.services.follows import ensure_follows_table
+
+
+def _demo_actor_ids_subquery():
+    """IDs of users flagged as demo. Used to exclude demo-owned entities from real-user views."""
+    return select(User.id).where(User.is_demo.is_(True))
+
+
+def _viewer_is_demo(db: Session, viewer_user_id: UUID) -> bool:
+    return bool(db.scalar(select(User.is_demo).where(User.id == viewer_user_id)))
 
 
 VALID_REACTIONS = {"fire", "heart", "thumbs_down", "tomato"}
@@ -208,7 +217,7 @@ def list_feed_for_you(db: Session, user_id: UUID, limit: int = 50) -> list[FeedE
     ensure_follows_table(db)
     team_ids = list_user_team_ids(db, user_id)
     segment = FeedEvent.payload["segment"].astext
-    events = db.scalars(
+    stmt = (
         select(FeedEvent)
         .where(
             ((FeedEvent.team_id.is_(None)) & ((segment != "discover") | segment.is_(None)))
@@ -216,7 +225,10 @@ def list_feed_for_you(db: Session, user_id: UUID, limit: int = 50) -> list[FeedE
         )
         .order_by(FeedEvent.created_at.desc())
         .limit(limit)
-    ).all()
+    )
+    if not _viewer_is_demo(db, user_id):
+        stmt = stmt.where(FeedEvent.actor_user_id.not_in(_demo_actor_ids_subquery()))
+    events = db.scalars(stmt).all()
     return _sort_for_you(db, user_id, team_ids, events)
 
 
@@ -228,21 +240,30 @@ def list_feed_watch_teams(db: Session, user_id: UUID, team_id: UUID | None, limi
     selected = [team_id] if team_id is not None else team_ids
     if not selected:
         return []
-    return db.scalars(
+    stmt = (
         select(FeedEvent)
         .where(FeedEvent.team_id.in_(selected))
         .order_by(FeedEvent.created_at.desc())
         .limit(limit)
-    ).all()
+    )
+    if not _viewer_is_demo(db, user_id):
+        stmt = stmt.where(FeedEvent.actor_user_id.not_in(_demo_actor_ids_subquery()))
+    return db.scalars(stmt).all()
 
 
-def list_feed_discover(db: Session, limit: int = 50) -> list[FeedEvent]:
-    return db.scalars(
+def list_feed_discover(db: Session, viewer_user_id: UUID, limit: int = 50) -> list[FeedEvent]:
+    stmt = (
         select(FeedEvent)
-        .where(FeedEvent.team_id.is_(None), FeedEvent.payload["segment"].astext == "discover")
+        .where(
+            FeedEvent.team_id.is_(None),
+            FeedEvent.payload["segment"].astext == "discover",
+        )
         .order_by(FeedEvent.created_at.desc())
         .limit(limit)
-    ).all()
+    )
+    if not _viewer_is_demo(db, viewer_user_id):
+        stmt = stmt.where(FeedEvent.actor_user_id.not_in(_demo_actor_ids_subquery()))
+    return db.scalars(stmt).all()
 
 
 def _sort_for_you(db: Session, user_id: UUID, team_ids: list[UUID], events: list[FeedEvent]) -> list[FeedEvent]:

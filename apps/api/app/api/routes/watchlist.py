@@ -17,6 +17,7 @@ from app.schemas.watchlist import (
 )
 from app.services.activity import log_team_activity
 from app.services.feed import create_feed_event
+from app.services.taste import refresh_taste_profile
 from app.services.watchlists import (
     create_watchlist,
     delete_watchlist,
@@ -168,6 +169,11 @@ def add_watchlist_item(
                 entity_id=item.id,
             )
         db.commit()
+        # Save adds a positive intent signal — refresh SceneDNA immediately.
+        try:
+            refresh_taste_profile(db, current_user.id)
+        except Exception:
+            pass  # Non-blocking; profile will refresh on next lazy read.
     return _watchlist_response(db, watchlist)
 
 
@@ -184,6 +190,12 @@ def delete_watchlist_item(item_id: UUID, current_user: CurrentUser, db: DbSessio
     watchlist = db.scalar(select(Watchlist).where(Watchlist.id == item.watchlist_id))
     db.execute(delete(WatchlistItem).where(WatchlistItem.id == item.id))
     db.commit()
+    # Removing revokes the prior positive-intent signal — not a strong dislike, but
+    # SceneDNA must reflect the change immediately so the taste profile stays dynamic.
+    try:
+        refresh_taste_profile(db, current_user.id)
+    except Exception:
+        pass
     if watchlist is None:
         watchlist = get_default_watchlist(db, current_user.id)
     return _watchlist_response(db, watchlist)
@@ -202,6 +214,10 @@ def remove_title_from_list(list_id: UUID, title_id: UUID, current_user: CurrentU
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not in list")
     db.execute(delete(WatchlistItem).where(WatchlistItem.id == item.id))
     db.commit()
+    try:
+        refresh_taste_profile(db, current_user.id)
+    except Exception:
+        pass
     return _watchlist_response(db, watchlist)
 
 
