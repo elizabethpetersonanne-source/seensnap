@@ -1520,27 +1520,20 @@ function computeAchievements(taste: TasteProfile | null): Achievement[] {
 }
 
 function buildEraTimeline(taste: TasteProfile | null): EraEntry[] {
+  // We only surface the CURRENT era — the historical entries were
+  // fabricated with hardcoded "2 months ago" / "Last month" strings from
+  // the user's top labels/genres, regardless of when those signals
+  // actually formed. That violated the no-fake-data rule and caused
+  // brand-new accounts to see an invented backstory ("2 months ago:
+  // Crime Era"). Real historical eras will land once we start recording
+  // taste-profile snapshots per week/month — until then, "right now" is
+  // the honest answer.
   if (!taste) return [];
   const labels = taste.taste_labels;
   const genres = taste.top_genres;
-  const entries: EraEntry[] = [];
-
-  if (labels.length >= 3) {
-    entries.push({ era: `${labels[2].label} Phase`, period: "2 months ago", isCurrent: false });
-  } else if (genres.length >= 3) {
-    entries.push({ era: `${genres[2].genre} Era`, period: "2 months ago", isCurrent: false });
-  }
-
-  if (labels.length >= 2) {
-    entries.push({ era: `${labels[1].label} Season`, period: "Last month", isCurrent: false });
-  } else if (genres.length >= 2) {
-    entries.push({ era: `${genres[1].genre} Season`, period: "Last month", isCurrent: false });
-  }
-
-  const currentEra = labels[0]?.label ?? (genres[0]?.genre ? `${genres[0].genre} Phase` : "Your Current Scene");
-  entries.push({ era: currentEra, period: "Right now", isCurrent: true });
-
-  return entries;
+  const currentEra = labels[0]?.label ?? (genres[0]?.genre ? `${genres[0].genre} Phase` : null);
+  if (!currentEra) return [];
+  return [{ era: currentEra, period: "Right now", isCurrent: true }];
 }
 
 function computeMatchScore(item: RecommendationItem, taste: TasteProfile | null): number {
