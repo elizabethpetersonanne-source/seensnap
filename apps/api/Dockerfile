@@ -16,18 +16,35 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-# Copy dependency manifest first so pip install layers cache when only
-# application code changes.
+# Copy dependency manifest first so this pip layer only rebuilds when
+# pyproject.toml changes — not on every code edit.
 COPY pyproject.toml ./
-# psycopg[binary] talks to Cloud SQL via the unix socket that Cloud Run
+
+# Install ONLY the runtime dependencies from pyproject.toml, without
+# building/installing the local `app` package.
+#
+# Why: `pip install .` reads [tool.setuptools] packages = ["app"] and
+# requires `app/` to already exist at wheel-build time. Copying `app/`
+# before pip install would fix that, but every code change would then
+# invalidate the pip layer and re-download every wheel on every build.
+# Extracting deps with tomllib preserves the "deps layer caches on
+# pyproject.toml only" property while avoiding the local package build
+# entirely — uvicorn imports app.main by module name from WORKDIR, so
+# the package doesn't need to live in site-packages.
+#
+# psycopg[binary] talks to Cloud SQL via the unix socket Cloud Run
 # provisions at /cloudsql/{INSTANCE_CONNECTION_NAME} when you attach the
 # instance with `--add-cloudsql-instances`. No extra connector library
 # needed — DATABASE_URL of the form
 #   postgresql+psycopg://USER:PASS@/DB?host=/cloudsql/{project}:{region}:{instance}
 # is enough.
-RUN pip install --no-cache-dir .
+RUN python -c "import tomllib, pathlib; \
+    data = tomllib.loads(pathlib.Path('pyproject.toml').read_text()); \
+    pathlib.Path('/tmp/requirements.txt').write_text('\n'.join(data['project']['dependencies']) + '\n')" \
+    && pip install --no-cache-dir -r /tmp/requirements.txt \
+    && rm /tmp/requirements.txt
 
-# Now copy the rest of the app.
+# Now copy the app. Changes here only invalidate layers from this point on.
 COPY app ./app
 COPY alembic.ini ./alembic.ini
 COPY alembic ./alembic
