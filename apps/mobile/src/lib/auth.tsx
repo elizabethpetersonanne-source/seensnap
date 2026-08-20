@@ -233,9 +233,20 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }, [response]);
 
   const signInWithGoogle = async () => {
+    // Diagnostic — logs to browser console so we can see exactly why a
+    // click may appear to no-op. Cheap; safe to leave in staging.
+    // eslint-disable-next-line no-console
+    console.log("[signInWithGoogle]", {
+      hasGoogleConfig,
+      hasWebClientId: Boolean(webClientId),
+      platform: Platform.OS,
+      isExpoGo,
+    });
     setIsLoading(true);
     try {
       if (!hasGoogleConfig) {
+        // eslint-disable-next-line no-console
+        console.log("[signInWithGoogle] no Google config — falling back to /auth/dev");
         const session = await apiRequest<SessionResponse>("/auth/dev", {
           method: "POST",
           body: JSON.stringify({ email: "dev@seensnap.local", display_name: "Local Dev" }),
@@ -245,7 +256,15 @@ export function AuthProvider({ children }: PropsWithChildren) {
         setUser(session.user);
         return;
       }
-      await promptAsync();
+      // eslint-disable-next-line no-console
+      console.log("[signInWithGoogle] calling promptAsync…");
+      const result = await promptAsync();
+      // eslint-disable-next-line no-console
+      console.log("[signInWithGoogle] promptAsync result:", result?.type, result);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error("[signInWithGoogle] error:", err);
+      throw err;
     } finally {
       setIsLoading(false);
     }
