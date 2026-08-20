@@ -34,6 +34,12 @@ DB_NAME="${DB_NAME:-seensnap}"
 DB_APP_USER="${DB_APP_USER:-seensnap_app}"
 SERVICE_NAME="${SERVICE_NAME:-seensnap-api-staging}"
 SERVICE_ACCOUNT="${SERVICE_ACCOUNT:-seensnap-api-runner}"
+# Cloud SQL edition. Google Cloud now DEFAULTS PostgreSQL 16+ to
+# ENTERPRISE_PLUS, which does not support shared-core tiers like
+# db-f1-micro. We deliberately pin ENTERPRISE for internal alpha to keep
+# a low-cost shared-core instance viable.
+DB_EDITION="${DB_EDITION:-ENTERPRISE}"
+AR_REPO="${AR_REPO:-seensnap}"
 
 # Parse --flag args
 while [[ $# -gt 0 ]]; do
@@ -98,10 +104,34 @@ for role in roles/cloudsql.client roles/secretmanager.secretAccessor; do
     --role="$role" >/dev/null
 done
 
+# ─── Artifact Registry repo ────────────────────────────────────────────
+# Google Cloud is decommissioning Container Registry (gcr.io). New
+# projects route gcr.io pushes through Artifact Registry, but Google
+# recommends creating an explicit AR repo — the compatibility bridge is
+# on a deprecation clock and some Cloud Build submissions fail without
+# an explicit repo target. So we create + push to Artifact Registry
+# directly.
+log "Ensuring Artifact Registry repo '$AR_REPO' in $REGION"
+if ! gcloud artifacts repositories describe "$AR_REPO" \
+      --location="$REGION" --project="$PROJECT_ID" >/dev/null 2>&1; then
+  gcloud artifacts repositories create "$AR_REPO" \
+    --repository-format=docker \
+    --location="$REGION" \
+    --description="SeenSnap container images" \
+    --project="$PROJECT_ID"
+else
+  echo "  Artifact Registry repo exists — skipping create."
+fi
+
 # ─── Cloud SQL instance ────────────────────────────────────────────────
-log "Ensuring Cloud SQL instance '$INSTANCE_NAME'"
+log "Ensuring Cloud SQL instance '$INSTANCE_NAME' (edition=$DB_EDITION, tier=$INSTANCE_TIER)"
 if ! gcloud sql instances describe "$INSTANCE_NAME" --project="$PROJECT_ID" >/dev/null 2>&1; then
+  # --edition=ENTERPRISE is REQUIRED to use shared-core tiers like
+  # db-f1-micro. Without it, gcloud silently picks ENTERPRISE_PLUS on
+  # PG16+ and rejects the tier with:
+  #   "Invalid Tier (db-f1-micro) for (ENTERPRISE_PLUS) Edition."
   gcloud sql instances create "$INSTANCE_NAME" \
+    --edition="$DB_EDITION" \
     --database-version="$DB_VERSION" \
     --tier="$INSTANCE_TIER" \
     --region="$REGION" \
@@ -177,18 +207,26 @@ else
 fi
 
 # ─── Build + push image via Cloud Build (no local Docker push needed) ──
-IMAGE_URI="gcr.io/${PROJECT_ID}/${SERVICE_NAME}"
+# Artifact Registry path (not gcr.io — see repo-create block above).
+IMAGE_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/${AR_REPO}/${SERVICE_NAME}"
 log "Building + pushing container image via Cloud Build → $IMAGE_URI"
 gcloud builds submit "$API_DIR" \
   --tag="$IMAGE_URI" \
   --project="$PROJECT_ID"
 
 # ─── Deploy Cloud Run service ──────────────────────────────────────────
+# --execution-environment=gen2 is pinned rather than relying on the
+# default — gen1 does not reliably support the Cloud SQL unix socket
+# mount on some project ages, and future-us should not have to debug
+# why a service that "worked yesterday" doesn't. gen2 is now the
+# platform default for new services anyway.
+# --platform=managed dropped: it's the only option outside Anthos/GKE
+# and just adds noise to the command line.
 log "Deploying Cloud Run service '$SERVICE_NAME'"
 gcloud run deploy "$SERVICE_NAME" \
   --image="$IMAGE_URI" \
   --region="$REGION" \
-  --platform=managed \
+  --execution-environment=gen2 \
   --allow-unauthenticated \
   --service-account="$SA_EMAIL" \
   --add-cloudsql-instances="$INSTANCE_CONNECTION_NAME" \
@@ -219,6 +257,7 @@ if gcloud run jobs describe "$JOB_NAME" --region="$REGION" --project="$PROJECT_I
   gcloud run jobs update "$JOB_NAME" \
     --image="$IMAGE_URI" \
     --region="$REGION" \
+    --execution-environment=gen2 \
     --service-account="$SA_EMAIL" \
     --add-cloudsql-instances="$INSTANCE_CONNECTION_NAME" \
     --set-env-vars="ENVIRONMENT=staging" \
@@ -229,6 +268,7 @@ else
   gcloud run jobs create "$JOB_NAME" \
     --image="$IMAGE_URI" \
     --region="$REGION" \
+    --execution-environment=gen2 \
     --service-account="$SA_EMAIL" \
     --add-cloudsql-instances="$INSTANCE_CONNECTION_NAME" \
     --set-env-vars="ENVIRONMENT=staging" \
