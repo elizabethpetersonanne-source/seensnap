@@ -4,6 +4,41 @@ import { Image, Text, View } from "react-native";
 import { colors } from "@/constants/theme";
 import { resolveMediaUrl } from "@/lib/api";
 
+/**
+ * Round user avatar.
+ *
+ * Load order:
+ *   1. Real uploaded/Google avatar URL (from `uri`).
+ *   2. If null or failed to load → initials fallback (colored circle with
+ *      the user's first letter). NO cartoon-avatar service — an obvious
+ *      placeholder that's obviously the app's own beats a random-looking
+ *      cartoon that reads as fake identity.
+ *
+ * Background color for the initials is derived from the label so different
+ * users get visually distinct fallbacks even when none have photos.
+ */
+
+// Seven curated tones that work on the dark canvas. Kept small so the same
+// name lands on the same tone every time (deterministic).
+const FALLBACK_TONES = [
+  "#c69a52", // amber
+  "#7a9ec7", // dusty blue
+  "#a184c9", // muted plum
+  "#8bb591", // sage
+  "#c98080", // faded rose
+  "#7f9b9c", // teal grey
+  "#b7a56a", // ochre
+] as const;
+
+function toneFor(label: string): string {
+  if (!label) return FALLBACK_TONES[0];
+  let h = 0;
+  for (let i = 0; i < label.length; i += 1) {
+    h = (h * 31 + label.charCodeAt(i)) >>> 0;
+  }
+  return FALLBACK_TONES[h % FALLBACK_TONES.length];
+}
+
 export function Avatar({
   uri,
   label,
@@ -15,26 +50,24 @@ export function Avatar({
   size: number;
   style?: object;
 }) {
-  const resolvedUri = resolveMediaUrl(uri);
-  const pravatarUri = `https://api.dicebear.com/7.x/avataaars/png?seed=${encodeURIComponent(
-    label.toLowerCase().replace(/\s+/g, "-")
-  )}&backgroundColor=b6e3f4,c0aede,d1d4f9,ffd5dc,ffdfbf&size=150`;
-  const sources = useMemo(
-    () => [resolvedUri, pravatarUri].filter((u): u is string => Boolean(u)),
-    [resolvedUri, pravatarUri]
-  );
-  const [srcIdx, setSrcIdx] = useState(0);
-  useEffect(() => { setSrcIdx(0); }, [uri]);
+  const resolvedUri = useMemo(() => resolveMediaUrl(uri), [uri]);
+  const [failed, setFailed] = useState(false);
 
-  const activeUri = sources[srcIdx] ?? null;
+  // Reset failed flag if the source URL changes.
+  useEffect(() => {
+    setFailed(false);
+  }, [resolvedUri]);
+
   const baseStyle = { width: size, height: size, borderRadius: size / 2 };
+  const initial = (label?.trim()?.slice(0, 1) ?? "?").toUpperCase();
+  const tone = toneFor(label);
 
-  if (activeUri) {
+  if (resolvedUri && !failed) {
     return (
       <Image
-        source={{ uri: activeUri }}
+        source={{ uri: resolvedUri }}
         style={[baseStyle, { backgroundColor: colors.backgroundElevated }, style]}
-        onError={() => setSrcIdx((i) => Math.min(i + 1, sources.length - 1))}
+        onError={() => setFailed(true)}
       />
     );
   }
@@ -44,7 +77,7 @@ export function Avatar({
       style={[
         baseStyle,
         {
-          backgroundColor: colors.surfaceSoft,
+          backgroundColor: tone,
           alignItems: "center",
           justifyContent: "center",
         },
@@ -53,12 +86,13 @@ export function Avatar({
     >
       <Text
         style={{
-          color: colors.ink,
+          color: colors.background,
           fontWeight: "800",
-          fontSize: Math.max(size * 0.38, 11),
+          fontSize: Math.max(size * 0.42, 12),
+          letterSpacing: 0.5,
         }}
       >
-        {label.slice(0, 1).toUpperCase()}
+        {initial}
       </Text>
     </View>
   );

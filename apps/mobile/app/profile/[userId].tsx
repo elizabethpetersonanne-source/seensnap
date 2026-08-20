@@ -226,9 +226,13 @@ export default function PublicProfileScreen() {
 
         {profile ? (
           <>
-            {/* ── Cinematic Hero Banner ── */}
-            <View style={styles.heroBanner}>
-              {bannerPosters.length > 0 ? (
+            {/* ── Cinematic Hero Banner ──
+                Renders the full poster-mosaic hero only when we have real
+                artwork to fill it. New / low-post profiles show a compact
+                variant so the avatar isn't left floating in a dark void
+                below a giant empty rectangle. */}
+            {bannerPosters.length > 0 ? (
+              <View style={styles.heroBanner}>
                 <View style={StyleSheet.absoluteFill}>
                   {bannerPosters.map((uri, i) => (
                     <Image
@@ -245,37 +249,57 @@ export default function PublicProfileScreen() {
                     />
                   ))}
                 </View>
-              ) : null}
-              <View style={[styles.bannerShade, { backgroundColor: `${colors.background}cc` }]} />
-              <View style={[styles.bannerGlow, { backgroundColor: personality.accentColor }]} />
+                <View style={[styles.bannerShade, { backgroundColor: `${colors.background}cc` }]} />
+                <View style={[styles.bannerGlow, { backgroundColor: personality.accentColor }]} />
 
-              {/* Taste match badge */}
-              {compat?.compatibility ? (
-                <View style={styles.compatBadge}>
-                  <Text style={[styles.compatScore, { color: personality.accentColor }]}>
-                    {compat.compatibility}%
-                  </Text>
-                  <Text style={styles.compatLabel}>match</Text>
-                </View>
-              ) : null}
-
-              {/* Floating avatar */}
-              <View style={styles.bannerAvatarWrap}>
-                <Animated.View style={{ transform: [{ translateY: floatAnim }], alignItems: "center" }}>
-                  <View
-                    style={[
-                      styles.bannerAvatarRing,
-                      {
-                        borderColor: personality.accentColor,
-                        shadowColor: personality.accentColor,
-                      },
-                    ]}
-                  >
-                    <Avatar uri={profile.avatar_url} label={profile.display_name} size={96} />
+                {compat?.compatibility ? (
+                  <View style={styles.compatBadge}>
+                    <Text style={[styles.compatScore, { color: personality.accentColor }]}>
+                      {compat.compatibility}%
+                    </Text>
+                    <Text style={styles.compatLabel}>match</Text>
                   </View>
-                </Animated.View>
+                ) : null}
+
+                <View style={styles.bannerAvatarWrap}>
+                  <Animated.View style={{ transform: [{ translateY: floatAnim }], alignItems: "center" }}>
+                    <View
+                      style={[
+                        styles.bannerAvatarRing,
+                        {
+                          borderColor: personality.accentColor,
+                          shadowColor: personality.accentColor,
+                        },
+                      ]}
+                    >
+                      <Avatar uri={profile.avatar_url} label={profile.display_name} size={96} />
+                    </View>
+                  </Animated.View>
+                </View>
               </View>
-            </View>
+            ) : (
+              <View style={styles.heroCompact}>
+                {compat?.compatibility ? (
+                  <View style={styles.compatBadgeCompact}>
+                    <Text style={[styles.compatScore, { color: personality.accentColor }]}>
+                      {compat.compatibility}%
+                    </Text>
+                    <Text style={styles.compatLabel}>match</Text>
+                  </View>
+                ) : null}
+                <View
+                  style={[
+                    styles.bannerAvatarRing,
+                    {
+                      borderColor: personality.accentColor,
+                      shadowColor: personality.accentColor,
+                    },
+                  ]}
+                >
+                  <Avatar uri={profile.avatar_url} label={profile.display_name} size={96} />
+                </View>
+              </View>
+            )}
 
             {/* ── Identity Block ── */}
             <View style={styles.identityBlock}>
@@ -543,6 +567,25 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     alignItems: "center",
+  },
+  heroCompact: {
+    marginHorizontal: spacing.lg,
+    paddingVertical: spacing.lg,
+    alignItems: "center",
+    justifyContent: "center",
+    position: "relative",
+  },
+  compatBadgeCompact: {
+    position: "absolute",
+    top: 0,
+    right: 0,
+    alignItems: "center",
+    backgroundColor: "rgba(0,0,0,0.52)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+    borderRadius: 14,
+    paddingVertical: 7,
+    paddingHorizontal: 13,
   },
   bannerAvatarRing: {
     width: 104,
