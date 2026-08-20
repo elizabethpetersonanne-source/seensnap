@@ -263,7 +263,6 @@ export default function PublicProfileScreen() {
                   ))}
                 </View>
                 <View style={[styles.bannerShade, { backgroundColor: `${colors.background}cc` }]} />
-                <View style={[styles.bannerGlow, { backgroundColor: personality.accentColor }]} />
 
                 {compat?.compatibility ? (
                   <View style={styles.compatBadge}>
@@ -621,12 +620,14 @@ const styles = StyleSheet.create({
   },
   bannerAvatarWrap: {
     position: "absolute",
-    bottom: -52,
+    top: 0,
+    bottom: 0,
     left: 0,
     right: 0,
-    // flexDirection + justifyContent centers reliably on react-native-web,
-    // where alignItems on an absolutely-positioned wrap sometimes reports
-    // a zero-width intrinsic size and the child pins to the left edge.
+    // Centers the avatar inside the banner on both axes so it reads as
+    // the focal point (previous version sat half-outside via bottom:-52
+    // which felt disconnected — the small circle was floating between
+    // the banner and the identity block below).
     flexDirection: "row",
     justifyContent: "center",
     alignItems: "center",
@@ -685,7 +686,10 @@ const styles = StyleSheet.create({
   // ── Identity ─────────────────────────────────────────────────────────────
   identityBlock: {
     alignItems: "center",
-    paddingTop: 62,
+    // paddingTop 62 was compensating for an avatar that hung half-outside
+    // the banner. Avatar now sits inside the banner center → no overlap,
+    // just standard spacing.
+    paddingTop: spacing.md,
     paddingHorizontal: spacing.lg,
     gap: 6,
   },
