@@ -51,9 +51,14 @@ SOCIAL_VISIBILITIES: set[str] = {"public", "followers", "private"}
 
 def _visible_to_viewer_clause(viewer_user_id: UUID | None):
     """SQL condition — a viewer can see a FeedEvent when:
+      - viewer IS the author (regardless of visibility), OR
       - visibility='public', OR
-      - visibility='followers' AND viewer follows the author, OR
-      - visibility='private' AND viewer IS the author
+      - visibility='followers' AND viewer follows the author
+
+    "Author always sees own post" subsumes the private-own case and also
+    fixes 'followers' visibility for the author themselves (who does not
+    follow themselves and would otherwise be blocked by the followers
+    clause).
 
     Team-scoped events (visibility='team') are NEVER returned by the social
     feed — they belong to the team's own pulse.
@@ -61,6 +66,7 @@ def _visible_to_viewer_clause(viewer_user_id: UUID | None):
     if viewer_user_id is None:
         return FeedEvent.visibility == "public"
 
+    own_post = FeedEvent.actor_user_id == viewer_user_id
     followers_ok = and_(
         FeedEvent.visibility == "followers",
         exists().where(
@@ -70,11 +76,7 @@ def _visible_to_viewer_clause(viewer_user_id: UUID | None):
             )
         ),
     )
-    private_own = and_(
-        FeedEvent.visibility == "private",
-        FeedEvent.actor_user_id == viewer_user_id,
-    )
-    return or_(FeedEvent.visibility == "public", followers_ok, private_own)
+    return or_(own_post, FeedEvent.visibility == "public", followers_ok)
 
 
 def _block_exclusion_clause(viewer_user_id: UUID | None):
@@ -196,8 +198,14 @@ def following_feed(
         .where(UserFollow.follower_user_id == viewer_user_id)
         .subquery()
     )
+    # Own posts + posts by users you follow. Every mainstream Following
+    # feed (X, Threads, Instagram) shows the author their own activity —
+    # confirms the post went out and lets them interact with replies.
     conds = [
-        FeedEvent.actor_user_id.in_(select(following_subq)),
+        or_(
+            FeedEvent.actor_user_id.in_(select(following_subq)),
+            FeedEvent.actor_user_id == viewer_user_id,
+        ),
         FeedEvent.event_type.in_(SOCIAL_POST_TYPES),
         _visible_to_viewer_clause(viewer_user_id),
     ]
