@@ -25,6 +25,7 @@ import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { TasteSignal } from "@/components/taste-signal";
 import { shareTitle } from "@/lib/share";
 import { ShareComposerSheet } from "@/components/share-composer-sheet";
+import { SendToUserSheet } from "@/components/send-to-user-sheet";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
@@ -112,6 +113,7 @@ export function UniversalTitleModal({
   const [showAddToTeam, setShowAddToTeam] = useState(false);
   // Share-to-Feed composer state — Social brief §8.
   const [showShareToFeed, setShowShareToFeed] = useState(false);
+  const [showSendSheet, setShowSendSheet] = useState(false);
   const [activeTitle, setActiveTitle] = useState<UniversalTitle | null>(title);
   const [internalLoading, setInternalLoading] = useState(false);
   const [savedState, setSavedState] = useState(isSaved);
@@ -644,6 +646,16 @@ export function UniversalTitleModal({
                 onPress={openAddToTeamFlow}
               />
               <ActionCard
+                icon="paper-plane-outline"
+                title="Send"
+                subtitle="DM this to someone on SeenSnap."
+                accent="#f4c430"
+                onPress={() => {
+                  if (!currentTitle) return;
+                  setShowSendSheet(true);
+                }}
+              />
+              <ActionCard
                 icon="megaphone-outline"
                 title="Share to Feed"
                 subtitle="Post this to your SeenSnap followers."
@@ -715,6 +727,26 @@ export function UniversalTitleModal({
               contentType={currentTitle.mediaType}
               onClose={() => setShowShareToFeed(false)}
               onPosted={() => setToast(`Shared ${currentTitle.title} to your feed`)}
+            />
+          ) : null}
+
+          {currentTitle ? (
+            <SendToUserSheet
+              visible={showSendSheet}
+              token={sessionToken}
+              contentType="title"
+              contentId={currentTitle.id}
+              sourceSurface="title_detail"
+              preview={{
+                headline: currentTitle.title,
+                subline: currentTitle.mediaType === "movie" ? "FILM" : "SERIES",
+                thumbnailUrl: currentTitle.posterUrl ?? null,
+              }}
+              onClose={() => setShowSendSheet(false)}
+              onSent={(_msg, recipient) =>
+                setToast(`Sent to ${recipient.display_name ?? "them"}`)
+              }
+              onError={(msg) => setToast(msg)}
             />
           ) : null}
 

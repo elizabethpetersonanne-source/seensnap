@@ -26,6 +26,7 @@ import { apiRequest } from "@/lib/api";
 import { BackdropPoolProvider } from "@/lib/backdrop-pool";
 import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
 import { UnreadNotificationsProvider } from "@/lib/unread-notifications";
+import { UnreadMessagesProvider } from "@/lib/unread-messages";
 
 function BootScreen() {
   return (
@@ -164,7 +165,9 @@ export default function RootLayout() {
     <AuthProvider>
       <BackdropPoolProvider>
         <UnreadNotificationsProvider>
-          <AuthGate />
+          <UnreadMessagesProvider>
+            <AuthGate />
+          </UnreadMessagesProvider>
         </UnreadNotificationsProvider>
       </BackdropPoolProvider>
     </AuthProvider>

@@ -18,6 +18,7 @@ import { colors, fonts, header, rules } from "@/constants/theme";
 import { parallaxScale, parallaxTranslate, useReduceMotion } from "@/lib/motion";
 import { trackEvent } from "@/lib/analytics";
 import { useUnreadNotifications } from "@/lib/unread-notifications";
+import { useUnreadMessages } from "@/lib/unread-messages";
 
 /**
  * SeenSnapHeader — the ONE header component used by every primary destination.
@@ -92,6 +93,7 @@ export function SeenSnapHeader({
   const insets = useSafeAreaInsets();
   const reduce = useReduceMotion();
   const { count: unreadCount } = useUnreadNotifications();
+  const { count: unreadMessages } = useUnreadMessages();
 
   const maxHeight = variant === "immersive" ? header.IMMERSIVE_HEIGHT : header.STANDARD_HEIGHT;
   const minHeight = variant === "immersive" ? header.IMMERSIVE_MIN_HEIGHT : header.STANDARD_MIN_HEIGHT;
@@ -222,6 +224,20 @@ export function SeenSnapHeader({
             style={styles.actionBtn}
           >
             <Ionicons name="search" size={18} color={colors.ink} />
+          </Pressable>
+          <Pressable
+            onPress={() => router.push("/messages")}
+            hitSlop={10}
+            style={styles.actionBtn}
+          >
+            <Ionicons name="chatbubble-outline" size={18} color={colors.ink} />
+            {unreadMessages > 0 ? (
+              <View style={styles.notifBadge}>
+                <Text style={styles.notifBadgeText}>
+                  {unreadMessages > 9 ? "9+" : String(unreadMessages)}
+                </Text>
+              </View>
+            ) : null}
           </Pressable>
           <Pressable
             onPress={() => router.push("/notifications")}
