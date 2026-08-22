@@ -12,6 +12,7 @@ import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Image,
   KeyboardAvoidingView,
   Platform,
@@ -29,11 +30,14 @@ import { useAuth } from "@/lib/auth";
 import { relativeTime } from "@/lib/format";
 import {
   fetchMessages,
+  hideConversation,
   markConversationRead,
   MessageDto,
   sendMessage,
+  toggleMute,
 } from "@/lib/messaging";
 import { trackEvent } from "@/lib/analytics";
+import { apiRequest } from "@/lib/api";
 
 const POLL_INTERVAL_MS = 4_000; // spec §36 — acceptable MVP realtime
 
@@ -44,7 +48,112 @@ export default function ConversationScreen() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showMenu, setShowMenu] = useState(false);
+  const [muted, setMuted] = useState(false);
   const scrollRef = useRef<ScrollView>(null);
+
+  // Derive the other participant from the message timeline — first message
+  // not from me gives us who to Block / Report if needed.
+  const otherUserId =
+    messages?.find((m) => m.sender_user_id !== user?.user_id)?.sender_user_id ?? null;
+
+  async function handleMute() {
+    if (!sessionToken || !conversationId) return;
+    const next = !muted;
+    try {
+      await toggleMute(sessionToken, conversationId, next);
+      setMuted(next);
+      setShowMenu(false);
+    } catch (e) {
+      Alert.alert("Couldn't mute", e instanceof Error ? e.message : "Try again.");
+    }
+  }
+
+  function handleHide() {
+    if (!sessionToken || !conversationId) return;
+    Alert.alert(
+      "Hide this conversation?",
+      "It'll disappear from your inbox. A new message will bring it back.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Hide",
+          onPress: async () => {
+            try {
+              await hideConversation(sessionToken, conversationId);
+              setShowMenu(false);
+              router.back();
+            } catch (e) {
+              Alert.alert("Couldn't hide", e instanceof Error ? e.message : "Try again.");
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  function handleReport() {
+    if (!sessionToken || !otherUserId) return;
+    Alert.alert(
+      "Report this conversation?",
+      "Our team will review. This doesn't automatically block or hide anything.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Report",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await apiRequest("/social/reports", {
+                method: "POST",
+                token: sessionToken,
+                body: JSON.stringify({
+                  target_type: "user",
+                  target_id: otherUserId,
+                  reason: "inappropriate",
+                  notes: `Conversation: ${conversationId}`,
+                }),
+              });
+              trackEvent("conversation_reported", { conversation_id: conversationId });
+              Alert.alert("Thanks — we'll take a look.");
+              setShowMenu(false);
+            } catch (e) {
+              Alert.alert("Couldn't report", e instanceof Error ? e.message : "Try again.");
+            }
+          },
+        },
+      ],
+    );
+  }
+
+  function handleBlock() {
+    if (!sessionToken || !otherUserId) return;
+    Alert.alert(
+      "Block this user?",
+      "You won't be able to message them and vice versa. They won't be notified.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Block",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await apiRequest(`/social/users/${otherUserId}/block`, {
+                method: "POST",
+                token: sessionToken,
+              });
+              trackEvent("user_blocked", { user_id: otherUserId, entry_point: "conversation" });
+              Alert.alert("Blocked.");
+              setShowMenu(false);
+              router.back();
+            } catch (e) {
+              Alert.alert("Couldn't block", e instanceof Error ? e.message : "Try again.");
+            }
+          },
+        },
+      ],
+    );
+  }
 
   const load = useCallback(async () => {
     if (!sessionToken || !conversationId) return;
@@ -118,8 +227,35 @@ export default function ConversationScreen() {
           <Ionicons name="chevron-back" size={22} color={colors.ink} />
         </Pressable>
         <Text style={styles.headerTitle} numberOfLines={1}>Conversation</Text>
-        <View style={{ width: 22 }} />
+        <Pressable onPress={() => setShowMenu((v) => !v)} hitSlop={10}>
+          <Ionicons name="ellipsis-horizontal" size={22} color={colors.ink} />
+        </Pressable>
       </View>
+
+      {showMenu ? (
+        <View style={styles.menuSheet}>
+          <Pressable style={styles.menuItem} onPress={() => void handleMute()}>
+            <Ionicons
+              name={muted ? "notifications" : "notifications-off-outline"}
+              size={16}
+              color={colors.ink}
+            />
+            <Text style={styles.menuItemText}>{muted ? "Unmute" : "Mute conversation"}</Text>
+          </Pressable>
+          <Pressable style={styles.menuItem} onPress={handleHide}>
+            <Ionicons name="eye-off-outline" size={16} color={colors.ink} />
+            <Text style={styles.menuItemText}>Hide conversation</Text>
+          </Pressable>
+          <Pressable style={styles.menuItem} onPress={handleReport}>
+            <Ionicons name="flag-outline" size={16} color={colors.ink} />
+            <Text style={styles.menuItemText}>Report</Text>
+          </Pressable>
+          <Pressable style={styles.menuItem} onPress={handleBlock}>
+            <Ionicons name="ban-outline" size={16} color={colors.danger} />
+            <Text style={[styles.menuItemText, { color: colors.danger }]}>Block user</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : undefined}
@@ -284,6 +420,27 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   centerState: { flex: 1, alignItems: "center", justifyContent: "center" },
+  menuSheet: {
+    marginHorizontal: spacing.md,
+    marginTop: 4,
+    backgroundColor: colors.surfaceSoft,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: rules.default,
+    overflow: "hidden",
+  },
+  menuItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: spacing.md,
+  },
+  menuItemText: {
+    color: colors.ink,
+    fontFamily: fonts.sans,
+    fontSize: 14,
+  },
   timeline: {
     padding: spacing.md,
     gap: spacing.sm,
