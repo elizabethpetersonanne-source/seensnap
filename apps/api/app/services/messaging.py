@@ -317,7 +317,11 @@ def send_message(
     db.commit()
     db.refresh(msg)
 
-    # Fire push notification to the OTHER participant.
+    # Fire push notification to the OTHER participant. The notify helper
+    # only flushes — we need our own commit here so the Notification row
+    # (and any NotificationOutbox rows) actually persist. Wrapped so a
+    # push-pipeline failure never fails the message send that already
+    # committed above.
     if other_id is not None:
         try:
             from app.services.notifications import notify_message_received
@@ -331,9 +335,9 @@ def send_message(
                     message=msg,
                     is_demo=sender.is_demo,
                 )
+                db.commit()
         except Exception:
-            # Never let a push-notification failure fail a message send.
-            pass
+            db.rollback()
 
     return msg
 

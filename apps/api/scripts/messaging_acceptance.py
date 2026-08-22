@@ -257,6 +257,44 @@ def scenario_send_list(a: Client, b: Client, convo_id: str) -> None:
         )
 
 
+def scenario_notification_fires(a: Client, b: Client) -> None:
+    """Verify that a Notification row lands for the recipient — no push
+    delivery test (that needs a real device), just the DB-side row that
+    the push pipeline reads from."""
+    print("\n7) Message notification pipeline")
+    from app.db.session import SessionLocal
+    from app.models.social import Notification
+    from sqlalchemy import select
+    from uuid import UUID as _UUID
+
+    # A already has an open conversation with B from earlier scenarios.
+    # The scenarios above have sent multiple messages A→B, so there should
+    # be message_received rows for B with actor=A.
+    db = SessionLocal()
+    try:
+        rows = db.scalars(
+            select(Notification).where(
+                Notification.user_id == _UUID(b.user_id),
+                Notification.notification_type == "message_received",
+                Notification.actor_user_id == _UUID(a.user_id),
+            )
+        ).all()
+        _report(
+            "B has notification rows for messages received from A",
+            len(rows) >= 1,
+            f"count={len(rows)}",
+        )
+        if rows:
+            sample = rows[0]
+            _report(
+                "Notification carries deep-link route to /messages/{id}",
+                bool(sample.route and sample.route.startswith("/messages/")),
+                f"route={sample.route}",
+            )
+    finally:
+        db.close()
+
+
 def scenario_length_limit(a: Client, convo_id: str) -> None:
     print("\n5) Text length limit")
     huge = "x" * 1500
@@ -304,6 +342,7 @@ def main() -> int:
         scenario_send_text(a, b, convo_id)
         scenario_send_title(a, b, convo_id)
         scenario_send_list(a, b, convo_id)
+        scenario_notification_fires(a, b)
         scenario_length_limit(a, convo_id)
         scenario_blocking(a, b, convo_id)
     finally:

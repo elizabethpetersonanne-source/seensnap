@@ -36,6 +36,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { Avatar } from "@/components/avatar";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
+import { SendToUserSheet } from "@/components/send-to-user-sheet";
 import { SeenSnapHeader } from "@/components/headers/seensnap-header";
 import { relativeTime } from "@/lib/format";
 import { apiRequest } from "@/lib/api";
@@ -448,6 +449,7 @@ function FeedCard({
   const [commentPosting, setCommentPosting] = useState(false);
   const [showOverflow, setShowOverflow] = useState(false);
   const [saveSheetOpen, setSaveSheetOpen] = useState(false);
+  const [sendSheetOpen, setSendSheetOpen] = useState(false);
   const [saveToast, setSaveToast] = useState<string | null>(null);
 
   async function loadComments() {
@@ -588,6 +590,16 @@ function FeedCard({
             <Text style={styles.cardActionText}>Save</Text>
           </Pressable>
         ) : null}
+        {/* Send — 1:1 DM the underlying SeenSnap object (Messaging §58). */}
+        {post.title || post.list ? (
+          <Pressable
+            style={styles.cardAction}
+            onPress={() => setSendSheetOpen(true)}
+          >
+            <Ionicons name="paper-plane-outline" size={16} color={colors.muted} />
+            <Text style={styles.cardActionText}>Send</Text>
+          </Pressable>
+        ) : null}
         <View style={{ flex: 1 }} />
         {post.visibility !== "public" ? (
           <Text style={styles.cardVisibility}>
@@ -702,6 +714,40 @@ function FeedCard({
         onError={(msg) => {
           setSaveSheetOpen(false);
           setSaveToast(msg);
+          setTimeout(() => setSaveToast(null), 2800);
+        }}
+      />
+
+      {/* Send — 1:1 DM the underlying object (Messaging §58). Sends the
+          canonical SeenSnap entity, not a screenshot of the post. */}
+      <SendToUserSheet
+        visible={sendSheetOpen}
+        token={token}
+        contentType={post.title ? "title" : post.list ? "list" : undefined}
+        contentId={post.title?.id ?? post.list?.id}
+        sourceSurface="social_feed"
+        preview={
+          post.title
+            ? {
+                headline: post.title.title,
+                subline: post.title.content_type === "movie" ? "FILM" : "SERIES",
+                thumbnailUrl: post.title.poster_url,
+              }
+            : post.list
+            ? {
+                headline: post.list.name,
+                subline: `${post.list.item_count} ${post.list.item_count === 1 ? "title" : "titles"}`,
+                thumbnailUrl: post.list.preview[0]?.poster_url ?? null,
+              }
+            : undefined
+        }
+        onClose={() => setSendSheetOpen(false)}
+        onSent={(_msg, recipient) => {
+          setSaveToast(`Sent to ${recipient.display_name ?? "them"}`);
+          setTimeout(() => setSaveToast(null), 2400);
+        }}
+        onError={(m) => {
+          setSaveToast(m);
           setTimeout(() => setSaveToast(null), 2800);
         }}
       />

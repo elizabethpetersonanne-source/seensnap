@@ -21,6 +21,7 @@ import { SSPosterContact } from "@/components/ss-poster-contact";
 import { SeenSnapHeader } from "@/components/headers/seensnap-header";
 import { shareList } from "@/lib/share";
 import { ShareComposerSheet } from "@/components/share-composer-sheet";
+import { SendToUserSheet } from "@/components/send-to-user-sheet";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, rules, spacing } from "@/constants/theme";
@@ -79,6 +80,8 @@ export default function MyPicksScreen() {
   const [selectedList, setSelectedList] = useState<WatchlistResponse | null>(null);
   // Share-to-Feed composer for the currently open list.
   const [showShareToFeed, setShowShareToFeed] = useState(false);
+  // Send-to-user sheet for privately DMing the list.
+  const [showSendSheet, setShowSendSheet] = useState(false);
   // Public share status for the currently selected list (PRIVATE / PUBLIC LINK
   // pill). Fetched on list change; refreshed after publish/revoke actions.
   const [shareStatus, setShareStatus] = useState<{
@@ -474,6 +477,17 @@ export default function MyPicksScreen() {
                 <Ionicons name="megaphone-outline" color={colors.accent} size={14} />
                 <Text style={styles.sharePillText}>POST</Text>
               </Pressable>
+              {/* Send — 1:1 DM this list to a SeenSnap user (Messaging §17). */}
+              <Pressable
+                hitSlop={8}
+                style={{ paddingHorizontal: 6 }}
+                onPress={() => {
+                  if (!sessionToken || !selectedList) return;
+                  setShowSendSheet(true);
+                }}
+              >
+                <Ionicons name="paper-plane-outline" color={colors.accent} size={16} />
+              </Pressable>
               {/* External Share — native OS share sheet with the public list URL. */}
               <Pressable
                 hitSlop={8}
@@ -621,6 +635,27 @@ export default function MyPicksScreen() {
           }
           onClose={() => setShowShareToFeed(false)}
           onPosted={() => setToast(`Shared "${selectedList.name}" to your feed`)}
+        />
+      ) : null}
+
+      {selectedList ? (
+        <SendToUserSheet
+          visible={showSendSheet}
+          token={sessionToken}
+          contentType="list"
+          contentId={selectedList.id}
+          sourceSurface="my_picks_shelf"
+          preview={{
+            headline: selectedList.name,
+            subline: `${(selectedList.items ?? []).length} ${(selectedList.items ?? []).length === 1 ? "title" : "titles"}`,
+            thumbnailUrl:
+              (selectedList.items ?? []).map((i) => i.title.poster_url).find((u) => Boolean(u)) ?? null,
+          }}
+          onClose={() => setShowSendSheet(false)}
+          onSent={(_msg, recipient) =>
+            setToast(`Sent "${selectedList.name}" to ${recipient.display_name ?? "them"}`)
+          }
+          onError={(m) => setToast(m)}
         />
       ) : null}
 
