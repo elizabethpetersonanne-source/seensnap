@@ -535,11 +535,37 @@ def hydrate_message(db: Session, msg: Message) -> dict:
     elif msg.content_type == "list" and msg.content_id:
         watchlist = db.scalar(select(Watchlist).where(Watchlist.id == msg.content_id))
         if watchlist is not None:
+            # Include the public share_token so the recipient can tap the
+            # card and open the list at /lists/{token}. Mint one on
+            # read if the sender never generated one — sending a list
+            # implicitly authorizes access per spec §19 (MVP rule:
+            # sender must own the list, checked at send time).
+            from sqlalchemy import select as _select
+
+            from app.models.social import ListShare
+
+            share_row = db.scalar(
+                _select(ListShare).where(
+                    ListShare.watchlist_id == watchlist.id,
+                    ListShare.revoked_at.is_(None),
+                ).order_by(ListShare.created_at.desc())
+            )
+            share_token: str | None = share_row.token if share_row is not None else None
+            if share_token is None:
+                from app.services.social_feed import _ensure_list_share_token
+                share_token = _ensure_list_share_token(
+                    db,
+                    list_id=watchlist.id,
+                    author_user_id=watchlist.owner_user_id,
+                )
+                db.commit()
+
             data["list"] = {
                 "id": str(watchlist.id),
                 "name": watchlist.name,
                 "description": watchlist.description,
                 "owner_user_id": str(watchlist.owner_user_id),
+                "share_token": share_token,
             }
         else:
             data["list"] = None

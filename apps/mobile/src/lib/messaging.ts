@@ -48,6 +48,7 @@ export type MessageDto = {
     name: string;
     description: string | null;
     owner_user_id: string;
+    share_token: string | null;
   } | null;
   created_at: string;
 };

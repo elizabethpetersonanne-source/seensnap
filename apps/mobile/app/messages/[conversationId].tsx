@@ -386,16 +386,24 @@ function ContentCard({ message }: { message: MessageDto }) {
         </View>
       );
     }
+    const isOpenable = Boolean(l.share_token);
     return (
-      <View style={styles.listCard}>
+      <Pressable
+        style={({ pressed }) => [styles.listCard, pressed && isOpenable && { opacity: 0.75 }]}
+        onPress={() => {
+          if (l.share_token) router.push(`/lists/${l.share_token}`);
+        }}
+        disabled={!isOpenable}
+      >
         <Ionicons name="albums-outline" size={20} color={colors.accent} />
-        <View style={{ flex: 1 }}>
+        <View style={{ flex: 1, gap: 4 }}>
           <Text style={styles.titleCardName}>{l.name}</Text>
           {l.description ? (
             <Text style={styles.titleCardMeta} numberOfLines={2}>{l.description}</Text>
           ) : null}
+          {isOpenable ? <Text style={styles.titleCardOpen}>Open list →</Text> : null}
         </View>
-      </View>
+      </Pressable>
     );
   }
   return null;
