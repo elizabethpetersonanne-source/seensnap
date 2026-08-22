@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import analytics, auth, collections, devices, discover, feed, list_shares, me, notifications, profiles, recommendations, search, shares, snips, social, teams, titles, watch_options, watchlist
+from app.api.routes import analytics, auth, collections, devices, discover, feed, list_shares, me, messages, notifications, profiles, recommendations, search, shares, snips, social, teams, titles, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
@@ -28,3 +28,6 @@ api_router.include_router(social.router, prefix="/social", tags=["social"])
 # Sharing — mounted at root because it exposes both authed (/me/watchlist/lists/{id}/share)
 # and public (/public/lists/{token}) endpoints under different prefixes.
 api_router.include_router(list_shares.router, tags=["list-shares"])
+# Messaging — Messaging spec §35. Direct 1:1 conversations, title/list
+# send, unread state, mute, hide.
+api_router.include_router(messages.router, prefix="/messages", tags=["messages"])

@@ -24,6 +24,10 @@ _CATEGORY: dict[str, str] = {
     "social_like_on_your_post": "direct_engagement",
     "social_comment_on_your_post": "direct_engagement",
     "social_reply_to_your_comment": "direct_engagement",
+    # Messaging spec §23–§27. Direct 1:1 messages live in their own
+    # category so users can independently toggle DM push without losing
+    # team / social pushes.
+    "message_received": "direct_engagement",
 }
 
 
@@ -297,6 +301,70 @@ def notify_social_comment(
         entity_type="social_post",
         entity_id=post_id,
         route=f"/post/{post_id}",
+        dedupe_key=None,
+        is_demo=is_demo,
+    )
+    if notification is not None:
+        _enqueue_push(db, notification)
+
+
+# ─── Messaging notifications (Messaging spec §23–§27) ────────────────────
+
+
+def notify_message_received(
+    db: Session,
+    *,
+    sender: User,
+    recipient_id: UUID,
+    conversation_id: UUID,
+    message,  # app.models.messaging.Message — typed as Any to avoid cycle
+    is_demo: bool = False,
+) -> None:
+    """Fired when a message lands. Deep-links to the conversation, NEVER
+    straight to a title, so the social context is preserved (spec §25).
+    Muted conversations skip the push."""
+    from app.models.messaging import ConversationParticipant
+
+    membership = db.scalar(
+        select(ConversationParticipant).where(
+            ConversationParticipant.conversation_id == conversation_id,
+            ConversationParticipant.user_id == recipient_id,
+        )
+    )
+    if membership is not None and membership.muted_at is not None:
+        return
+
+    sender_profile = db.scalar(select(UserProfile).where(UserProfile.user_id == sender.id))
+    sender_name = sender_profile.display_name if sender_profile else "Someone"
+
+    if message.content_type == "title":
+        snap = message.snapshot_json or {}
+        kind = snap.get("content_type_kind") or "title"
+        kind_label = "movie" if kind == "movie" else "series"
+        title_str = snap.get("title") or "a title"
+        push_title = f"{sender_name} sent you a {kind_label}"
+        push_body = title_str
+    elif message.content_type == "list":
+        snap = message.snapshot_json or {}
+        list_name = snap.get("name") or "a list"
+        push_title = f"{sender_name} sent you a list"
+        push_body = f'"{list_name}"'
+    else:
+        push_title = f"{sender_name} sent you a message"
+        push_body = (message.text_body or "").strip()[:140] or "New message"
+
+    notification = _create_notification(
+        db,
+        recipient_id=recipient_id,
+        actor_id=sender.id,
+        notification_type="message_received",
+        title=push_title,
+        body=push_body,
+        entity_type="conversation",
+        entity_id=conversation_id,
+        route=f"/messages/{conversation_id}",
+        # No dedupe — every message is meaningful. Platform-level
+        # collapse via collapse_key = conversation_id when supported.
         dedupe_key=None,
         is_demo=is_demo,
     )
