@@ -665,10 +665,35 @@ def fetch_person_details(person_id: int) -> dict[str, Any]:
             "release_date": credit.get("release_date") or credit.get("first_air_date"),
             "character": credit.get("character"),
             "job": credit.get("job"),
+            # Score fields — kept internal (not surfaced in the API
+            # response) but used for sorting so the client sees the
+            # actor's strongest work first.
+            "_vote_average": float(credit.get("vote_average") or 0.0),
+            "_vote_count": int(credit.get("vote_count") or 0),
         })
 
-    # Sort by popularity/vote_count descending
-    all_credits.sort(key=lambda c: credits_data.get("id", 0), reverse=True)
+    # Sort by rating desc, with a vote-count floor so a single 10.0
+    # from one obscure short doesn't outrank a critically acclaimed
+    # feature with hundreds of votes. Credits below the floor go to a
+    # secondary tier sorted by release_date so the actor's newest
+    # non-mainstream work still surfaces. Bug fix for the prior
+    # `credits_data.get("id", 0)` sort key which was constant across
+    # every credit and produced insertion-order output.
+    VOTE_COUNT_FLOOR = 50
+
+    def _rank(c: dict[str, Any]) -> tuple[int, float, int, str]:
+        tier = 1 if c["_vote_count"] >= VOTE_COUNT_FLOOR else 0
+        return (
+            tier,
+            c["_vote_average"] if tier else 0.0,
+            c["_vote_count"] if tier else 0,
+            c.get("release_date") or "",
+        )
+
+    all_credits.sort(key=_rank, reverse=True)
+    for c in all_credits:
+        c.pop("_vote_average", None)
+        c.pop("_vote_count", None)
 
     return {
         "tmdb_person_id": person_id,

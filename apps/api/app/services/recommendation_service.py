@@ -604,6 +604,26 @@ def recommend_for_user(
             payload={"reasons": item["reasons"], "mode_label": config.display_label},
         )
         db.add(impression)
+        # Personalize the reason using the top-scoring SceneDNA signal
+        # for this candidate. Falls back to the mode's generic template
+        # only when we have no signal evidence (cold-start / mode filter
+        # produced no signal match). User feedback: the time-of-day
+        # picks ("Afternoon Pick" etc.) shouldn't ship the generic
+        # "Quick and easy for the afternoon" line — every card in the
+        # deck should visibly reflect the user's SceneDNA.
+        top_signal = next(
+            (
+                r for r in item["reasons"]
+                if r.get("type") == "signal_match" and r.get("signal_name")
+            ),
+            None,
+        )
+        if top_signal:
+            signal_name = str(top_signal.get("signal_name") or "").strip()
+            personalized = f"{config.display_label} — matches your {signal_name.lower()} lean."
+        else:
+            personalized = config.reason_template
+
         results.append({
             "title": title,
             "score": item["score"],
@@ -611,7 +631,7 @@ def recommend_for_user(
             "reasons": item["reasons"],
             "mode": config.key,
             "mode_label": config.display_label,
-            "reason_template": config.reason_template,
+            "reason_template": personalized,
             "impression_id": str(impression.id),
         })
     db.commit()
