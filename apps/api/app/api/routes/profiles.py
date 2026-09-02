@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
-from app.models.social import FeedEvent, ListShare, Watchlist, WatchlistItem
+from app.models.social import FeedEvent, ListShare, UserFollow, Watchlist, WatchlistItem
 from app.models.user import UserProfile
 from app.schemas.user import PublicProfilePostResponse, PublicProfileResponse
 from app.schemas.taste import CompatibilityResponse, TasteProfileResponse
@@ -201,3 +201,88 @@ def follow_profile(user_id: UUID, current_user: CurrentUser, db: DbSession) -> N
 def unfollow_profile(user_id: UUID, current_user: CurrentUser, db: DbSession) -> None:
     unfollow_user(db, follower_user_id=current_user.id, following_user_id=user_id)
     return None
+
+
+class FollowRow(BaseModel):
+    user_id: UUID
+    username: str | None
+    display_name: str | None
+    avatar_url: str | None
+    bio: str | None
+    followed_at: str  # ISO8601 — when the current user started following (or was followed)
+
+
+class FollowListResponse(BaseModel):
+    items: list[FollowRow]
+    total: int
+
+
+def _list_relationships(
+    db,
+    *,
+    subject_user_id: UUID,
+    direction: str,  # "following" (subject follows others) | "followers" (others follow subject)
+    limit: int,
+    offset: int,
+) -> FollowListResponse:
+    if direction == "following":
+        subj_col = UserFollow.follower_user_id
+        other_col = UserFollow.following_user_id
+    else:
+        subj_col = UserFollow.following_user_id
+        other_col = UserFollow.follower_user_id
+
+    total = db.scalar(select(func.count(UserFollow.id)).where(subj_col == subject_user_id)) or 0
+
+    rows = db.execute(
+        select(UserFollow, UserProfile)
+        .join(UserProfile, UserProfile.user_id == other_col)
+        .where(subj_col == subject_user_id)
+        .order_by(UserFollow.created_at.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+
+    items = [
+        FollowRow(
+            user_id=profile.user_id,
+            username=profile.username,
+            display_name=profile.display_name,
+            avatar_url=profile.avatar_url,
+            bio=profile.bio,
+            followed_at=follow.created_at.isoformat(),
+        )
+        for follow, profile in rows
+    ]
+    return FollowListResponse(items=items, total=int(total))
+
+
+@router.get("/{user_id}/following", response_model=FollowListResponse)
+def list_profile_following(
+    user_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> FollowListResponse:
+    """Hydrated list of the users this profile follows. Public — no
+    identity restriction beyond auth."""
+    _ = current_user  # auth required, but no additional per-viewer filter
+    return _list_relationships(
+        db, subject_user_id=user_id, direction="following", limit=limit, offset=offset
+    )
+
+
+@router.get("/{user_id}/followers", response_model=FollowListResponse)
+def list_profile_followers(
+    user_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(100, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> FollowListResponse:
+    """Hydrated list of users who follow this profile."""
+    _ = current_user
+    return _list_relationships(
+        db, subject_user_id=user_id, direction="followers", limit=limit, offset=offset
+    )

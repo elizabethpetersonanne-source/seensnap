@@ -119,38 +119,126 @@ export default function SocialScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
-  // Composer state — powers the "+ Post" button in the header. Text-only
-  // for now; attach-a-title is deferred to a follow-up so the button
-  // ships without regressing composer flows on Social Feed (feed.tsx).
+  // Composer state — powers the "+ Post" button in the header. Text
+  // post, text-with-title, or text-with-list. Only one attachment at a
+  // time; attaching one replaces the other.
   const [showComposer, setShowComposer] = useState(false);
   const [composerText, setComposerText] = useState("");
   const [isPosting, setIsPosting] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
+  type AttachedTitle = {
+    id: string;
+    title: string;
+    poster_url: string | null;
+    media_type: string | null;
+  };
+  type AttachedList = { id: string; name: string; item_count?: number };
+  const [attachedTitle, setAttachedTitle] = useState<AttachedTitle | null>(null);
+  const [attachedList, setAttachedList] = useState<AttachedList | null>(null);
+  const [attachMode, setAttachMode] = useState<null | "title" | "list">(null);
+  const [attachTitleQuery, setAttachTitleQuery] = useState("");
+  const [attachTitleResults, setAttachTitleResults] = useState<AttachedTitle[]>([]);
+  const [attachTitleSearching, setAttachTitleSearching] = useState(false);
+  const [myLists, setMyLists] = useState<AttachedList[]>([]);
+
+  const resetComposer = useCallback(() => {
+    setComposerText("");
+    setAttachedTitle(null);
+    setAttachedList(null);
+    setAttachMode(null);
+    setAttachTitleQuery("");
+    setAttachTitleResults([]);
+    setComposerError(null);
+  }, []);
+
+  const loadMyLists = useCallback(async () => {
+    if (!sessionToken || myLists.length > 0) return;
+    try {
+      // Same endpoint the Save-to-List sheet uses; returns the user's
+      // watchlists including system defaults (My Picks, Favorites…).
+      const data = await apiRequest<{ id: string; name: string; item_count?: number }[]>(
+        "/me/watchlist/lists",
+        { token: sessionToken },
+      );
+      setMyLists(data.map((l) => ({ id: l.id, name: l.name, item_count: l.item_count })));
+    } catch {
+      // non-blocking — the picker just shows empty if we can't load
+    }
+  }, [sessionToken, myLists.length]);
+
+  const runTitleSearch = useCallback(
+    async (q: string) => {
+      if (!sessionToken || q.trim().length < 2) {
+        setAttachTitleResults([]);
+        return;
+      }
+      setAttachTitleSearching(true);
+      try {
+        const data = await apiRequest<AttachedTitle[]>(
+          `/titles/search?q=${encodeURIComponent(q.trim())}`,
+          { token: sessionToken },
+        );
+        setAttachTitleResults(data.slice(0, 10));
+      } catch {
+        setAttachTitleResults([]);
+      } finally {
+        setAttachTitleSearching(false);
+      }
+    },
+    [sessionToken],
+  );
 
   async function submitPost() {
     if (!sessionToken || isPosting) return;
     const caption = composerText.trim();
-    if (!caption) {
-      setComposerError("Write something to post.");
+    // Allow either non-empty text OR an attachment (an attached title/list
+    // by itself is a valid share, no caption required — matches how the
+    // Feed composer behaves).
+    if (!caption && !attachedTitle && !attachedList) {
+      setComposerError("Write something or attach a title or list.");
       return;
     }
     setIsPosting(true);
     setComposerError(null);
     try {
-      await apiRequest("/feed/wall-posts", {
-        method: "POST",
-        token: sessionToken,
-        body: JSON.stringify({
-          content_title_id: null,
-          caption,
-          rating: null,
-          share_to_team_id: null,
-        }),
-      });
-      trackEvent("social_post_created", { source: "social_tab", has_title: false });
-      setComposerText("");
+      if (attachedList) {
+        // List posts go through /social/posts (structured post model)
+        // with post_type=list_share so the resulting card renders the
+        // list preview correctly in the feed.
+        await apiRequest("/social/posts", {
+          method: "POST",
+          token: sessionToken,
+          body: JSON.stringify({
+            post_type: "list_share",
+            list_id: attachedList.id,
+            caption: caption || null,
+            visibility: "followers",
+          }),
+        });
+        trackEvent("social_post_created", {
+          source: "social_tab",
+          attachment_type: "list",
+        });
+      } else {
+        // Text and text-with-title use /feed/wall-posts (accepts a null
+        // content_title_id for pure-text posts).
+        await apiRequest("/feed/wall-posts", {
+          method: "POST",
+          token: sessionToken,
+          body: JSON.stringify({
+            content_title_id: attachedTitle?.id ?? null,
+            caption: caption || null,
+            rating: null,
+            share_to_team_id: null,
+          }),
+        });
+        trackEvent("social_post_created", {
+          source: "social_tab",
+          attachment_type: attachedTitle ? "title" : "text",
+        });
+      }
+      resetComposer();
       setShowComposer(false);
-      // Refetch so the new post lands at the top of the visible feed.
       void loadFeed();
     } catch (e) {
       setComposerError(e instanceof Error ? e.message : "Couldn't post.");
@@ -488,24 +576,40 @@ export default function SocialScreen() {
           Opens from the header's create-outline icon. Posts to
           /feed/wall-posts (same endpoint used by the Social Feed's
           composer) so the resulting post shows up in the same feed
-          this tab reads back from. Text-only for now; attach-a-title
-          picker is deferred so the button can ship in one pass. */}
+          this tab reads back from. Supports a plain-text post, or the
+          user can attach ONE title or ONE list — attach a list and
+          the submit routes via /social/posts (post_type=list_share),
+          otherwise via /feed/wall-posts. Only one attachment at a
+          time to keep the composer surface compact; attaching the
+          second replaces the first. */}
       <Modal
         visible={showComposer}
         animationType="slide"
         transparent
-        onRequestClose={() => setShowComposer(false)}
+        onRequestClose={() => {
+          resetComposer();
+          setShowComposer(false);
+        }}
       >
         <KeyboardAvoidingView
           style={styles.composerBackdrop}
           behavior={Platform.OS === "ios" ? "padding" : undefined}
         >
-          <Pressable style={styles.composerBackdropTap} onPress={() => setShowComposer(false)} />
+          <Pressable
+            style={styles.composerBackdropTap}
+            onPress={() => {
+              resetComposer();
+              setShowComposer(false);
+            }}
+          />
           <View style={styles.composerSheet}>
             <View style={styles.composerHeader}>
               <Text style={styles.composerHeading}>New post</Text>
               <Pressable
-                onPress={() => setShowComposer(false)}
+                onPress={() => {
+                  resetComposer();
+                  setShowComposer(false);
+                }}
                 accessibilityRole="button"
                 accessibilityLabel="Close composer"
                 hitSlop={10}
@@ -513,6 +617,50 @@ export default function SocialScreen() {
                 <Ionicons name="close" size={22} color={colors.muted} />
               </Pressable>
             </View>
+
+            {/* Attached-chip: shows the selected title or list above
+                 the input. Tap the × to detach. */}
+            {attachedTitle ? (
+              <View style={styles.attachedChip}>
+                {attachedTitle.poster_url ? (
+                  <Image source={{ uri: attachedTitle.poster_url }} style={styles.attachedChipPoster} />
+                ) : (
+                  <View style={[styles.attachedChipPoster, styles.attachedChipPosterEmpty]}>
+                    <Ionicons name="film-outline" size={16} color={colors.muted} />
+                  </View>
+                )}
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.attachedChipKind}>TITLE</Text>
+                  <Text style={styles.attachedChipName} numberOfLines={1}>{attachedTitle.title}</Text>
+                </View>
+                <Pressable
+                  onPress={() => setAttachedTitle(null)}
+                  hitSlop={10}
+                  accessibilityLabel="Remove attached title"
+                >
+                  <Ionicons name="close-circle" size={20} color={colors.muted} />
+                </Pressable>
+              </View>
+            ) : null}
+            {attachedList ? (
+              <View style={styles.attachedChip}>
+                <View style={[styles.attachedChipPoster, styles.attachedChipPosterEmpty]}>
+                  <Ionicons name="albums-outline" size={16} color={colors.muted} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.attachedChipKind}>LIST</Text>
+                  <Text style={styles.attachedChipName} numberOfLines={1}>{attachedList.name}</Text>
+                </View>
+                <Pressable
+                  onPress={() => setAttachedList(null)}
+                  hitSlop={10}
+                  accessibilityLabel="Remove attached list"
+                >
+                  <Ionicons name="close-circle" size={20} color={colors.muted} />
+                </Pressable>
+              </View>
+            ) : null}
+
             <TextInput
               style={styles.composerInput}
               placeholder="What's worth watching?"
@@ -526,14 +674,141 @@ export default function SocialScreen() {
               maxLength={500}
               autoFocus
             />
+
+            {/* Attach mode picker — small row of chips. Tapping opens
+                 the corresponding search/list panel below. */}
+            <View style={styles.attachRow}>
+              <Pressable
+                style={[styles.attachChip, attachMode === "title" && styles.attachChipActive]}
+                onPress={() => {
+                  setAttachMode(attachMode === "title" ? null : "title");
+                  setAttachedList(null);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Attach a title"
+              >
+                <Ionicons
+                  name="film-outline"
+                  size={14}
+                  color={attachMode === "title" ? colors.background : colors.ink}
+                />
+                <Text style={[styles.attachChipText, attachMode === "title" && styles.attachChipTextActive]}>
+                  Attach title
+                </Text>
+              </Pressable>
+              <Pressable
+                style={[styles.attachChip, attachMode === "list" && styles.attachChipActive]}
+                onPress={() => {
+                  const next = attachMode === "list" ? null : "list";
+                  setAttachMode(next);
+                  setAttachedTitle(null);
+                  if (next === "list") void loadMyLists();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Attach a list"
+              >
+                <Ionicons
+                  name="albums-outline"
+                  size={14}
+                  color={attachMode === "list" ? colors.background : colors.ink}
+                />
+                <Text style={[styles.attachChipText, attachMode === "list" && styles.attachChipTextActive]}>
+                  Attach list
+                </Text>
+              </Pressable>
+            </View>
+
+            {attachMode === "title" ? (
+              <View style={styles.attachPanel}>
+                <TextInput
+                  style={styles.attachSearchInput}
+                  placeholder="Search titles"
+                  placeholderTextColor={colors.muted}
+                  value={attachTitleQuery}
+                  onChangeText={(v) => {
+                    setAttachTitleQuery(v);
+                    void runTitleSearch(v);
+                  }}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <ScrollView
+                  style={{ maxHeight: 220 }}
+                  keyboardShouldPersistTaps="handled"
+                >
+                  {attachTitleSearching ? (
+                    <ActivityIndicator style={{ marginVertical: 8 }} color={colors.accent} />
+                  ) : null}
+                  {!attachTitleSearching && attachTitleResults.length === 0 && attachTitleQuery.length >= 2 ? (
+                    <Text style={styles.attachEmpty}>No titles match "{attachTitleQuery.trim()}"</Text>
+                  ) : null}
+                  {attachTitleResults.map((t) => (
+                    <Pressable
+                      key={t.id}
+                      style={styles.attachResultRow}
+                      onPress={() => {
+                        setAttachedTitle(t);
+                        setAttachMode(null);
+                        setAttachTitleQuery("");
+                        setAttachTitleResults([]);
+                      }}
+                    >
+                      {t.poster_url ? (
+                        <Image source={{ uri: t.poster_url }} style={styles.attachResultPoster} />
+                      ) : (
+                        <View style={[styles.attachResultPoster, styles.attachedChipPosterEmpty]}>
+                          <Ionicons name="film-outline" size={16} color={colors.muted} />
+                        </View>
+                      )}
+                      <Text style={styles.attachResultText} numberOfLines={2}>{t.title}</Text>
+                    </Pressable>
+                  ))}
+                </ScrollView>
+              </View>
+            ) : null}
+
+            {attachMode === "list" ? (
+              <View style={styles.attachPanel}>
+                <ScrollView style={{ maxHeight: 220 }} keyboardShouldPersistTaps="handled">
+                  {myLists.length === 0 ? (
+                    <Text style={styles.attachEmpty}>Loading your lists…</Text>
+                  ) : (
+                    myLists.map((l) => (
+                      <Pressable
+                        key={l.id}
+                        style={styles.attachResultRow}
+                        onPress={() => {
+                          setAttachedList(l);
+                          setAttachMode(null);
+                        }}
+                      >
+                        <View style={[styles.attachResultPoster, styles.attachedChipPosterEmpty]}>
+                          <Ionicons name="albums-outline" size={18} color={colors.muted} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.attachResultText} numberOfLines={1}>{l.name}</Text>
+                          {typeof l.item_count === "number" ? (
+                            <Text style={styles.attachResultSub}>{l.item_count} titles</Text>
+                          ) : null}
+                        </View>
+                      </Pressable>
+                    ))
+                  )}
+                </ScrollView>
+              </View>
+            ) : null}
+
             <View style={styles.composerFooter}>
               <Text style={styles.composerCount}>{composerText.length}/500</Text>
               <Pressable
                 onPress={() => void submitPost()}
-                disabled={isPosting || !composerText.trim()}
+                disabled={
+                  isPosting || (!composerText.trim() && !attachedTitle && !attachedList)
+                }
                 style={({ pressed }) => [
                   styles.composerPostBtn,
-                  (isPosting || !composerText.trim()) && styles.composerPostBtnDisabled,
+                  (isPosting || (!composerText.trim() && !attachedTitle && !attachedList)) &&
+                    styles.composerPostBtnDisabled,
                   pressed && { opacity: 0.8 },
                 ]}
                 accessibilityRole="button"
@@ -1348,5 +1623,118 @@ const styles = StyleSheet.create({
     fontFamily: fonts.sans,
     color: colors.danger ?? "#E74C3C",
     fontSize: 12,
+  },
+  attachedChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    padding: 8,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.06)",
+  },
+  attachedChipPoster: {
+    width: 36,
+    height: 52,
+    borderRadius: 4,
+    backgroundColor: colors.surface,
+  },
+  attachedChipPosterEmpty: {
+    justifyContent: "center",
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: rules.default,
+  },
+  attachedChipKind: {
+    fontFamily: fonts.mono,
+    fontSize: 9,
+    letterSpacing: 1,
+    color: colors.accent,
+  },
+  attachedChipName: {
+    fontFamily: fonts.sansBold,
+    fontSize: 14,
+    color: colors.ink,
+  },
+  attachRow: {
+    flexDirection: "row",
+    gap: spacing.sm,
+  },
+  attachChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: rules.default,
+    backgroundColor: colors.background,
+  },
+  attachChipActive: {
+    backgroundColor: colors.ink,
+    borderColor: colors.ink,
+  },
+  attachChipText: {
+    fontFamily: fonts.sansMedium,
+    fontSize: 12,
+    color: colors.ink,
+  },
+  attachChipTextActive: {
+    color: colors.background,
+    fontFamily: fonts.sansBold,
+  },
+  attachPanel: {
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: radii.sm,
+    padding: spacing.sm,
+    gap: spacing.sm,
+  },
+  attachSearchInput: {
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: radii.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: 8,
+    fontFamily: fonts.sans,
+    color: colors.ink,
+    fontSize: 14,
+  },
+  attachResultRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    paddingVertical: 8,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: rules.default,
+  },
+  attachResultPoster: {
+    width: 32,
+    height: 46,
+    borderRadius: 4,
+    backgroundColor: colors.surface,
+  },
+  attachResultText: {
+    flex: 1,
+    fontFamily: fonts.sans,
+    fontSize: 13,
+    color: colors.ink,
+  },
+  attachResultSub: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    color: colors.muted,
+    letterSpacing: 0.5,
+    marginTop: 2,
+  },
+  attachEmpty: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: colors.muted,
+    textAlign: "center",
+    paddingVertical: 12,
   },
 });

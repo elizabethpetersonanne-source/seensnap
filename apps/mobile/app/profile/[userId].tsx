@@ -355,17 +355,28 @@ export default function PublicProfileScreen() {
               ) : null}
             </View>
 
-            {/* ── Stats Row ── */}
+            {/* ── Stats Row ── Followers and Following are tappable and
+                 route into the shared Follows screen for this user. */}
             <View style={styles.statsRow}>
-              <View style={styles.statItem}>
+              <Pressable
+                style={styles.statItem}
+                onPress={() => router.push(`/follows/${userId}?mode=followers`)}
+                accessibilityRole="button"
+                accessibilityLabel="View followers"
+              >
                 <Text style={styles.statNumber}>{profile.follower_count}</Text>
                 <Text style={styles.statLabel}>Followers</Text>
-              </View>
+              </Pressable>
               <View style={styles.statDivider} />
-              <View style={styles.statItem}>
+              <Pressable
+                style={styles.statItem}
+                onPress={() => router.push(`/follows/${userId}?mode=following`)}
+                accessibilityRole="button"
+                accessibilityLabel="View following"
+              >
                 <Text style={styles.statNumber}>{profile.following_count}</Text>
                 <Text style={styles.statLabel}>Following</Text>
-              </View>
+              </Pressable>
               <View style={styles.statDivider} />
               <View style={styles.statItem}>
                 <Text style={styles.statNumber}>{profile.post_count}</Text>
