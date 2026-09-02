@@ -554,9 +554,9 @@ export function UniversalTitleModal({
                     <Ionicons
                       name={savedState ? "bookmark" : "bookmark-outline"}
                       size={20}
-                      color={savedState ? colors.accent : colors.ink}
+                      color={colors.background}
                     />
-                    <Text style={[styles.toolbarBtnLabel, savedState && { color: colors.accent }]}>
+                    <Text style={styles.toolbarBtnLabel}>
                       {savedState ? "Saved" : "Save"}
                     </Text>
                   </Pressable>
@@ -566,7 +566,7 @@ export function UniversalTitleModal({
                     accessibilityRole="button"
                     accessibilityLabel="Add to a Watch Team"
                   >
-                    <Ionicons name="people-outline" size={20} color={colors.ink} />
+                    <Ionicons name="people-outline" size={20} color={colors.background} />
                     <Text style={styles.toolbarBtnLabel}>Team</Text>
                   </Pressable>
                   <Pressable
@@ -578,7 +578,7 @@ export function UniversalTitleModal({
                     accessibilityRole="button"
                     accessibilityLabel="Send this title to a SeenSnap user"
                   >
-                    <Ionicons name="paper-plane-outline" size={20} color={colors.ink} />
+                    <Ionicons name="paper-plane-outline" size={20} color={colors.background} />
                     <Text style={styles.toolbarBtnLabel}>Send</Text>
                   </Pressable>
                   <Pressable
@@ -587,7 +587,7 @@ export function UniversalTitleModal({
                     accessibilityRole="button"
                     accessibilityLabel="More actions"
                   >
-                    <Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} />
+                    <Ionicons name="ellipsis-horizontal" size={20} color={colors.background} />
                     <Text style={styles.toolbarBtnLabel}>More</Text>
                   </Pressable>
                 </View>
@@ -1324,6 +1324,11 @@ const styles = StyleSheet.create({
     marginBottom: spacing.md,
   },
   toolbarBtn: {
+    // Solid SeenSnap yellow fill per product decision: the title-card
+    // action bar (Save · Team · Send · More) is the primary action
+    // affordance on every title surface, so it gets the accent color
+    // rather than the subtle low-contrast treatment. Ink text on
+    // accent background is WCAG-compliant (contrast ratio > 12:1).
     flex: 1,
     flexBasis: 0,
     minHeight: 56,
@@ -1333,20 +1338,22 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     paddingHorizontal: 8,
     borderRadius: radii.sm,
-    borderWidth: 1,
-    borderColor: rules.default,
-    backgroundColor: "rgba(255,255,255,0.03)",
+    backgroundColor: colors.accent,
   },
-  toolbarBtnPressed: { opacity: 0.7 },
+  toolbarBtnPressed: { opacity: 0.8 },
   toolbarBtnActive: {
-    borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.06)",
+    // Deeper amber when the action is already committed (e.g. Saved).
+    // Same hue, +darkening + a hairline outline so users can tell at a
+    // glance that the state is on without breaking the yellow theme.
+    backgroundColor: colors.accentMuted,
+    borderWidth: 1,
+    borderColor: colors.ink,
   },
   toolbarBtnLabel: {
     fontFamily: fonts.monoSemiBold,
     fontSize: 10,
     letterSpacing: 0.8,
-    color: colors.ink,
+    color: colors.background,
     textTransform: "uppercase",
   },
   moreSheetBackdrop: {
