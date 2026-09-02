@@ -333,10 +333,13 @@ export default function DiscoverScreen() {
   async function loadCollections() {
     if (!sessionToken) return;
     try {
-      const result = await apiRequest<CollectionSummary[]>("/collections?limit=3", {
+      const result = await apiRequest<CollectionSummary[]>("/collections?limit=18", {
         token: sessionToken,
       });
-      setCollections(result.slice(0, 3));
+      // Show up to 18 curated collections per product ask — was capped
+      // to 3 previously as an editorial preview. The Collections module
+      // scrolls horizontally so the extra rows don't crowd the page.
+      setCollections(result.slice(0, 18));
     } catch {
       // silently degrade
     } finally {
@@ -558,7 +561,6 @@ export default function DiscoverScreen() {
           instance used everywhere. */}
       <SeenSnapHeader
         title="Discover"
-        subtitle="Films and series chosen for your scene."
         artworkSource={trendingBackdrop}
         scrollY={scrollY}
         fallbackSeed={1}

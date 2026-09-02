@@ -434,10 +434,11 @@ export default function SwipeTab() {
   ).current;
 
   async function animateSwipe(direction: SwipeDirection) {
-    // Spec v1.1 §9 — fire the flick sound at the start of the exit
-    // animation so audio and motion feel simultaneous. Fires once per
-    // committed decision; the animation-guard below prevents re-entry.
-    playSwipeSound();
+    // Direction-specific flick sound. Left = descending thud (Pass),
+    // right = rising two-tone pluck (More Like This), up = rising
+    // major-third chord (Watch Now). Fires at the start of the exit
+    // animation so audio and motion feel simultaneous.
+    playSwipeSound(direction);
 
     const toValue =
       direction === "left"

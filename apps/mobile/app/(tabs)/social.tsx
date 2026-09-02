@@ -410,18 +410,29 @@ export default function SocialScreen() {
         artworkSource={socialCyclingBackdrop ?? socialFallbackBackdrop}
         fallbackSeed={9}
         contextualAction={
-          <Pressable
-            onPress={() => {
-              setComposerError(null);
-              setShowComposer(true);
-            }}
-            hitSlop={10}
-            style={styles.contextualBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Create a post"
-          >
-            <Ionicons name="create-outline" size={18} color={colors.ink} />
-          </Pressable>
+          <View style={{ flexDirection: "row", gap: 12 }}>
+            <Pressable
+              onPress={() => setShowFindPeople((prev) => !prev)}
+              hitSlop={10}
+              style={styles.contextualBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Find people to follow"
+            >
+              <Ionicons name="person-add-outline" size={18} color={colors.ink} />
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                setComposerError(null);
+                setShowComposer(true);
+              }}
+              hitSlop={10}
+              style={styles.contextualBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Create a post"
+            >
+              <Ionicons name="create-outline" size={18} color={colors.ink} />
+            </Pressable>
+          </View>
         }
       />
 
