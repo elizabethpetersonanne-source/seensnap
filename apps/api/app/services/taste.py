@@ -586,11 +586,45 @@ def _source_scene_dna_match(
 ) -> list[dict]:
     """SCENEDNA_MATCH — draw candidates from current_obsessions (already computed
     by refresh_taste_profile) and TMDB-related expansion, tagged with the user's
-    top taste labels."""
+    top taste labels.
+
+    Fallback seed chain when current_obsessions is empty (a common
+    cold-start state — the profile computation only populates it once
+    the user has meaningful post-onboarding activity):
+      1. Recent positive swipes (right/up in the last 30 days)
+      2. Watchlist saves (any active pick)
+    Without this the SCENEDNA bucket returned [] for anyone without a
+    fully-formed profile and the whole deck fell through to
+    TRENDING_PERSONALIZED (labeled "Popular on TMDB"), which was the
+    "why am I getting TMDB trending on my swipes" bug.
+    """
     obsession_ids = [
         UUID(str(item["title_id"])) for item in (taste_profile.current_obsessions or [])
         if item.get("title_id")
     ]
+    if not obsession_ids:
+        # Fallback 1: positive swipes in the recent window.
+        recent_swipe_cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+        obsession_ids = list(db.scalars(
+            select(SwipeRecord.content_title_id)
+            .where(
+                SwipeRecord.user_id == user_id,
+                SwipeRecord.direction.in_(["right", "up"]),
+                SwipeRecord.created_at >= recent_swipe_cutoff,
+            )
+            .order_by(SwipeRecord.created_at.desc())
+            .limit(8)
+        ).all())
+    if not obsession_ids:
+        # Fallback 2: any active save. Cap at 8 to keep the TMDB
+        # related-title fanout bounded (each seed = one API call).
+        obsession_ids = list(db.scalars(
+            select(WatchlistItem.content_title_id)
+            .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+            .where(Watchlist.owner_user_id == user_id)
+            .order_by(WatchlistItem.created_at.desc())
+            .limit(8)
+        ).all())
     if not obsession_ids:
         return []
     seeds = db.scalars(select(ContentTitle).where(ContentTitle.id.in_(obsession_ids))).all()
