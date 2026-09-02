@@ -310,6 +310,12 @@ export default function OnboardingScreen() {
 
   // Calibration swipe card
   const pan = useRef(new Animated.ValueXY()).current;
+  // Ref that always points at the LATEST swipeCard closure. The
+  // PanResponder is created once with useRef and its release callback
+  // otherwise captures the first-render swipeCard — which sees
+  // candidates=[] / calibrateIndex=0 and early-returns. Same pattern
+  // as the main Swipe tab's animateSwipeRef.
+  const swipeCardRef = useRef<(dir: "left" | "right", input?: "gesture" | "button") => void>(() => {});
 
   const recordSwipe = useCallback(
     async (
@@ -377,6 +383,10 @@ export default function OnboardingScreen() {
     [calibrateIndex, candidates, pan, recordSwipe, swipeCount]
   );
 
+  // Keep the ref pointed at the latest swipeCard closure so the
+  // memoized PanResponder release callback always sees fresh state.
+  swipeCardRef.current = swipeCard;
+
   // Per spec ONB-01: skip / "don't know" is neutral. Advance past the card without
   // recording a swipe and without incrementing swipeCount toward the 20-signal target.
   const skipCard = useCallback(() => {
@@ -410,10 +420,15 @@ export default function OnboardingScreen() {
         useNativeDriver: false,
       }),
       onPanResponderRelease: (_, gesture) => {
+        // Call through the ref so we always hit the LATEST swipeCard
+        // closure (with current candidates + calibrateIndex + swipeCount).
+        // Otherwise this fires the first-render swipeCard, which saw
+        // candidates=[] and early-returned — the reported "swipe doesn't
+        // actually work" symptom.
         if (gesture.dx > SWIPE_THRESHOLD) {
-          swipeCard("right");
+          swipeCardRef.current("right", "gesture");
         } else if (gesture.dx < -SWIPE_THRESHOLD) {
-          swipeCard("left");
+          swipeCardRef.current("left", "gesture");
         } else {
           Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: true }).start();
         }
