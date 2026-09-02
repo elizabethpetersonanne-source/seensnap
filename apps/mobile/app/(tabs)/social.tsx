@@ -24,6 +24,9 @@ import {
   Alert,
   FlatList,
   Image,
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
   Pressable,
   RefreshControl,
   ScrollView,
@@ -116,6 +119,45 @@ export default function SocialScreen() {
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<UserSearchResult[]>([]);
   const [searchLoading, setSearchLoading] = useState(false);
+  // Composer state — powers the "+ Post" button in the header. Text-only
+  // for now; attach-a-title is deferred to a follow-up so the button
+  // ships without regressing composer flows on Social Feed (feed.tsx).
+  const [showComposer, setShowComposer] = useState(false);
+  const [composerText, setComposerText] = useState("");
+  const [isPosting, setIsPosting] = useState(false);
+  const [composerError, setComposerError] = useState<string | null>(null);
+
+  async function submitPost() {
+    if (!sessionToken || isPosting) return;
+    const caption = composerText.trim();
+    if (!caption) {
+      setComposerError("Write something to post.");
+      return;
+    }
+    setIsPosting(true);
+    setComposerError(null);
+    try {
+      await apiRequest("/feed/wall-posts", {
+        method: "POST",
+        token: sessionToken,
+        body: JSON.stringify({
+          content_title_id: null,
+          caption,
+          rating: null,
+          share_to_team_id: null,
+        }),
+      });
+      trackEvent("social_post_created", { source: "social_tab", has_title: false });
+      setComposerText("");
+      setShowComposer(false);
+      // Refetch so the new post lands at the top of the visible feed.
+      void loadFeed();
+    } catch (e) {
+      setComposerError(e instanceof Error ? e.message : "Couldn't post.");
+    } finally {
+      setIsPosting(false);
+    }
+  }
 
   const loadFeed = useCallback(async () => {
     if (!sessionToken) return;
@@ -281,13 +323,16 @@ export default function SocialScreen() {
         fallbackSeed={9}
         contextualAction={
           <Pressable
-            onPress={() => router.push("/social/people")}
+            onPress={() => {
+              setComposerError(null);
+              setShowComposer(true);
+            }}
             hitSlop={10}
             style={styles.contextualBtn}
             accessibilityRole="button"
-            accessibilityLabel="Open People discovery"
+            accessibilityLabel="Create a post"
           >
-            <Ionicons name="person-add-outline" size={18} color={colors.ink} />
+            <Ionicons name="create-outline" size={18} color={colors.ink} />
           </Pressable>
         }
       />
@@ -438,6 +483,71 @@ export default function SocialScreen() {
           </View>
         </ScrollView>
       )}
+
+      {/* Composer — plain-text post entry point requested by product.
+          Opens from the header's create-outline icon. Posts to
+          /feed/wall-posts (same endpoint used by the Social Feed's
+          composer) so the resulting post shows up in the same feed
+          this tab reads back from. Text-only for now; attach-a-title
+          picker is deferred so the button can ship in one pass. */}
+      <Modal
+        visible={showComposer}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setShowComposer(false)}
+      >
+        <KeyboardAvoidingView
+          style={styles.composerBackdrop}
+          behavior={Platform.OS === "ios" ? "padding" : undefined}
+        >
+          <Pressable style={styles.composerBackdropTap} onPress={() => setShowComposer(false)} />
+          <View style={styles.composerSheet}>
+            <View style={styles.composerHeader}>
+              <Text style={styles.composerHeading}>New post</Text>
+              <Pressable
+                onPress={() => setShowComposer(false)}
+                accessibilityRole="button"
+                accessibilityLabel="Close composer"
+                hitSlop={10}
+              >
+                <Ionicons name="close" size={22} color={colors.muted} />
+              </Pressable>
+            </View>
+            <TextInput
+              style={styles.composerInput}
+              placeholder="What's worth watching?"
+              placeholderTextColor={colors.muted}
+              value={composerText}
+              onChangeText={(v) => {
+                setComposerText(v);
+                if (composerError) setComposerError(null);
+              }}
+              multiline
+              maxLength={500}
+              autoFocus
+            />
+            <View style={styles.composerFooter}>
+              <Text style={styles.composerCount}>{composerText.length}/500</Text>
+              <Pressable
+                onPress={() => void submitPost()}
+                disabled={isPosting || !composerText.trim()}
+                style={({ pressed }) => [
+                  styles.composerPostBtn,
+                  (isPosting || !composerText.trim()) && styles.composerPostBtnDisabled,
+                  pressed && { opacity: 0.8 },
+                ]}
+                accessibilityRole="button"
+                accessibilityLabel="Post"
+              >
+                <Text style={styles.composerPostText}>{isPosting ? "Posting…" : "Post"}</Text>
+              </Pressable>
+            </View>
+            {composerError ? (
+              <Text style={styles.composerErrorText}>{composerError}</Text>
+            ) : null}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -1167,6 +1277,76 @@ const styles = StyleSheet.create({
   saveToastText: {
     color: colors.ink,
     fontFamily: fonts.sans,
+    fontSize: 12,
+  },
+  composerBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.55)",
+    justifyContent: "flex-end",
+  },
+  composerBackdropTap: {
+    flex: 1,
+  },
+  composerSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: radii.md,
+    borderTopRightRadius: radii.md,
+    borderTopWidth: 1,
+    borderColor: rules.default,
+    padding: spacing.lg,
+    gap: spacing.md,
+    paddingBottom: spacing.xl,
+  },
+  composerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  composerHeading: {
+    fontFamily: fonts.serifBold,
+    fontSize: 22,
+    color: colors.ink,
+  },
+  composerInput: {
+    fontFamily: fonts.sans,
+    fontSize: 16,
+    color: colors.ink,
+    minHeight: 120,
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: radii.sm,
+    padding: spacing.md,
+    textAlignVertical: "top",
+  },
+  composerFooter: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+  },
+  composerCount: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.muted,
+    letterSpacing: 0.5,
+  },
+  composerPostBtn: {
+    backgroundColor: colors.accent,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 10,
+    borderRadius: radii.pill,
+  },
+  composerPostBtnDisabled: {
+    opacity: 0.4,
+  },
+  composerPostText: {
+    fontFamily: fonts.sansBold,
+    color: colors.background,
+    fontSize: 14,
+    letterSpacing: 0.4,
+  },
+  composerErrorText: {
+    fontFamily: fonts.sans,
+    color: colors.danger ?? "#E74C3C",
     fontSize: 12,
   },
 });

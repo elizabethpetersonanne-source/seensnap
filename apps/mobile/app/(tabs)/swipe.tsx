@@ -22,6 +22,7 @@ import { AddToTeamSheet } from "@/components/add-to-team-sheet";
 import { SeenSnapHeader } from "@/components/headers/seensnap-header";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { selectSafeBackdrop } from "@/lib/backdrop";
+import { useFallbackBackdrop } from "@/lib/backdrop-pool";
 import { formatGenres } from "@/lib/format";
 import { colors, fonts, rules, spacing } from "@/constants/theme";
 import { trackEvent } from "@/lib/analytics";
@@ -160,6 +161,12 @@ export default function SwipeTab() {
       if (dnaTimerRef.current) clearTimeout(dnaTimerRef.current);
     };
   }, []);
+
+  // Static-per-focus fallback backdrop for the shared header. Uses the
+  // same pool other primary tabs draw from; `useFallbackBackdrop`
+  // advances on tab focus, not on swipe, so the header artwork does
+  // NOT change with every card commit.
+  const headerArtwork = useFallbackBackdrop(3);
 
   useEffect(() => {
     currentIndexRef.current = currentIndex;
@@ -311,24 +318,47 @@ export default function SwipeTab() {
   }, [revealVisible, revealEntry]);
 
   useEffect(() => {
-    async function hydrateCard() {
-      if (!sessionToken || !activeCard || detailCache[activeCard.title.id]) return;
+    // Hydrate the active card AND the next two in parallel. The user
+    // reported that synopsis / streaming / "why it's here" popped in a
+    // second or two after each swipe — the previous version only
+    // hydrated the active card, which meant every new active card
+    // started a fresh network round trip. Prefetching the upcoming
+    // cards' details means by the time a swipe commits, the next
+    // card's UniversalTitle is already in cache, so the details block
+    // renders complete on first paint.
+    if (!sessionToken) return;
+    const token = sessionToken;
+    const toHydrate: RecommendationItem[] = [];
+    if (activeCard && !detailCache[activeCard.title.id]) toHydrate.push(activeCard);
+    for (const upcoming of nextCards) {
+      if (!detailCache[upcoming.title.id]) toHydrate.push(upcoming);
+    }
+    if (toHydrate.length === 0) return;
+
+    let cancelled = false;
+    async function hydrateOne(item: RecommendationItem) {
       try {
-        const detail = await fetchUniversalTitle(sessionToken, activeCard.title.id, {
-          id: activeCard.title.id,
-          title: activeCard.title.title,
-          content_type: activeCard.title.content_type,
-          poster_url: activeCard.title.poster_url,
-          backdrop_url: activeCard.title.backdrop_url,
-          overview: activeCard.title.overview,
+        const detail = await fetchUniversalTitle(token, item.title.id, {
+          id: item.title.id,
+          title: item.title.title,
+          content_type: item.title.content_type,
+          poster_url: item.title.poster_url,
+          backdrop_url: item.title.backdrop_url,
+          overview: item.title.overview,
         });
-        setDetailCache((current) => ({ ...current, [activeCard.title.id]: detail }));
+        if (cancelled) return;
+        setDetailCache((current) =>
+          current[item.title.id] ? current : { ...current, [item.title.id]: detail }
+        );
       } catch {
         // keep the swipe session moving even if enrichment fails
       }
     }
-    void hydrateCard();
-  }, [activeCard, detailCache, sessionToken]);
+    for (const item of toHydrate) void hydrateOne(item);
+    return () => {
+      cancelled = true;
+    };
+  }, [activeCard, nextCards, detailCache, sessionToken]);
 
   const rotation = pan.x.interpolate({
     inputRange: [-180, 0, 180],
@@ -727,7 +757,7 @@ export default function SwipeTab() {
         variant="standard"
         title=""
         subtitle=""
-        artworkSource={null}
+        artworkSource={headerArtwork}
         fallbackSeed={3}
       />
       <ScrollView
@@ -855,6 +885,12 @@ export default function SwipeTab() {
               <Text style={styles.revealBody} numberOfLines={3}>
                 {revealDetail?.description || revealCandidate.title.overview || humanizeReason(revealCandidate.reason)}
               </Text>
+              {/* Primary CTAs: Watch Now + Keep Swiping. "Keep Swiping"
+                  used to be a small secondary chip labeled "NEW SESSION"
+                  — user feedback: that label wasn't intuitive and the
+                  button was buried. It's now a first-class primary
+                  action alongside Watch Now, because "give me more"
+                  is the modal outcome most reveal viewers want next. */}
               <View style={styles.revealActions}>
                 <Pressable
                   style={styles.revealPrimaryAction}
@@ -862,6 +898,15 @@ export default function SwipeTab() {
                 >
                   <Text style={styles.revealPrimaryText}>WATCH NOW</Text>
                 </Pressable>
+                <Pressable
+                  style={styles.revealPrimaryAction}
+                  onPress={() => void restartSession()}
+                  accessibilityLabel="Keep swiping — start a new set"
+                >
+                  <Text style={styles.revealPrimaryText}>KEEP SWIPING</Text>
+                </Pressable>
+              </View>
+              <View style={styles.revealActions}>
                 <Pressable
                   style={styles.revealSecondaryAction}
                   onPress={() => {
@@ -871,8 +916,6 @@ export default function SwipeTab() {
                 >
                   <Text style={styles.revealSecondaryText}>SAVE</Text>
                 </Pressable>
-              </View>
-              <View style={styles.revealActions}>
                 <Pressable
                   style={styles.revealSecondaryAction}
                   onPress={() => {
@@ -881,9 +924,6 @@ export default function SwipeTab() {
                   }}
                 >
                   <Text style={styles.revealSecondaryText}>ADD TO TEAM</Text>
-                </Pressable>
-                <Pressable style={styles.revealSecondaryAction} onPress={() => void restartSession()}>
-                  <Text style={styles.revealSecondaryText}>NEW SESSION</Text>
                 </Pressable>
               </View>
             </View>

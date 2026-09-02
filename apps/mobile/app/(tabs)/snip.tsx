@@ -18,9 +18,9 @@ export default function SnipScreen() {
             <Text style={styles.posterCaption}>Elizabeth</Text>
             <Text style={styles.posterTitle}>A local classic</Text>
           </View>
-          <Text style={styles.previewMeta}>Point • Snap • Identify • Share</Text>
-          <Pressable style={styles.snapButton}>
-            <Text style={styles.snapButtonLabel}>SNAP</Text>
+          <Text style={styles.previewMeta}>Point • Snip • Identify • Share</Text>
+          <Pressable style={styles.snapButton} accessibilityLabel="Snip a title">
+            <Text style={styles.snapButtonLabel}>SNIP</Text>
           </Pressable>
           <View style={styles.toolRow}>
             <View style={styles.tool}>
@@ -49,7 +49,7 @@ export default function SnipScreen() {
       <PlaceholderCard
         eyebrow="Capture"
         title="Camera and upload flow"
-        body="This layout now mirrors the snap mockup from the PDF. The next implementation step is wiring camera capture, upload, and manual match fallback into the existing backend snip endpoints."
+        body="This layout mirrors the Snip capture mockup. The next implementation step is wiring camera capture, upload, and manual match fallback into the existing backend Snip endpoints."
       />
     </Screen>
   );

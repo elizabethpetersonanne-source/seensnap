@@ -174,15 +174,24 @@ REASON_TYPE_GENERIC_HIDDEN_GEM = "GENERIC_HIDDEN_GEM"      # deprecated — not 
 # because a user with 5+ picks was getting only ~14 of 40 cards from
 # picks-similarity even when the source had many more candidates; the
 # soft quota + 40% hard cap was starving the highest-signal source.
+#
+# Second bump (2026-09-02): SCENEDNA_MATCH raised 0.15 → 0.20, OVERLAP
+# raised 0.10 → 0.13. Combined user-signal share is now 0.83 (was 0.75).
+# The remaining 0.17 spread across trending / hidden gem / creator /
+# team / neighbors / serendipity keeps exploration alive but stops the
+# deck from feeling anonymous — every card that CAN cite a save or a
+# SceneDNA lean SHOULD, per user directive "go heavier on because you
+# saved / because of your scenedna". HIDDEN_GEM taken from 0.05 → 0.03
+# and TASTE_NEIGHBORS from 0.02 → 0.01 to make room.
 FEED_MIX_TARGETS: dict[str, float] = {
     REASON_TYPE_PICKS_SIMILARITY: 0.50,
-    REASON_TYPE_SCENEDNA_MATCH: 0.15,
-    REASON_TYPE_PICKS_SCENEDNA_OVERLAP: 0.10,
-    REASON_TYPE_TRENDING_PERSONALIZED: 0.05,
-    REASON_TYPE_WATCH_TEAM: 0.05,
-    REASON_TYPE_CREATOR_AFFINITY: 0.05,
-    REASON_TYPE_HIDDEN_GEM: 0.05,
-    REASON_TYPE_TASTE_NEIGHBORS: 0.02,
+    REASON_TYPE_SCENEDNA_MATCH: 0.20,
+    REASON_TYPE_PICKS_SCENEDNA_OVERLAP: 0.13,
+    REASON_TYPE_TRENDING_PERSONALIZED: 0.03,
+    REASON_TYPE_WATCH_TEAM: 0.03,
+    REASON_TYPE_CREATOR_AFFINITY: 0.04,
+    REASON_TYPE_HIDDEN_GEM: 0.03,
+    REASON_TYPE_TASTE_NEIGHBORS: 0.01,
     REASON_TYPE_SERENDIPITY: 0.03,
 }
 
@@ -323,7 +332,9 @@ def _source_picks_similarity(
       - Fetch ALL saves grouped by list; rotate seed selection per session so
         different sessions hit different corners of the corpus.
       - Weight seed slots by list type (Favorites > default My Picks > custom).
-      - Cap total TMDB calls per request (~12 seeds) for latency.
+      - Spread seed picks EVENLY across each list's history (not consecutive)
+        so an old save is as likely to seed a rec as a recent one.
+      - Cap total TMDB calls per request (~20 seeds) for latency.
     """
     rows = db.execute(
         select(WatchlistItem, Watchlist, ContentTitle)
@@ -347,15 +358,30 @@ def _source_picks_similarity(
         rotation_offset = abs(hash(session_id)) % 100
 
     # Build a diversified seed list. Priority: 1 seed from each list first
-    # (breadth), then more seeds from Favorites and My Picks (depth), then
-    # tail-sample from custom lists.
+    # (breadth), then evenly-spaced picks across Favorites and My Picks
+    # (depth — spread across save history, not clustered at the tail),
+    # then fill remaining slots by continuing the same spread on any list.
     seeds: list[tuple[Watchlist, ContentTitle]] = []
 
-    def _rotated(items: list, k: int) -> list:
-        if not items:
+    def _spread(items: list, k: int, offset: int) -> list:
+        """Pick up to `k` items evenly spaced across `items`, starting at
+        `offset` (mod len). This is the fix for the "biased to recent
+        saves" bug: consecutive slicing (items[1:4]) clustered picks at
+        one end of the save history, so on lists sorted by insertion
+        order the tail's recent saves dominated. Spacing by len//k means
+        each pick jumps across the corpus, so an old save has the same
+        chance as a fresh one to seed a rec."""
+        if not items or k <= 0:
             return []
-        start = rotation_offset % len(items)
-        return items[start:] + items[:start]
+        n = len(items)
+        step = max(1, n // k)
+        picks: list = []
+        for i in range(k):
+            idx = (offset + i * step) % n
+            candidate = items[idx]
+            if candidate not in picks:
+                picks.append(candidate)
+        return picks
 
     def _list_priority(wl: Watchlist) -> int:
         name = (wl.name or "").lower()
@@ -365,31 +391,39 @@ def _source_picks_similarity(
             return 2
         return 1
 
+    SEED_CAP = 20  # raised from 12 — more seeds = more distinct
+    # "because you saved X" reasons in the deck. TMDB related-title
+    # calls run in a tight loop but each is small; 20 is still
+    # well under the ~2-3s deck-load budget.
+
     lists_sorted = sorted(by_list.values(), key=lambda entries: -_list_priority(entries[0][0]))
     # Breadth pass — one seed from each list to guarantee ALL lists get dug into.
     for entries in lists_sorted:
-        rotated = _rotated(entries, rotation_offset)
-        seeds.append(rotated[0])
-    # Depth pass — sample more seeds from Favorites + My Picks (list_priority >= 2).
+        pick = _spread(entries, 1, rotation_offset)
+        if pick:
+            seeds.append(pick[0])
+    # Depth pass — spread MORE seeds across each priority list's history.
+    # For Favorites + My Picks (priority >= 2), take up to 5 more spread
+    # across the whole list, not just three consecutive tail items.
     for entries in lists_sorted:
         if _list_priority(entries[0][0]) < 2:
             continue
-        rotated = _rotated(entries, rotation_offset + 1)
-        for item in rotated[1:4]:  # up to 3 more from priority lists
+        for item in _spread(entries, 5, rotation_offset + 1):
             if item not in seeds:
                 seeds.append(item)
-    # Tail pass — sample remaining seeds from any list to reach the cap.
+        if len(seeds) >= SEED_CAP:
+            break
+    # Tail pass — fill remaining slots by spreading across custom lists too.
     for entries in lists_sorted:
-        rotated = _rotated(entries, rotation_offset + 2)
-        for item in rotated:
+        if len(seeds) >= SEED_CAP:
+            break
+        for item in _spread(entries, 3, rotation_offset + 2):
             if item in seeds:
                 continue
             seeds.append(item)
-            if len(seeds) >= 12:
+            if len(seeds) >= SEED_CAP:
                 break
-        if len(seeds) >= 12:
-            break
-    seeds = seeds[:12]
+    seeds = seeds[:SEED_CAP]
 
     out: list[dict] = []
     seen: set[UUID] = set()

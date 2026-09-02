@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import secrets
 from datetime import UTC, datetime
 from uuid import UUID
 
@@ -7,7 +8,32 @@ from fastapi import HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.models.social import Watchlist, WatchlistItem
+from app.models.social import ListShare, Watchlist, WatchlistItem
+
+
+def _ensure_public_share(db: Session, watchlist: Watchlist) -> None:
+    """Mint an active public share token for this list if one doesn't
+    already exist. Called on every list-create path so lists are
+    public-by-default per product decision — a user's lists get a
+    shareable URL from the moment they exist, no manual "share" step
+    needed. Idempotent (no-op when an active share is present)."""
+    existing = db.scalar(
+        select(ListShare).where(
+            ListShare.watchlist_id == watchlist.id,
+            ListShare.created_by_user_id == watchlist.owner_user_id,
+            ListShare.revoked_at.is_(None),
+        )
+    )
+    if existing is not None:
+        return
+    share = ListShare(
+        watchlist_id=watchlist.id,
+        created_by_user_id=watchlist.owner_user_id,
+        token=secrets.token_urlsafe(24),
+        visibility="public",
+    )
+    db.add(share)
+    db.flush()
 
 DEFAULT_LISTS: tuple[tuple[str, str | None, bool, bool], ...] = (
     ("My Picks", "Your master saved list.", True, True),
@@ -45,9 +71,23 @@ def ensure_default_watchlists(db: Session, user_id: UUID) -> list[Watchlist]:
             changed = True
     if changed:
         db.commit()
-    return db.scalars(
+    lists = db.scalars(
         select(Watchlist).where(Watchlist.owner_user_id == user_id).order_by(Watchlist.is_default.desc(), Watchlist.created_at.asc())
     ).all()
+    # Every list (system defaults included) gets a public share token so
+    # it's shareable-by-default. Cheap idempotent no-op when already present.
+    made_share = False
+    for wl in lists:
+        before = db.query(ListShare).filter(
+            ListShare.watchlist_id == wl.id,
+            ListShare.revoked_at.is_(None),
+        ).count()
+        _ensure_public_share(db, wl)
+        if before == 0:
+            made_share = True
+    if made_share:
+        db.commit()
+    return lists
 
 
 def get_default_watchlist(db: Session, user_id: UUID) -> Watchlist:
@@ -94,6 +134,8 @@ def create_watchlist(db: Session, user_id: UUID, *, name: str, description: str 
         is_system_list=False,
     )
     db.add(watchlist)
+    db.flush()  # need watchlist.id before minting the share
+    _ensure_public_share(db, watchlist)
     db.commit()
     db.refresh(watchlist)
     return watchlist
