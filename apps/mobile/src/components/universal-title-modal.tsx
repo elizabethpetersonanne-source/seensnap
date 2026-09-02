@@ -114,6 +114,7 @@ export function UniversalTitleModal({
   // Share-to-Feed composer state — Social brief §8.
   const [showShareToFeed, setShowShareToFeed] = useState(false);
   const [showSendSheet, setShowSendSheet] = useState(false);
+  const [showMoreSheet, setShowMoreSheet] = useState(false);
   const [activeTitle, setActiveTitle] = useState<UniversalTitle | null>(title);
   const [internalLoading, setInternalLoading] = useState(false);
   const [savedState, setSavedState] = useState(isSaved);
@@ -538,6 +539,59 @@ export function UniversalTitleModal({
                   </View>
                 </View>
 
+                {/* Compact action toolbar — Mobile Title Detail spec §6.1.
+                    Replaces the old five-card stack. Four equal targets
+                    (Save · Watch Team · Send · More) placed BEFORE Overview
+                    so decisions are one tap without displacing content. */}
+                <View style={[styles.section, styles.actionToolbar]}>
+                  <Pressable
+                    style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed, savedState && styles.toolbarBtnActive]}
+                    onPress={openSaveFlow}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: savedState }}
+                    accessibilityLabel={savedState ? `Saved: ${currentTitle?.title ?? ""}` : `Save ${currentTitle?.title ?? ""}`}
+                  >
+                    <Ionicons
+                      name={savedState ? "bookmark" : "bookmark-outline"}
+                      size={20}
+                      color={savedState ? colors.accent : colors.ink}
+                    />
+                    <Text style={[styles.toolbarBtnLabel, savedState && { color: colors.accent }]}>
+                      {savedState ? "Saved" : "Save"}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed]}
+                    onPress={openAddToTeamFlow}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add to a Watch Team"
+                  >
+                    <Ionicons name="people-outline" size={20} color={colors.ink} />
+                    <Text style={styles.toolbarBtnLabel}>Team</Text>
+                  </Pressable>
+                  <Pressable
+                    style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed]}
+                    onPress={() => {
+                      if (!currentTitle) return;
+                      setShowSendSheet(true);
+                    }}
+                    accessibilityRole="button"
+                    accessibilityLabel="Send this title to a SeenSnap user"
+                  >
+                    <Ionicons name="paper-plane-outline" size={20} color={colors.ink} />
+                    <Text style={styles.toolbarBtnLabel}>Send</Text>
+                  </Pressable>
+                  <Pressable
+                    style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed]}
+                    onPress={() => setShowMoreSheet(true)}
+                    accessibilityRole="button"
+                    accessibilityLabel="More actions"
+                  >
+                    <Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} />
+                    <Text style={styles.toolbarBtnLabel}>More</Text>
+                  </Pressable>
+                </View>
+
                 {/* Overview */}
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Overview</Text>
@@ -551,25 +605,7 @@ export function UniversalTitleModal({
                   ) : null}
                 </View>
 
-                {/* Cast & Creators */}
-                {allPeople.length > 0 ? (
-                  <View style={styles.section}>
-                    <Text style={styles.sectionTitle}>Cast & Creators</Text>
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.peopleRail}>
-                      {allPeople.map((person, index) => (
-                        <PersonCard
-                          key={`${person.name}-${index}`}
-                          name={person.name}
-                          role={person.role}
-                          headshotUrl={person.headshotUrl}
-                          onPress={() => void openPersonDetail(person)}
-                        />
-                      ))}
-                    </ScrollView>
-                  </View>
-                ) : null}
-
-                {/* Where to Watch */}
+                {/* Where to Watch — moved above Cast & Creators per spec §5. */}
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Where to Watch</Text>
                   {watchOptionsLoading ? (
@@ -593,16 +629,34 @@ export function UniversalTitleModal({
                         );
                       })}
                       {!WATCH_GROUP_CONFIG.some(({ key }) => (watchOptions.groups[key] ?? []).length > 0) ? (
-                        <Text style={styles.emptyText}>Not currently available for streaming.</Text>
+                        <Text style={styles.emptyText}>Streaming availability isn't available for this title right now.</Text>
                       ) : null}
                       <Text style={styles.justWatchAttrib}>Streaming data provided by JustWatch</Text>
                     </>
                   ) : (
-                    <Text style={styles.emptyText}>Not currently available for streaming.</Text>
+                    <Text style={styles.emptyText}>Streaming availability isn't available for this title right now.</Text>
                   )}
                 </View>
 
-                {/* More Like This */}
+                {/* Cast & Creators */}
+                {allPeople.length > 0 ? (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Cast & Creators</Text>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.peopleRail}>
+                      {allPeople.map((person, index) => (
+                        <PersonCard
+                          key={`${person.name}-${index}`}
+                          name={person.name}
+                          role={person.role}
+                          headshotUrl={person.headshotUrl}
+                          onPress={() => void openPersonDetail(person)}
+                        />
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
+
+                {/* More Like This — comes AFTER core informational sections per §7.4. */}
                 {(currentTitle?.relatedTitles ?? []).length > 0 ? (
                   <View style={styles.section}>
                     <Text style={styles.sectionTitle}>More Like This</Text>
@@ -625,63 +679,6 @@ export function UniversalTitleModal({
                 ) : null}
               </Animated.View>
             </ScrollView>
-
-            {/* Action tray */}
-            <Animated.View style={[styles.actionTray, { opacity: actionsOpacity, transform: [{ translateY: actionsTranslateY }] }]}>
-              <Animated.View style={{ transform: [{ scale: saveScale }] }}>
-                <ActionCard
-                  icon={savedState ? "checkmark" : "star"}
-                  title={savedState ? "Saved" : "Save to My Picks"}
-                  subtitle={savedState ? "Already saved to one of your lists." : "Choose a list and save it instantly."}
-                  accent="#f4c430"
-                  onPress={openSaveFlow}
-                  highlighted
-                />
-              </Animated.View>
-              <ActionCard
-                icon="people"
-                title="Add to Watch Team"
-                subtitle="Pick a team and add it to the conversation."
-                accent="#2ec4b6"
-                onPress={openAddToTeamFlow}
-              />
-              <ActionCard
-                icon="paper-plane-outline"
-                title="Send"
-                subtitle="DM this to someone on SeenSnap."
-                accent="#f4c430"
-                onPress={() => {
-                  if (!currentTitle) return;
-                  setShowSendSheet(true);
-                }}
-              />
-              <ActionCard
-                icon="megaphone-outline"
-                title="Share to Feed"
-                subtitle="Post this to your SeenSnap followers."
-                accent="#f4c430"
-                onPress={() => {
-                  if (!currentTitle) return;
-                  setShowShareToFeed(true);
-                }}
-              />
-              <ActionCard
-                icon="share-outline"
-                title="Share Link"
-                subtitle="Send a SeenSnap link outside the app."
-                accent="#8aa4c8"
-                onPress={() => {
-                  if (!currentTitle) return;
-                  void shareTitle({
-                    titleId: currentTitle.id,
-                    tmdbId: currentTitle.tmdbId ?? 0,
-                    mediaType: currentTitle.mediaType === "movie" ? "movie" : "series",
-                    displayTitle: currentTitle.title,
-                    entryPoint: "title_detail",
-                  });
-                }}
-              />
-            </Animated.View>
 
             {/* Toast */}
             {toast ? (
@@ -764,6 +761,67 @@ export function UniversalTitleModal({
               sessionToken={sessionToken}
             />
           ) : null}
+
+          {/* More action sheet — Mobile Title Detail spec §6.2. Holds the
+              lower-frequency share actions so they don't compete with
+              Save/Team/Send for viewport space. */}
+          <Modal
+            visible={showMoreSheet}
+            transparent
+            animationType="slide"
+            onRequestClose={() => setShowMoreSheet(false)}
+          >
+            <Pressable style={styles.moreSheetBackdrop} onPress={() => setShowMoreSheet(false)}>
+              <Pressable style={styles.moreSheet} onPress={(e) => e.stopPropagation()}>
+                <View style={styles.moreSheetHeader}>
+                  <Text style={styles.moreSheetTitle}>More actions</Text>
+                  <Pressable onPress={() => setShowMoreSheet(false)} hitSlop={10}>
+                    <Ionicons name="close" size={22} color={colors.muted} />
+                  </Pressable>
+                </View>
+                <Pressable
+                  style={({ pressed }) => [styles.moreSheetRow, pressed && { opacity: 0.7 }]}
+                  onPress={() => {
+                    if (!currentTitle) return;
+                    setShowMoreSheet(false);
+                    setShowShareToFeed(true);
+                  }}
+                  accessibilityRole="button"
+                >
+                  <View style={styles.moreSheetIcon}>
+                    <Ionicons name="megaphone-outline" size={20} color={colors.accent} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.moreSheetRowTitle}>Share to Feed</Text>
+                    <Text style={styles.moreSheetRowBody}>Post this title to your SeenSnap followers.</Text>
+                  </View>
+                </Pressable>
+                <Pressable
+                  style={({ pressed }) => [styles.moreSheetRow, pressed && { opacity: 0.7 }]}
+                  onPress={() => {
+                    if (!currentTitle) return;
+                    setShowMoreSheet(false);
+                    void shareTitle({
+                      titleId: currentTitle.id,
+                      tmdbId: currentTitle.tmdbId ?? 0,
+                      mediaType: currentTitle.mediaType === "movie" ? "movie" : "series",
+                      displayTitle: currentTitle.title,
+                      entryPoint: "title_detail_more_sheet",
+                    });
+                  }}
+                  accessibilityRole="button"
+                >
+                  <View style={styles.moreSheetIcon}>
+                    <Ionicons name="share-outline" size={20} color={colors.muted} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.moreSheetRowTitle}>Share Link</Text>
+                    <Text style={styles.moreSheetRowBody}>Share a SeenSnap link outside the app.</Text>
+                  </View>
+                </Pressable>
+              </Pressable>
+            </Pressable>
+          </Modal>
         </View>
       </Modal>
     </>
@@ -1061,7 +1119,9 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   scroll: { flex: 1 },
-  scrollContent: { paddingBottom: 260 },
+  // paddingBottom was 260 to make room for the removed floating actionTray.
+  // With the toolbar now in-flow, only safe-area buffer is needed.
+  scrollContent: { paddingBottom: 40 },
   heroCard: { height: HERO_HEIGHT, backgroundColor: colors.surfaceMuted },
   heroSlide: { width: screenWidth, height: HERO_HEIGHT, backgroundColor: colors.surfaceMuted },
   heroImage: { width: "100%", height: "100%" },
@@ -1256,4 +1316,90 @@ const styles = StyleSheet.create({
   personSheetName: { color: colors.ink, fontFamily: fonts.serifBold, fontSize: 26, lineHeight: 30 },
   personSheetDept: { color: colors.accent, fontFamily: fonts.sansSemiBold, fontSize: 14 },
   personSheetBirth: { color: colors.muted, fontFamily: fonts.sans, fontSize: 12, lineHeight: 18 },
+
+  // ─── Redesigned title-detail action toolbar + More sheet ───────────
+  actionToolbar: {
+    flexDirection: "row",
+    gap: 6,
+    marginBottom: spacing.md,
+  },
+  toolbarBtn: {
+    flex: 1,
+    flexBasis: 0,
+    minHeight: 56,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 5,
+    paddingVertical: 10,
+    paddingHorizontal: 8,
+    borderRadius: radii.sm,
+    borderWidth: 1,
+    borderColor: rules.default,
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  toolbarBtnPressed: { opacity: 0.7 },
+  toolbarBtnActive: {
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.06)",
+  },
+  toolbarBtnLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 0.8,
+    color: colors.ink,
+    textTransform: "uppercase",
+  },
+  moreSheetBackdrop: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,0.5)",
+    justifyContent: "flex-end",
+  },
+  moreSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: spacing.lg,
+    paddingBottom: 32,
+    gap: spacing.sm,
+    maxHeight: 480,
+  },
+  moreSheetHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: spacing.sm,
+  },
+  moreSheetTitle: {
+    color: colors.ink,
+    fontFamily: fonts.serifBold,
+    fontSize: 20,
+  },
+  moreSheetRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    paddingVertical: 12,
+    paddingHorizontal: 8,
+    borderRadius: radii.sm,
+  },
+  moreSheetIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 8,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: colors.surfaceSoft,
+  },
+  moreSheetRowTitle: {
+    color: colors.ink,
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 15,
+  },
+  moreSheetRowBody: {
+    color: colors.muted,
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    marginTop: 2,
+    lineHeight: 16,
+  },
 });
