@@ -5,9 +5,12 @@ import {
   Image,
   Linking,
   PanResponder,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
 } from "react-native";
 // Use safe-area-context (which honors `edges` prop) — the RN built-in SafeAreaView
@@ -567,52 +570,151 @@ export default function SwipeTab() {
   const activeGenres = buildGenreString(activeCard, currentDetail);
   const activeStreaming = rankStreamingOptions(currentDetail?.streamingAvailability ?? [], preferredServices).slice(0, 3);
 
+  // Responsive poster/workspace sizing per redesign spec §6.4 + §7. Poster
+  // is a contained 2:3 portrait object at every viewport; on wide screens
+  // (>=900) the workspace becomes a two-column deck + details rail; on
+  // narrow it's a vertical stack. Never let the card become a landscape
+  // banner and never let it grow beyond ~420px on huge displays.
+  const { width: viewportWidth } = useWindowDimensions();
+  const isWide = viewportWidth >= 900;
+  const workspacePadding = viewportWidth < 480 ? 16 : 20;
+  const workspaceMaxWidth = 980;
+  const availableWorkspaceWidth = Math.min(viewportWidth, workspaceMaxWidth);
+  const posterColumnWidth = isWide
+    ? Math.min(400, (availableWorkspaceWidth - workspacePadding * 2 - 32) * 0.48)
+    : availableWorkspaceWidth - workspacePadding * 2;
+  const posterMaxWidth = isWide
+    ? Math.min(400, Math.max(320, posterColumnWidth))
+    : Math.min(380, Math.max(240, posterColumnWidth - 24));
+
   animateSwipeRef.current = animateSwipe;
   openDetailsForActiveRef.current = () => {
     void openDetails(activeCard);
   };
 
-  return (
-    <SafeAreaView style={styles.safeArea} edges={[]}>
-      {/* Cinematic header — the CURRENT card's backdrop lives behind "What's next?"
-          so the opening feels continuous with the deck (audit remediation: "let
-          the first title's cinematic backdrop begin behind the headline and flow
-          into the swipe surface"). Backdrop swaps as the user swipes. Tighter
-          maxHeight so the card below still has generous room. */}
-      {/* Unified Header §12 — variant="immersive" (Swipe is the one place a
-          taller cinematic treatment is allowed). Progress counter MOVED OUT
-          of the global rail into the deck surface below, so global controls
-          (logo · search · bell) stay stationary across all tabs. */}
-      <SeenSnapHeader
-        variant="immersive"
-        title="What's Next?"
-        subtitle="Swipe to shape your SceneDNA."
-        artworkSource={selectSafeBackdrop([
-          activeCard?.title.backdrop_url,
-          deck[currentIndex + 1]?.title.backdrop_url,
-          deck[0]?.title.backdrop_url,
-        ])}
-        fallbackSeed={3}
-      />
-
-      {/* Session progress row — Unified Header brief §12. Counter was in the
-          global header rail; moved here so it lives next to the swipe
-          interaction it describes, and the global rail stays stationary
-          across all tabs. */}
-      <View style={styles.progressRow}>
-        <Text style={styles.progressLabel}>TODAY&apos;S PICKS</Text>
-        <Text style={styles.progressCountInline}>
-          {progress}/{SESSION_LENGTH}
+  // Presentational block for the current title's identity, metadata, reason,
+  // decision controls, and Watch Now. Same JSX under both compositions so
+  // narrow (below the deck) and wide (in the right rail) stay visually
+  // identical. Handlers are the SAME references used by the gesture layer —
+  // no domain behavior lives in this block per spec §9 action mapping contract.
+  const detailsAndControls = activeCard ? (
+    <View style={styles.detailsBlock}>
+      <Text style={styles.detailsTitle} numberOfLines={isWide ? 3 : 2}>
+        {activeCard.title.title}
+      </Text>
+      <Text style={styles.detailsMeta}>{buildCardMeta(activeCard, currentDetail)}</Text>
+      {activeGenres ? (
+        <View style={styles.detailsGenreRow}>
+          {activeGenres.split(",").map((g) => g.trim()).filter(Boolean).slice(0, 3).map((g) => (
+            <View key={g} style={styles.detailsGenreChip}>
+              <Text style={styles.detailsGenreChipText}>{g}</Text>
+            </View>
+          ))}
+        </View>
+      ) : null}
+      {activeCard.reason ? (
+        <View style={styles.detailsReasonBlock}>
+          <View style={styles.detailsReasonRule} />
+          <View style={{ flex: 1 }}>
+            <Text style={styles.detailsReasonLabel}>WHY IT'S HERE</Text>
+            <Text style={styles.detailsReasonText} numberOfLines={3}>
+              {humanizeReason(activeCard.reason)}
+            </Text>
+          </View>
+        </View>
+      ) : null}
+      {activeStreaming.length > 0 ? (
+        <Text style={styles.detailsStreaming}>
+          Streaming on {activeStreaming.map((s) => getStreamingServiceMeta(s.service)?.name ?? s.serviceName).join(" · ")}
         </Text>
+      ) : null}
+
+      {/* Decision controls — grouped near the title (spec §6.6). Pass +
+          More Like This + Save are visually cohesive; Watch Now is a
+          separate secondary CTA below. */}
+      <View style={styles.controlRow}>
+        <Pressable
+          style={({ pressed }) => [styles.controlBtn, styles.controlBtnNeutral, pressed && { opacity: 0.7 }]}
+          onPress={() => void animateSwipe("left")}
+          accessibilityRole="button"
+          accessibilityLabel={`Pass on ${activeCard.title.title}`}
+        >
+          <Ionicons name="close" size={18} color={colors.muted} />
+          <Text style={styles.controlBtnNeutralText}>Pass</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.controlBtn, styles.controlBtnPrimary, pressed && { opacity: 0.85 }]}
+          onPress={() => void animateSwipe("right")}
+          accessibilityRole="button"
+          accessibilityLabel={`More like ${activeCard.title.title}`}
+        >
+          <Ionicons name="heart" size={16} color={colors.background} />
+          <Text style={styles.controlBtnPrimaryText}>More Like This</Text>
+        </Pressable>
+        <Pressable
+          style={({ pressed }) => [styles.controlBtn, styles.controlBtnNeutral, pressed && { opacity: 0.7 }]}
+          onPress={() => {
+            if (!activeCard) return;
+            setSaveTitleId(activeCard.title.id);
+            setShowSaveSheet(true);
+          }}
+          accessibilityRole="button"
+          accessibilityLabel={`Save ${activeCard.title.title}`}
+        >
+          <Ionicons name="bookmark-outline" size={16} color={colors.muted} />
+          <Text style={styles.controlBtnNeutralText}>Save</Text>
+        </Pressable>
       </View>
-      <View style={styles.progressTrack}>
-        <Animated.View
-          style={[
-            styles.progressFill,
-            { width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }) },
-          ]}
-        />
-      </View>
+
+      {activeStreaming.length > 0 ? (
+        <Pressable
+          style={({ pressed }) => [styles.watchNowCta, pressed && { opacity: 0.85 }]}
+          onPress={() => void animateSwipe("up")}
+          accessibilityRole="button"
+        >
+          <Ionicons name="play" size={14} color={colors.background} />
+          <Text style={styles.watchNowCtaText}>Watch Now</Text>
+        </Pressable>
+      ) : null}
+
+      {Platform.OS !== "web" ? (
+        <Text style={styles.swipeHint}>
+          Swipe left to pass · right for more like this
+        </Text>
+      ) : null}
+    </View>
+  ) : null;
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={["top"]}>
+      <ScrollView
+        contentContainerStyle={[
+          styles.workspaceScroll,
+          { paddingHorizontal: workspacePadding },
+        ]}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Compact feature header per spec §6.2 — replaces the full-viewport
+            backdrop hero. Sits inside the max-width workspace container. */}
+        <View style={[styles.workspaceContainer, { maxWidth: workspaceMaxWidth }]}>
+          <View style={styles.featureHeader}>
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={styles.featureEyebrow}>TODAY&apos;S PICKS</Text>
+              <Text style={styles.featureTitle}>What&apos;s Next?</Text>
+              <Text style={styles.featureSubtitle}>Swipe to shape your SceneDNA.</Text>
+            </View>
+            <Text style={styles.featureProgress}>
+              {progress}/{SESSION_LENGTH}
+            </Text>
+          </View>
+          <View style={styles.progressTrack}>
+            <Animated.View
+              style={[
+                styles.progressFill,
+                { width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }) },
+              ]}
+            />
+          </View>
 
       {loading ? (
         <View style={styles.loadingState}>
@@ -746,135 +848,116 @@ export default function SwipeTab() {
         </Animated.View>
       ) : null}
 
-      {/* Swipe deck */}
+      {/* Swipe workspace per spec §6.3 — narrow = single column stack,
+          wide (>= 900) = deck on the left + details rail on the right.
+          Same detailsAndControls JSX in both compositions so behavior
+          stays identical. */}
       {!loading && !revealVisible ? (
-        <View style={styles.deckArea}>
-          {/* Stack cards behind */}
-          {nextCards.slice(0, 2).reverse().map((item, index) => {
-            const stackUri = resolveMediaUrl(item.title.backdrop_url || item.title.poster_url);
-            return (
-              <View
-                key={item.title.id}
-                pointerEvents="none"
-                style={[
-                  styles.stackCard,
-                  index === 0 ? styles.stackCardBack : styles.stackCardFar,
-                ]}
-              >
-                {stackUri ? (
-                  <Image source={{ uri: stackUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-                ) : null}
-                <View style={styles.stackCardShade} />
-              </View>
-            );
-          })}
-
-          {activeCard ? (
-            <Animated.View
-              style={[
-                styles.card,
-                {
-                  transform: [
-                    ...pan.getTranslateTransform(),
-                    { rotate: rotation },
-                    { scale: nextCardEntry },
-                  ],
-                },
-              ]}
-              {...panResponder.panHandlers}
-            >
-              {/* Backdrop fills the card — poster-only titles get a centered poster on dark bg */}
-              {hasBackdrop && activeBackdrop ? (
-                <Animated.Image
-                  source={{ uri: activeBackdrop }}
-                  style={[styles.cardBackdrop, { transform: [{ translateX: backdropParallax }] }]}
-                  resizeMode="cover"
-                />
-              ) : activePoster ? (
-                <View style={[styles.cardBackdrop, { backgroundColor: "#090e18" }]}>
-                  <Image source={{ uri: activePoster }} style={styles.cardPosterBg} resizeMode="cover" />
-                  <View style={styles.cardPosterBgFade} />
-                </View>
-              ) : (
-                <View style={[styles.cardBackdrop, { backgroundColor: colors.surface }]} />
-              )}
-              <View style={styles.cardShade} />
-
-              {/* Frame marks */}
-              <View style={[styles.markTL, styles.markH]} /><View style={[styles.markTL, styles.markV]} />
-              <View style={[styles.markTR, styles.markH]} /><View style={[styles.markTR, styles.markV]} />
-
-              {/* Directional edge labels */}
-              <Animated.View style={[styles.edgeLeft, { opacity: leftLabelOpacity }]}>
-                <Text style={styles.edgeLabelLeft}>← NOT FOR ME</Text>
-              </Animated.View>
-              <Animated.View style={[styles.edgeRight, { opacity: rightLabelOpacity }]}>
-                <Text style={styles.edgeLabelRight}>MORE LIKE THIS →</Text>
-              </Animated.View>
-              <Animated.View style={[styles.edgeTop, { opacity: upLabelOpacity }]}>
-                <Text style={styles.edgeLabelUp}>↑ WATCH NOW</Text>
-              </Animated.View>
-
-              {/* Card content — bottom of frame */}
-              <View style={styles.cardContent}>
-                {activePoster ? (
-                  <Image source={{ uri: activePoster }} style={styles.cardPoster} resizeMode="cover" />
-                ) : null}
-                <View style={styles.cardMetaWrap}>
-                  <Text style={styles.cardTitle} numberOfLines={2}>{activeCard.title.title}</Text>
-                  <Text style={styles.cardMeta}>{buildCardMeta(activeCard, currentDetail)}</Text>
-                  {activeGenres ? (
-                    <Text style={styles.cardGenres}>{activeGenres}</Text>
-                  ) : null}
-                  {activeStreaming.length > 0 ? (
-                    <Text style={styles.cardStreaming}>
-                      {activeStreaming.map((s) => getStreamingServiceMeta(s.service)?.name ?? s.serviceName).join("  ·  ")}
-                    </Text>
-                  ) : null}
-                  <Text style={styles.cardReason} numberOfLines={2}>
-                    {humanizeReason(activeCard.reason)}
-                  </Text>
-                </View>
-              </View>
-            </Animated.View>
-          ) : (
-            <View style={styles.emptyState}>
-              <Text style={styles.emptyIndex}>00 / {SESSION_LENGTH.toString().padStart(2, "0")}</Text>
-              <View style={styles.emptyRule} />
-              <Text style={styles.emptyTitle}>Your next obsession is loading…</Text>
-              <Text style={styles.emptyBody}>One more beat while we rebuild your queue.</Text>
-            </View>
-          )}
-        </View>
-      ) : null}
-
-      {/* Bottom action bar — editorial text actions, not circles */}
-      {!loading && !revealVisible ? (
-        <View style={styles.actionBar}>
-          <Pressable style={styles.actionPass} onPress={() => void animateSwipe("left")}>
-            <Text style={styles.actionPassText}>← PASS</Text>
-          </Pressable>
-          <Pressable
-            style={styles.actionSave}
-            onPress={() => {
-              if (!activeCard) return;
-              setSaveTitleId(activeCard.title.id);
-              setShowSaveSheet(true);
-            }}
+        <View style={[styles.workspace, isWide && styles.workspaceWide]}>
+          {/* Poster deck column */}
+          <View
+            style={[
+              styles.deckColumn,
+              { width: isWide ? posterColumnWidth : "100%" },
+            ]}
           >
-            <Ionicons name="bookmark-outline" size={16} color={colors.muted} />
-          </Pressable>
-          <Pressable style={styles.actionMore} onPress={() => void animateSwipe("right")}>
-            <Text style={styles.actionMoreText}>MORE LIKE THIS →</Text>
-          </Pressable>
-        </View>
-      ) : null}
+            <View
+              style={[
+                styles.posterDeck,
+                { width: posterMaxWidth, height: posterMaxWidth * 1.5 },
+              ]}
+            >
+              {/* Queued layers — up to 2, offset behind the active card. */}
+              {nextCards.slice(0, 2).reverse().map((item, index) => {
+                const stackUri = resolveMediaUrl(item.title.poster_url || item.title.backdrop_url);
+                const depth = index; // 0 = closest, 1 = furthest
+                return (
+                  <View
+                    key={item.title.id}
+                    pointerEvents="none"
+                    accessibilityElementsHidden
+                    importantForAccessibility="no-hide-descendants"
+                    style={[
+                      styles.deckLayer,
+                      {
+                        transform: [
+                          { translateX: (depth + 1) * (viewportWidth < 400 ? 6 : 10) },
+                          { translateY: (depth + 1) * 8 },
+                          { scale: 1 - (depth + 1) * 0.03 },
+                        ],
+                        opacity: 0.35 - depth * 0.15,
+                      },
+                    ]}
+                  >
+                    {stackUri ? (
+                      <Image
+                        source={{ uri: stackUri }}
+                        style={styles.deckLayerImage}
+                        resizeMode="contain"
+                      />
+                    ) : null}
+                  </View>
+                );
+              })}
 
-      {/* Watch Now — secondary full-width text action */}
-      {!loading && !revealVisible && activeCard ? (
-        <Pressable style={styles.watchNowBar} onPress={() => void animateSwipe("up")}>
-          <Text style={styles.watchNowText}>↑  WATCH NOW</Text>
-        </Pressable>
+              {/* Active card — draggable. */}
+              {activeCard ? (
+                <Animated.View
+                  style={[
+                    styles.deckActiveCard,
+                    {
+                      transform: [
+                        ...pan.getTranslateTransform(),
+                        { rotate: rotation },
+                        { scale: nextCardEntry },
+                      ],
+                    },
+                  ]}
+                  {...panResponder.panHandlers}
+                >
+                  {activePoster ? (
+                    <Image
+                      source={{ uri: activePoster }}
+                      style={styles.deckActivePoster}
+                      resizeMode="contain"
+                      accessibilityLabel={`${activeCard.title.title} poster`}
+                    />
+                  ) : (
+                    <View style={styles.deckPosterFallback}>
+                      <Text style={styles.deckPosterFallbackTitle} numberOfLines={4}>
+                        {activeCard.title.title}
+                      </Text>
+                      <Text style={styles.deckPosterFallbackMeta}>
+                        {activeCard.title.content_type === "movie" ? "FILM" : "SERIES"}
+                      </Text>
+                    </View>
+                  )}
+
+                  {/* Directional feedback — restrained per spec §9. */}
+                  <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipLeft, { opacity: leftLabelOpacity }]}>
+                    <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
+                  </Animated.View>
+                  <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}>
+                    <Text style={styles.deckEdgeChipTextRight}>MORE LIKE THIS</Text>
+                  </Animated.View>
+                  <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipTop, { opacity: upLabelOpacity }]}>
+                    <Text style={styles.deckEdgeChipTextTop}>WATCH NOW</Text>
+                  </Animated.View>
+                </Animated.View>
+              ) : (
+                <View style={styles.deckPosterFallback}>
+                  <Text style={styles.deckPosterFallbackTitle}>Your next obsession is loading…</Text>
+                  <Text style={styles.deckPosterFallbackMeta}>One more beat while we rebuild your queue.</Text>
+                </View>
+              )}
+            </View>
+          </View>
+
+          {/* Details + controls column */}
+          <View style={[styles.railColumn, isWide && { flex: 1, paddingLeft: 32 }]}>
+            {detailsAndControls}
+          </View>
+        </View>
       ) : null}
 
       <UniversalTitleModal
@@ -956,6 +1039,8 @@ export default function SwipeTab() {
           ) : null}
         </Animated.View>
       ) : null}
+        </View>
+      </ScrollView>
     </SafeAreaView>
   );
 }
@@ -1587,5 +1672,313 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
     paddingHorizontal: 8,
     paddingVertical: 3,
+  },
+
+  // ─── Redesigned Swipe (poster-first responsive) ─────────────────────
+  workspaceScroll: {
+    paddingBottom: 40,
+  },
+  workspaceContainer: {
+    width: "100%",
+    alignSelf: "center",
+    gap: spacing.md,
+  },
+  featureHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    paddingTop: spacing.md,
+    gap: spacing.md,
+  },
+  featureEyebrow: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.8,
+    color: colors.accent,
+    textTransform: "uppercase",
+  },
+  featureTitle: {
+    fontFamily: fonts.serifBold,
+    color: colors.ink,
+    fontSize: 32,
+    lineHeight: 36,
+    letterSpacing: -0.5,
+  },
+  featureSubtitle: {
+    fontFamily: fonts.serif,
+    fontStyle: "italic",
+    color: colors.muted,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  featureProgress: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.muted,
+    fontSize: 12,
+    letterSpacing: 1.2,
+    paddingTop: 4,
+  },
+
+  workspace: {
+    flexDirection: "column",
+    alignItems: "center",
+    gap: spacing.lg,
+  },
+  workspaceWide: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+  },
+  deckColumn: {
+    alignItems: "center",
+  },
+  railColumn: {
+    width: "100%",
+  },
+
+  // Deck — 2:3 portrait container that holds the active card + queued
+  // layers. Fixed aspect ratio so the poster is never distorted, and
+  // width driven by useWindowDimensions per spec §6.4.
+  posterDeck: {
+    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deckLayer: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 16,
+    overflow: "hidden",
+    backgroundColor: "#0a0f18",
+    borderWidth: 1,
+    borderColor: rules.default,
+  },
+  deckLayerImage: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  deckActiveCard: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#0a0f18",
+    borderWidth: 1,
+    borderColor: rules.default,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.6,
+    shadowRadius: 24,
+    elevation: 12,
+  },
+  deckActivePoster: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  deckPosterFallback: {
+    ...StyleSheet.absoluteFillObject,
+    alignItems: "center",
+    justifyContent: "center",
+    padding: spacing.lg,
+    gap: spacing.sm,
+  },
+  deckPosterFallbackTitle: {
+    fontFamily: fonts.serifBold,
+    color: colors.ink,
+    fontSize: 20,
+    textAlign: "center",
+  },
+  deckPosterFallbackMeta: {
+    fontFamily: fonts.mono,
+    color: colors.muted,
+    fontSize: 11,
+    letterSpacing: 1.2,
+    textTransform: "uppercase",
+  },
+
+  // Directional feedback chips — restrained per spec §9, small and
+  // pinned to the card corners rather than blanket overlays.
+  deckEdgeChip: {
+    position: "absolute",
+    top: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 3,
+    borderWidth: 1,
+  },
+  deckEdgeChipLeft: {
+    left: 16,
+    borderColor: colors.muted,
+    backgroundColor: "rgba(7,11,18,0.72)",
+  },
+  deckEdgeChipRight: {
+    right: 16,
+    borderColor: colors.accent,
+    backgroundColor: "rgba(244,196,48,0.14)",
+  },
+  deckEdgeChipTop: {
+    top: 16,
+    left: "50%",
+    marginLeft: -50,
+    width: 100,
+    alignItems: "center",
+    borderColor: colors.accent,
+    backgroundColor: "rgba(244,196,48,0.14)",
+  },
+  deckEdgeChipTextLeft: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    color: colors.ink,
+  },
+  deckEdgeChipTextRight: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    color: colors.accent,
+  },
+  deckEdgeChipTextTop: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    color: colors.accent,
+  },
+
+  // Details + controls block — used in both narrow (below deck) and
+  // wide (right rail) compositions, no forking.
+  detailsBlock: {
+    gap: spacing.sm,
+    paddingTop: spacing.md,
+  },
+  detailsTitle: {
+    fontFamily: fonts.serifBold,
+    color: colors.ink,
+    fontSize: 26,
+    lineHeight: 30,
+    letterSpacing: -0.3,
+  },
+  detailsMeta: {
+    fontFamily: fonts.mono,
+    color: colors.muted,
+    fontSize: 12,
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+  },
+  detailsGenreRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 2,
+  },
+  detailsGenreChip: {
+    borderWidth: 1,
+    borderColor: rules.default,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  detailsGenreChipText: {
+    fontFamily: fonts.mono,
+    color: colors.muted,
+    fontSize: 11,
+    letterSpacing: 0.5,
+  },
+  detailsReasonBlock: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: 4,
+  },
+  detailsReasonRule: {
+    width: 2,
+    backgroundColor: rules.gold,
+  },
+  detailsReasonLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    marginBottom: 4,
+  },
+  detailsReasonText: {
+    fontFamily: fonts.sans,
+    color: colors.ink,
+    fontSize: 13,
+    lineHeight: 19,
+  },
+  detailsStreaming: {
+    fontFamily: fonts.mono,
+    color: colors.muted,
+    fontSize: 11,
+    letterSpacing: 0.5,
+    marginTop: 4,
+  },
+
+  controlRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: spacing.md,
+  },
+  controlBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+  },
+  controlBtnNeutral: {
+    borderWidth: 1,
+    borderColor: rules.default,
+    flexGrow: 1,
+    flexBasis: 0,
+  },
+  controlBtnNeutralText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    color: colors.ink,
+    textTransform: "uppercase",
+  },
+  controlBtnPrimary: {
+    backgroundColor: colors.accent,
+    flexGrow: 1.4,
+    flexBasis: 0,
+  },
+  controlBtnPrimaryText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    color: colors.background,
+    textTransform: "uppercase",
+  },
+
+  watchNowCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 8,
+    marginTop: spacing.sm,
+    minHeight: 44,
+    borderRadius: 6,
+    backgroundColor: colors.ink,
+  },
+  watchNowCtaText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 12,
+    letterSpacing: 1.2,
+    color: colors.background,
+    textTransform: "uppercase",
+  },
+
+  swipeHint: {
+    marginTop: 10,
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.muted,
+    textAlign: "center",
   },
 });
