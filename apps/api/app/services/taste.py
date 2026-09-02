@@ -313,19 +313,19 @@ def _copy_from_evidence(
     if reason_type == REASON_TYPE_CREATOR_AFFINITY and contributing_titles:
         return f"Same creative team as {contributing_titles[0]} — you've followed this artist before."
     if reason_type == REASON_TYPE_TRENDING_PERSONALIZED:
-        # Definitive Rec Mix spec §3: TMDB trending is allowed as
-        # fallback discovery ONLY IF clearly labeled as external. It
-        # must NEVER be labeled "Climbing on SeenSnap" or presented as
-        # SeenSnap platform activity — previous cold_templates
-        # ("Currently a big pick", "One of the week's most-saved
-        # titles") violated that rule. All copy here explicitly names
-        # TMDB or "trending across streaming" so the user knows this
-        # is external popularity data, not their SceneDNA/saves.
+        # External-source fallback for cold-start users. Product rule:
+        # NEVER surface TMDB as a source in UI copy. Copy just says
+        # "popular right now" / "popular this week" and — when we can
+        # tie it back to a SceneDNA signal — anchors it to the user's
+        # own taste ("overlaps with your <label> SceneDNA"). The
+        # spec-forbidden "Climbing on SeenSnap" wording remains
+        # reserved for CLIMBING_ON_SEENSNAP (native platform velocity)
+        # so trending fallback never impersonates SeenSnap activity.
         if labels:
-            return f"Trending on TMDB right now — overlaps with your {labels[0].lower()} SceneDNA."
+            return f"Popular right now — overlaps with your {labels[0].lower()} SceneDNA."
         if genres:
-            return f"Popular on TMDB this week — and it lands in your {genres[0]} lane."
-        return "Popular on TMDB this week."
+            return f"Popular this week — lands in your {genres[0]} lane."
+        return "Popular this week."
     if reason_type == REASON_TYPE_CLIMBING_ON_SEENSNAP:
         # Definitive spec §3: exact label is "Climbing on SeenSnap this
         # week". Optional supporting detail may live in an evidence

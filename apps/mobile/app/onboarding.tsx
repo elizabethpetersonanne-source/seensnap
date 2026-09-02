@@ -112,16 +112,25 @@ export default function OnboardingScreen() {
   const [swipeCount, setSwipeCount] = useState(0);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
 
-  // Step animation
+  // Step animation — translateX-only "slide in from the right" so
+  // even if the animation callback silently no-ops on RN-Web (which
+  // happens with useNativeDriver in some browser environments), the
+  // step is always fully visible. Previously we animated opacity
+  // 0 → 1, and if the timing callback dropped, the whole step
+  // rendered invisible (user reported blank page after "Get Started").
   const stepAnim = useRef(new Animated.Value(1)).current;
 
   function animateIn() {
     stepAnim.setValue(0);
-    Animated.timing(stepAnim, { toValue: 1, duration: 240, useNativeDriver: true }).start();
+    // useNativeDriver=false because on RN-Web the native-driver
+    // interpolation for a transform target can silently discard the
+    // update; JS driver reliably ticks the interpolate. Also, we
+    // deliberately do NOT bind opacity to stepAnim anymore — content
+    // is visible from the first frame.
+    Animated.timing(stepAnim, { toValue: 1, duration: 240, useNativeDriver: false }).start();
   }
 
   const slideStyle = {
-    opacity: stepAnim,
     transform: [
       {
         translateX: stepAnim.interpolate({ inputRange: [0, 1], outputRange: [20, 0] }),
