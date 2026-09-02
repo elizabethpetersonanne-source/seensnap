@@ -219,11 +219,31 @@ FEED_MIX_TARGETS: dict[str, float] = {
 # users) doesn't apply to a signal that IS the user's declared taste.
 _BUCKET_CAP_OVERRIDES: dict[str, float] = {
     REASON_TYPE_PICKS_SIMILARITY: 0.50,
-    REASON_TYPE_SCENEDNA_MATCH: 0.60,
+    # SCENEDNA_MATCH can absorb most of the slack when primary buckets
+    # (Saved / Climbing / Social) run dry for a cold-start user. The
+    # spec explicitly names SceneDNA + Saved as the two fallback
+    # sources, so bumping this cap high keeps decks personalized
+    # instead of tipping into external TMDB trending.
+    REASON_TYPE_SCENEDNA_MATCH: 0.85,
     REASON_TYPE_CLIMBING_ON_SEENSNAP: 0.20,
     # Spec §4: "social recommendations must remain limited to one or
     # two titles per session". 0.10 hard cap == 2/20 in a session.
     REASON_TYPE_SOCIAL_ACTIVITY: 0.10,
+    # Definitive Rec Mix spec §3: TMDB trending may be used only as
+    # clearly-labeled external fallback. Tight cap so it can never
+    # dominate a deck — user was seeing decks majority-filled with
+    # "Currently a big pick" / "Climbing on SeenSnap this week" that
+    # were actually TMDB popularity mislabeled.
+    REASON_TYPE_TRENDING_PERSONALIZED: 0.10,
+    # Legacy buckets not in the definitive spec — kept alive as
+    # very-cold-start filler only. Tight caps so they can never
+    # dominate the deck the way TRENDING did.
+    REASON_TYPE_CREATOR_AFFINITY: 0.10,
+    REASON_TYPE_HIDDEN_GEM: 0.10,
+    REASON_TYPE_TASTE_NEIGHBORS: 0.05,
+    REASON_TYPE_SERENDIPITY: 0.10,
+    REASON_TYPE_PICKS_SCENEDNA_OVERLAP: 0.15,
+    REASON_TYPE_WATCH_TEAM: 0.10,
 }
 
 
@@ -293,21 +313,19 @@ def _copy_from_evidence(
     if reason_type == REASON_TYPE_CREATOR_AFFINITY and contributing_titles:
         return f"Same creative team as {contributing_titles[0]} — you've followed this artist before."
     if reason_type == REASON_TYPE_TRENDING_PERSONALIZED:
+        # Definitive Rec Mix spec §3: TMDB trending is allowed as
+        # fallback discovery ONLY IF clearly labeled as external. It
+        # must NEVER be labeled "Climbing on SeenSnap" or presented as
+        # SeenSnap platform activity — previous cold_templates
+        # ("Currently a big pick", "One of the week's most-saved
+        # titles") violated that rule. All copy here explicitly names
+        # TMDB or "trending across streaming" so the user knows this
+        # is external popularity data, not their SceneDNA/saves.
         if labels:
-            return f"Trending right now — overlaps with your {labels[0].lower()} SceneDNA."
+            return f"Trending on TMDB right now — overlaps with your {labels[0].lower()} SceneDNA."
         if genres:
-            return f"Climbing this week — and it lands in your {genres[0]} lane."
-        # Cold-start rotation: no taste signal yet, so vary the phrasing per candidate
-        # so consecutive cards don't feel like the same recommendation repeated.
-        cold_templates = [
-            "Climbing on SeenSnap this week.",
-            f"A lot of the crowd is watching {candidate.title} right now.",
-            "This is having a moment.",
-            "Currently a big pick across the platform.",
-            "One of the week's most-saved titles.",
-            "People keep coming back to this one.",
-        ]
-        return cold_templates[hash(str(candidate.id)) % len(cold_templates)]
+            return f"Popular on TMDB this week — and it lands in your {genres[0]} lane."
+        return "Popular on TMDB this week."
     if reason_type == REASON_TYPE_CLIMBING_ON_SEENSNAP:
         # Definitive spec §3: exact label is "Climbing on SeenSnap this
         # week". Optional supporting detail may live in an evidence
