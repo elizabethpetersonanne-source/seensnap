@@ -230,7 +230,7 @@ gcloud run deploy "$SERVICE_NAME" \
   --allow-unauthenticated \
   --service-account="$SA_EMAIL" \
   --add-cloudsql-instances="$INSTANCE_CONNECTION_NAME" \
-  --set-env-vars="ENVIRONMENT=staging,APP_AUTH_AUDIENCE=seensnap-mobile,APPLE_BUNDLE_ID=com.seensnap.app" \
+  --set-env-vars="ENVIRONMENT=staging,APP_AUTH_AUDIENCE=seensnap-mobile,APPLE_BUNDLE_ID=com.seensnap.app,CORS_ALLOWED_ORIGINS=https://seensnapalpha.netlify.app,CORS_ALLOWED_ORIGIN_REGEX=https://.*--seensnapalpha\\.netlify\\.app" \
   --set-secrets="DATABASE_URL=${DB_URL_SECRET}:latest,APP_AUTH_SECRET=seensnap-app-auth-secret:latest,TMDB_API_KEY=seensnap-tmdb-key:latest,GOOGLE_OAUTH_CLIENT_ID=seensnap-google-oauth-client-id:latest" \
   --min-instances=0 \
   --max-instances=3 \
