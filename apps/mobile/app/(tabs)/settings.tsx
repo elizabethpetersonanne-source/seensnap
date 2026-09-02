@@ -264,29 +264,44 @@ export default function ProfileScreen() {
   }
 
   async function handleDeleteAccount() {
-    Alert.alert(
-      "Delete Account",
-      "This permanently deletes your SeenSnap account, all picks, swipes, and team history. This cannot be undone.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete Forever",
-          style: "destructive",
-          onPress: async () => {
-            if (!sessionToken) return;
-            setIsDeletingAccount(true);
-            try {
-              await apiRequest("/auth/me", { method: "DELETE", token: sessionToken });
-              await signOut();
-            } catch (deleteError) {
-              setError(deleteError instanceof Error ? deleteError.message : "Account deletion failed");
-            } finally {
-              setIsDeletingAccount(false);
-            }
+    const message =
+      "This permanently deletes your SeenSnap account, all picks, swipes, and team history. This cannot be undone.";
+    // RN Alert.alert with a destructive button doesn't render on web
+    // (react-native-web renders a single-button window.alert, so the
+    // "Delete Forever" button never appears). Use window.confirm on
+    // web so the destructive path actually runs.
+    const confirmed = await new Promise<boolean>((resolve) => {
+      if (Platform.OS === "web") {
+        resolve(
+          typeof globalThis.confirm === "function"
+            ? globalThis.confirm(`Delete Account?\n\n${message}`)
+            : false,
+        );
+        return;
+      }
+      Alert.alert(
+        "Delete Account",
+        message,
+        [
+          { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
+          {
+            text: "Delete Forever",
+            style: "destructive",
+            onPress: () => resolve(true),
           },
-        },
-      ]
-    );
+        ],
+      );
+    });
+    if (!confirmed || !sessionToken) return;
+    setIsDeletingAccount(true);
+    try {
+      await apiRequest("/auth/me", { method: "DELETE", token: sessionToken });
+      await signOut();
+    } catch (deleteError) {
+      setError(deleteError instanceof Error ? deleteError.message : "Account deletion failed");
+    } finally {
+      setIsDeletingAccount(false);
+    }
   }
 
   async function removeAvatar() {

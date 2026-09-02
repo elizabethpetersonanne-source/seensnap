@@ -10,17 +10,24 @@ from app.db.session import SessionLocal
 from app.core.limiter import limiter
 from app.models.social import (
     AffiliateClick,
+    Block,
     FeedComment,
     FeedEvent,
     FeedReaction,
+    ListSave,
+    ListShare,
     Notification,
     NotificationOutbox,
     NotificationPreference,
+    PeopleDismissal,
     Rating,
+    Report,
     Review,
     Share,
+    Team,
     TeamActivity,
     TeamMember,
+    TeamRanking,
     TeamTitle,
     UserFollow,
     Watchlist,
@@ -116,13 +123,63 @@ def delete_account(current_user: CurrentUser, db: DbSession) -> None:
         )
     )
 
-    # Watchlist items then watchlists
+    # ListShare / ListSave records the user owns (or created) — no
+    # CASCADE on their user FK, so must be cleaned before Watchlist
+    # rows go (ListShare.watchlist_id refs watchlists).
+    db.execute(delete(ListSave).where(ListSave.user_id == uid))
+    db.execute(delete(ListShare).where(ListShare.created_by_user_id == uid))
+
+    # People discovery / moderation records without CASCADE. Blocks and
+    # PeopleDismissal DO have CASCADE, but delete explicitly so the
+    # transaction stays predictable and doesn't depend on DB-level
+    # semantics silently doing the right thing.
+    db.execute(delete(PeopleDismissal).where(
+        or_(PeopleDismissal.viewer_user_id == uid, PeopleDismissal.candidate_user_id == uid)
+    ))
+    db.execute(delete(Block).where(
+        or_(Block.blocker_user_id == uid, Block.blocked_user_id == uid)
+    ))
+    db.execute(delete(Report).where(Report.reporter_user_id == uid))
+    # Reports about the user get the reported_user_id nulled (that FK
+    # is already SET NULL at the schema level, but nulling explicitly
+    # keeps the moderation record for audit purposes without pointing
+    # at a deleted user id).
+    db.execute(
+        update(Report)
+        .where(Report.reported_user_id == uid)
+        .values(reported_user_id=None)
+    )
+
+    # Watchlist items then watchlists — ListShare + ListSave above
+    # already covered the shares that referenced these watchlists.
     user_watchlist_ids = db.scalars(
         select(Watchlist.id).where(Watchlist.owner_user_id == uid)
     ).all()
     if user_watchlist_ids:
         db.execute(delete(WatchlistItem).where(WatchlistItem.watchlist_id.in_(user_watchlist_ids)))
+        # Any list_shares that referenced these lists but were minted
+        # by a DIFFERENT user (rare, but possible) also need to go so
+        # the Watchlist delete doesn't hit an FK violation.
+        db.execute(delete(ListShare).where(ListShare.watchlist_id.in_(user_watchlist_ids)))
+        db.execute(delete(ListSave).where(ListSave.watchlist_id.in_(user_watchlist_ids)))
     db.execute(delete(Watchlist).where(Watchlist.owner_user_id == uid))
+
+    # Teams owned by this user — cascade-delete the team and everything
+    # attached to it. Deleting a team also removes other members'
+    # access to it; that's intentional for "delete my account". Members
+    # still keep their picks / SceneDNA — only the shared team is gone.
+    owned_team_ids = db.scalars(select(Team.id).where(Team.owner_user_id == uid)).all()
+    if owned_team_ids:
+        db.execute(delete(TeamActivity).where(TeamActivity.team_id.in_(owned_team_ids)))
+        db.execute(delete(TeamTitle).where(TeamTitle.team_id.in_(owned_team_ids)))
+        db.execute(delete(TeamMember).where(TeamMember.team_id.in_(owned_team_ids)))
+        db.execute(delete(TeamRanking).where(TeamRanking.team_id.in_(owned_team_ids)))
+        # FeedEvent and Share can reference teams too via team_id (SET NULL
+        # at schema level, but delete explicitly to keep the transaction
+        # cleanup ordered and dialect-agnostic).
+        db.execute(update(FeedEvent).where(FeedEvent.team_id.in_(owned_team_ids)).values(team_id=None))
+        db.execute(update(Share).where(Share.team_id.in_(owned_team_ids)).values(team_id=None))
+        db.execute(delete(Team).where(Team.id.in_(owned_team_ids)))
 
     # Taste data
     db.execute(delete(RecommendationSignal).where(RecommendationSignal.user_id == uid))
