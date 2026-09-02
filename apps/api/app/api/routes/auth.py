@@ -33,6 +33,7 @@ from app.models.social import (
     Watchlist,
     WatchlistItem,
 )
+from app.models.analytics import AnalyticsEvent
 from app.models.taste import CompatibilityScore, RecommendationSignal, SwipeRecord, UserTasteProfile, WrappedStat
 from app.models.user import AuthIdentity, Device, User, UserPreferences, UserProfile
 from app.schemas.auth import AppleAuthRequest, DevAuthRequest, GoogleAuthRequest, SessionResponse, SessionUserResponse
@@ -191,6 +192,14 @@ def delete_account(current_user: CurrentUser, db: DbSession) -> None:
     db.execute(delete(SwipeRecord).where(SwipeRecord.user_id == uid))
     db.execute(delete(UserTasteProfile).where(UserTasteProfile.user_id == uid))
     db.execute(delete(WrappedStat).where(WrappedStat.user_id == uid))
+
+    # AnalyticsEvent has a nullable user_id FK without CASCADE / SET
+    # NULL — null it here so the aggregate event log survives account
+    # deletion without pointing at a dead user id. (Deleting the rows
+    # would erase historical analytics that has legitimate aggregate
+    # value; nulling matches GDPR-style right-to-erasure while
+    # preserving the anonymized event data.)
+    db.execute(update(AnalyticsEvent).where(AnalyticsEvent.user_id == uid).values(user_id=None))
 
     # User core
     db.execute(delete(Device).where(Device.user_id == uid))
