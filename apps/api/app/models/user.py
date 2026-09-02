@@ -42,6 +42,10 @@ class UserProfile(Base):
     favorite_genres: Mapped[list[str]] = mapped_column(JSONB, default=list)
     bio: Mapped[str | None] = mapped_column(String(280))
     country_code: Mapped[str] = mapped_column(String(2), default="US")
+    # People Discovery spec §10. When false, the profile is excluded from
+    # /social/people browse + suggestion lists (search may still surface
+    # them per the app's separate visibility policy).
+    discovery_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="true")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

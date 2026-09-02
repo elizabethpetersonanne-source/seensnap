@@ -281,14 +281,33 @@ export default function SocialScreen() {
         fallbackSeed={9}
         contextualAction={
           <Pressable
-            onPress={() => setShowFindPeople((s) => !s)}
+            onPress={() => router.push("/social/people")}
             hitSlop={10}
             style={styles.contextualBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Open People discovery"
           >
             <Ionicons name="person-add-outline" size={18} color={colors.ink} />
           </Pressable>
         }
       />
+
+      {/* Feed | People sub-nav per People Discovery spec §5. Feed
+          remains the default; People opens the dedicated discovery
+          surface. Kept as a sub-nav (not a tab) so we don't add a
+          persistent bottom-nav destination for a browse experience. */}
+      <View style={styles.subNav}>
+        <View style={[styles.subNavPill, styles.subNavPillActive]}>
+          <Text style={styles.subNavPillTextActive}>Feed</Text>
+        </View>
+        <Pressable
+          style={styles.subNavPill}
+          onPress={() => router.push("/social/people")}
+          accessibilityRole="button"
+        >
+          <Text style={styles.subNavPillText}>People</Text>
+        </Pressable>
+      </View>
 
       {showFindPeople ? (
         <View style={styles.findPeoplePanel}>
@@ -404,7 +423,7 @@ export default function SocialScreen() {
           <View style={styles.emptyActions}>
             <Pressable
               style={[styles.actionBtn, styles.actionBtnPrimary]}
-              onPress={() => setShowFindPeople(true)}
+              onPress={() => router.push("/social/people")}
             >
               <Ionicons name="search" size={16} color={colors.background} />
               <Text style={styles.actionBtnPrimaryText}>Find people</Text>
@@ -768,6 +787,38 @@ function formatPostType(post: SocialPost): string {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.background },
+  subNav: {
+    flexDirection: "row",
+    gap: 8,
+    paddingHorizontal: spacing.md,
+    paddingTop: 4,
+    paddingBottom: spacing.sm,
+  },
+  subNavPill: {
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: radii.pill,
+    borderWidth: 1,
+    borderColor: rules.default,
+  },
+  subNavPillActive: {
+    backgroundColor: "rgba(244,196,48,0.14)",
+    borderColor: rules.gold,
+  },
+  subNavPillText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    color: colors.muted,
+    textTransform: "uppercase",
+  },
+  subNavPillTextActive: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    color: colors.accent,
+    textTransform: "uppercase",
+  },
   contextualBtn: {
     width: 40,
     height: 40,

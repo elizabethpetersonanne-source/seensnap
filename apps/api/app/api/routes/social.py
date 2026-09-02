@@ -255,3 +255,53 @@ def submit_report(
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     return {"id": str(report.id), "status": report.status}
+
+
+# ─── People Discovery (spec §11) ────────────────────────────────────────
+
+
+@router.get("/people")
+def get_people_discovery(
+    current_user: CurrentUser,
+    db: DbSession,
+    section: str | None = Query(default=None),
+    limit: int = Query(default=12, ge=1, le=50),
+) -> dict:
+    """Browse people. Without `section`, returns every non-empty section
+    for the People screen. With `section`, returns the ranked candidate
+    list for that section only (for pagination / dedicated views).
+    """
+    from app.services.people_discovery import (
+        ALL_SECTIONS,
+        SECTION_TITLES,
+        _candidate_to_dict,
+        get_all_sections,
+        get_section,
+    )
+
+    if section:
+        if section not in ALL_SECTIONS:
+            raise HTTPException(status_code=400, detail=f"Unknown section: {section}")
+        items = get_section(db, current_user.id, section=section, limit=limit)
+        return {
+            "section": {
+                "id": section,
+                "title": SECTION_TITLES[section],
+                "items": [_candidate_to_dict(c) for c in items],
+            }
+        }
+    return {"sections": get_all_sections(db, current_user.id, per_section_limit=limit)}
+
+
+@router.post("/people/{candidate_user_id}/dismiss", status_code=status.HTTP_204_NO_CONTENT)
+def dismiss_person(
+    candidate_user_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> None:
+    """Record "Not interested" — candidate is suppressed from suggestion
+    sections for 30 days per spec §10."""
+    from app.services.people_discovery import dismiss_candidate
+
+    dismiss_candidate(db, viewer_id=current_user.id, candidate_id=candidate_user_id)
+    return None

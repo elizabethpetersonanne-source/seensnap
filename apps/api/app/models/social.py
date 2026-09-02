@@ -338,3 +338,20 @@ class ListSave(Base):
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     watchlist_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("watchlists.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PeopleDismissal(Base):
+    """Viewer's "Not interested" on a candidate profile in People discovery.
+    Suppresses the candidate from suggestion lists for at least 30 days
+    per People Discovery spec §10. Search results ignore dismissal."""
+
+    __tablename__ = "people_dismissals"
+    __table_args__ = (
+        UniqueConstraint("viewer_user_id", "candidate_user_id", name="uq_people_dismissal_pair"),
+        CheckConstraint("viewer_user_id <> candidate_user_id", name="ck_no_self_dismissal"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    viewer_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    candidate_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
