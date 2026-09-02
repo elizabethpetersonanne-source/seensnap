@@ -635,9 +635,16 @@ def _source_scene_dna_match(
         first = taste_profile.taste_labels[0]
         if isinstance(first, dict):
             top_label = first.get("label")
-    for seed in seeds[:3]:
+    # Seed cap bumped from 3 → 10 and per-seed related fetch 5 → 8.
+    # Heavy users' obsessions list has many entries; capping at 3
+    # meant SCENEDNA emitted ~15 candidates before exclude filtering,
+    # and after excluding the recently-shown set it often returned 0.
+    # 10 seeds × 8 related = up to 80 candidates before dedup, plenty
+    # to survive the exclude pass for a heavy user without ballooning
+    # TMDB API calls (each seed is one /recommendations call).
+    for seed in seeds[:10]:
         try:
-            related = fetch_related_titles(db, seed, limit=5)
+            related = fetch_related_titles(db, seed, limit=8)
         except TmdbConfigurationError:
             continue
         except Exception:
@@ -1433,17 +1440,21 @@ def get_social_recommendations(
     ).all()
     exclude: set[UUID] = saved_ids | {row[0] for row in dismissed_rows if row[0] is not None}
 
-    # Recently-shown exclude — brief §16, §21: users should rarely feel that
-    # consecutive cards are variations of the same recommendation. Anything
-    # served in the last 6 hours stays out of the deck so we don't recycle
-    # the same 30 titles every reload. Old signals (>6h) are eligible again.
-    recycle_cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
+    # Recently-shown exclude — cap by BOTH time (2h window) AND count
+    # (last 120 titles) so a heavy user (500+ swipes in a session)
+    # doesn't blacklist their entire eligible catalog against
+    # themselves. Previous 6h + unbounded query blocked SCENEDNA and
+    # PICKS candidates from surfacing — every fresh candidate got
+    # filtered out and the deck tipped into TMDB fallback.
+    recycle_cutoff = datetime.now(timezone.utc) - timedelta(hours=2)
     recently_shown_rows = db.execute(
         select(RecommendationSignal.content_title_id)
         .where(
             RecommendationSignal.user_id == user_id,
             RecommendationSignal.created_at >= recycle_cutoff,
         )
+        .order_by(RecommendationSignal.created_at.desc())
+        .limit(120)
     ).all()
     recently_shown: set[UUID] = {row[0] for row in recently_shown_rows if row[0] is not None}
     exclude = exclude | recently_shown
@@ -1452,10 +1463,13 @@ def get_social_recommendations(
 
     # Prune stale RecommendationSignal rows (older than the recycle window)
     # so the table doesn't grow unbounded. Anything within the window stays
-    # for the recently-shown lookup on the next request.
+    # for the recently-shown lookup on the next request. The prune window
+    # is intentionally wider than the exclude window (6h vs 2h) so we
+    # keep the analytics tail one revolution longer than the exclude tail.
+    long_prune_cutoff = datetime.now(timezone.utc) - timedelta(hours=6)
     db.query(RecommendationSignal).filter(
         RecommendationSignal.user_id == user_id,
-        RecommendationSignal.created_at < recycle_cutoff,
+        RecommendationSignal.created_at < long_prune_cutoff,
     ).delete(synchronize_session=False)
 
     # --- Fan out to each source strategy ---
