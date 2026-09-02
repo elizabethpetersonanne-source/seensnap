@@ -303,6 +303,7 @@ def record_title_swipe(
             session_id=payload.session_id,
             reason=payload.reason,
             source_surface=payload.source_surface,
+            idempotency_key=payload.idempotency_key,
         )
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

@@ -66,6 +66,44 @@ def get_me(current_user: CurrentUser, db: DbSession) -> ProfileResponse:
     )
 
 
+class UsernameAvailabilityResponse(BaseModel):
+    available: bool
+    reason: str | None = None
+    normalized: str | None = None
+
+
+@router.get("/username-check", response_model=UsernameAvailabilityResponse)
+def check_username_availability(
+    username: str,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> UsernameAvailabilityResponse:
+    """Live-check whether a username is available. Called from the
+    onboarding Basics step as the user types (with a small debounce on
+    the client). Case-insensitive; owner sees their own current
+    username as available (so editing then reverting doesn't confuse
+    the form)."""
+    candidate = (username or "").strip().lower()
+    if len(candidate) < 3:
+        return UsernameAvailabilityResponse(available=False, reason="too_short", normalized=candidate)
+    if len(candidate) > 40:
+        return UsernameAvailabilityResponse(available=False, reason="too_long", normalized=candidate)
+    # Restrict to a safe URL-friendly charset. Matches how profile
+    # links get shared and prevents zero-width / homoglyph tricks.
+    import re
+    if not re.match(r"^[a-z0-9_.]+$", candidate):
+        return UsernameAvailabilityResponse(available=False, reason="invalid_chars", normalized=candidate)
+    duplicate = db.scalar(
+        select(UserProfile).where(
+            func.lower(UserProfile.username) == candidate,
+            UserProfile.user_id != current_user.id,
+        )
+    )
+    if duplicate is not None:
+        return UsernameAvailabilityResponse(available=False, reason="taken", normalized=candidate)
+    return UsernameAvailabilityResponse(available=True, normalized=candidate)
+
+
 @router.patch("", response_model=ProfileResponse)
 def patch_me(payload: ProfileUpdateRequest, current_user: CurrentUser, db: DbSession) -> ProfileResponse:
     profile = _ensure_profile(db, current_user.id, current_user.email)

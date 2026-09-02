@@ -121,6 +121,10 @@ class SwipeRecordCreate(BaseModel):
     session_id: str | None = Field(default=None, max_length=80)
     reason: str | None = Field(default=None, max_length=280)
     source_surface: str | None = Field(default=None, max_length=80)
+    # Onboarding spec §12: idempotent swipe writes. Client sends a
+    # UUID-per-decision; server dedupes on (user_id, idempotency_key)
+    # so a network retry can't create a double signal.
+    idempotency_key: str | None = Field(default=None, max_length=80)
 
 
 class SceneDnaEvidenceTitle(BaseModel):

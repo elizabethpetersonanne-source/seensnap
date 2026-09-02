@@ -1822,9 +1822,23 @@ def record_swipe(
     session_id: str | None = None,
     reason: str | None = None,
     source_surface: str | None = None,
+    idempotency_key: str | None = None,
 ) -> SwipeRecord:
     if direction not in SWIPE_DIRECTION_WEIGHTS:
         raise ValueError(f"Unsupported swipe direction: {direction}")
+
+    # Idempotency per Onboarding spec §12: if the client already
+    # posted this key, return the existing record without creating a
+    # duplicate signal. Skip when no key was provided (legacy callers).
+    if idempotency_key:
+        existing = db.scalar(
+            select(SwipeRecord).where(
+                SwipeRecord.user_id == user_id,
+                SwipeRecord.idempotency_key == idempotency_key,
+            )
+        )
+        if existing is not None:
+            return existing
 
     record = SwipeRecord(
         user_id=user_id,
@@ -1834,6 +1848,7 @@ def record_swipe(
         session_id=session_id,
         reason=reason,
         source_surface=source_surface,
+        idempotency_key=idempotency_key,
     )
     db.add(record)
     db.flush()

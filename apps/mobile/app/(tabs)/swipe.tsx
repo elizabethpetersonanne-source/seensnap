@@ -478,6 +478,10 @@ export default function SwipeTab() {
         pause_ms: pauseMs,
         session_id: sessionId,
         reason: item.reason,
+        // Per-decision idempotency key (spec §12). A retried POST
+        // with the same key returns the existing record instead of
+        // creating a second signal for the same swipe.
+        idempotency_key: `${sessionId}:${item.title.id}:${direction}:${cardStartRef.current}`,
       }),
     })
       .then((res) => {

@@ -87,6 +87,12 @@ class SwipeRecord(Base):
     session_id: Mapped[str | None] = mapped_column(String(80))
     reason: Mapped[str | None] = mapped_column(String(280))
     source_surface: Mapped[str | None] = mapped_column(String(80))
+    # Idempotency key per Onboarding spec §12 API behavior: "Swipe
+    # writes must be idempotent to prevent double signals during
+    # retry". Client-generated (UUID); server dedupes on
+    # (user_id, idempotency_key). Nullable for backfill compat —
+    # historical rows have no key, new writes should always supply one.
+    idempotency_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

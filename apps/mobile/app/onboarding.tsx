@@ -23,20 +23,9 @@ import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
 import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
 
-const COUNTRIES = [
-  { code: "US", label: "United States" },
-  { code: "GB", label: "United Kingdom" },
-  { code: "CA", label: "Canada" },
-  { code: "AU", label: "Australia" },
-  { code: "SE", label: "Sweden" },
-  { code: "NO", label: "Norway" },
-  { code: "DE", label: "Germany" },
-  { code: "FR", label: "France" },
-  { code: "NL", label: "Netherlands" },
-  { code: "BR", label: "Brazil" },
-  { code: "IN", label: "India" },
-  { code: "JP", label: "Japan" },
-];
+// COUNTRIES list removed — region picker no longer in the onboarding
+// flow per spec §7 (country_code defaults to "US" at account creation
+// and can be adjusted in Settings later).
 
 const STREAMING_SERVICES = [
   { id: "netflix", label: "Netflix" },
@@ -52,9 +41,12 @@ const STREAMING_SERVICES = [
 const CALIBRATION_TARGET = 20;
 const SWIPE_THRESHOLD = 80;
 
-type Step = "welcome" | "basics" | "region" | "services" | "calibrate" | "dna" | "first-list" | "complete";
-
-const LIST_PROMPTS = ["Weekend Watch", "Hidden Gems", "Classics to Catch Up On"];
+// Spec §7 flow: Welcome → Auth → Basics → Streaming Services →
+// Calibration Intro → Calibration → SceneDNA Reveal → Discover.
+// Region step is intentionally dropped per spec (country defaults to
+// "US" at account creation and can be adjusted in Settings). First-list
+// creation is EXPLICITLY a Non-Goal per spec §4.
+type Step = "welcome" | "basics" | "services" | "calibrate-intro" | "calibrate" | "dna" | "complete";
 
 type Title = {
   id: string;
@@ -69,10 +61,50 @@ export default function OnboardingScreen() {
   const { sessionToken, user, updateSessionUser } = useAuth();
   const [step, setStep] = useState<Step>("welcome");
   const [displayName, setDisplayName] = useState(user?.display_name ?? "");
-  const [selectedCountry, setSelectedCountry] = useState("US");
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
-  const [listName, setListName] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  // Handle (unique username). Live-checked against
+  // GET /me/username-check as the user types (small debounce).
+  const [handle, setHandle] = useState("");
+  const [handleStatus, setHandleStatus] = useState<
+    | { state: "idle" }
+    | { state: "checking" }
+    | { state: "available"; normalized: string }
+    | { state: "unavailable"; reason: string }
+  >({ state: "idle" });
+  const handleCheckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const checkHandleAvailability = useCallback(
+    (value: string) => {
+      if (handleCheckTimer.current) clearTimeout(handleCheckTimer.current);
+      if (!sessionToken) return;
+      const trimmed = value.trim().toLowerCase();
+      if (!trimmed) {
+        setHandleStatus({ state: "idle" });
+        return;
+      }
+      setHandleStatus({ state: "checking" });
+      handleCheckTimer.current = setTimeout(async () => {
+        try {
+          const resp = await apiRequest<{
+            available: boolean;
+            reason?: string | null;
+            normalized?: string | null;
+          }>(`/me/username-check?username=${encodeURIComponent(trimmed)}`, {
+            token: sessionToken,
+          });
+          if (resp.available) {
+            setHandleStatus({ state: "available", normalized: resp.normalized ?? trimmed });
+          } else {
+            setHandleStatus({ state: "unavailable", reason: resp.reason ?? "unavailable" });
+          }
+        } catch {
+          setHandleStatus({ state: "idle" });
+        }
+      }, 320);
+    },
+    [sessionToken],
+  );
 
   // Calibration state
   const [candidates, setCandidates] = useState<Title[]>([]);
@@ -165,7 +197,12 @@ export default function OnboardingScreen() {
   const pan = useRef(new Animated.ValueXY()).current;
 
   const recordSwipe = useCallback(
-    async (direction: "left" | "right", titleId: string) => {
+    async (
+      direction: "left" | "right",
+      titleId: string,
+      inputMethod: "gesture" | "button",
+      position: number,
+    ) => {
       if (!sessionToken) return;
       try {
         await apiRequest("/titles/swipes", {
@@ -175,35 +212,46 @@ export default function OnboardingScreen() {
             title_id: titleId,
             direction,
             source_surface: "onboarding_calibration",
+            // Spec §12: idempotent swipe writes. Per-decision key so
+            // a retried POST doesn't count as a double signal.
+            idempotency_key: `onboarding:${titleId}:${direction}:${position}`,
           }),
         });
-        trackEvent("onboarding_swipe_action", { direction, swipe_number: swipeCount + 1 });
+        // Spec §14 canonical event with action/title_id/position/input_method.
+        trackEvent("onboarding_calibration_action", {
+          action: direction === "left" ? "pass" : "more_like_this",
+          title_id: titleId,
+          position,
+          input_method: inputMethod,
+        });
       } catch {
+        trackEvent("onboarding_error", { step: "calibrate", code: "swipe_record_failed" });
         // Non-blocking — swipe is best-effort during calibration
       }
     },
-    [sessionToken, swipeCount]
+    [sessionToken]
   );
 
   const swipeCard = useCallback(
-    (direction: "left" | "right") => {
+    (direction: "left" | "right", inputMethod: "gesture" | "button" = "gesture") => {
       const card = candidates[calibrateIndex];
       if (!card) return;
 
       const toX = direction === "right" ? 400 : -400;
+      const positionAtSwipe = swipeCount + 1;
       Animated.timing(pan, {
         toValue: { x: toX, y: 0 },
         duration: 200,
         useNativeDriver: true,
       }).start(() => {
         pan.setValue({ x: 0, y: 0 });
-        void recordSwipe(direction, card.id);
+        void recordSwipe(direction, card.id, inputMethod, positionAtSwipe);
         const next = calibrateIndex + 1;
         const nextCount = swipeCount + 1;
         setCalibrateIndex(next);
         setSwipeCount(nextCount);
         if (nextCount >= CALIBRATION_TARGET) {
-          trackEvent("taste_calibration_completed", { signals: nextCount });
+          trackEvent("onboarding_calibration_completed", { signals: nextCount });
           advance("dna");
         }
       });
@@ -216,7 +264,10 @@ export default function OnboardingScreen() {
   const skipCard = useCallback(() => {
     const card = candidates[calibrateIndex];
     if (!card) return;
-    trackEvent("onboarding_swipe_skip", { position: calibrateIndex + 1 });
+    // Non-decision — no swipe event recorded, no signal counted.
+    // Spec §14 has no dedicated skip event; the funnel captures
+    // "reached calibration but didn't complete" via _exited/_resumed.
+    trackEvent("onboarding_calibration_exited", { position: calibrateIndex + 1, reason: "card_skip" });
     setCalibrateIndex((i) => i + 1);
     // If we're about to run out of cards, gracefully advance to the DNA reveal
     // even without hitting 20 — the reveal already handles low-signal state.
@@ -246,39 +297,52 @@ export default function OnboardingScreen() {
 
   async function saveBasicsAndContinue() {
     if (!sessionToken) {
-      advance("region");
+      advance("services");
       return;
     }
     const name = displayName.trim();
     if (!name) {
-      advance("region");
+      advance("services");
       return;
     }
     setIsSaving(true);
     try {
+      const body: Record<string, string> = { display_name: name };
+      // Only include username in the PATCH when it passed the live
+      // availability check — sending an unchecked or unavailable
+      // handle would either 409 or silently apply. Handle is
+      // optional in Basics: users who don't set one get whatever
+      // default was assigned at signup (email-derived).
+      if (handleStatus.state === "available") {
+        body.username = handleStatus.normalized;
+      }
       await apiRequest("/me", {
         method: "PATCH",
         token: sessionToken,
-        body: JSON.stringify({ display_name: name }),
+        body: JSON.stringify(body),
       });
       await updateSessionUser({ display_name: name });
+      trackEvent("onboarding_profile_completed", {
+        set_handle: handleStatus.state === "available",
+      });
     } catch {
+      trackEvent("onboarding_error", { step: "basics", code: "profile_save_failed" });
       // Don't block onboarding on name-save failure — the user can edit later
     } finally {
       setIsSaving(false);
-      advance("region");
+      advance("services");
     }
   }
 
-  async function saveAndContinue() {
+  async function saveAndContinue(skipped = false) {
     if (!sessionToken) return;
     setIsSaving(true);
     try {
-      await apiRequest("/me", {
-        method: "PATCH",
-        token: sessionToken,
-        body: JSON.stringify({ country_code: selectedCountry }),
-      });
+      // Region is no longer part of the onboarding flow per spec §7 —
+      // country_code stays at the account default (usually "US") and
+      // can be adjusted in Settings later. Only streaming providers
+      // are captured here; provider selection is availability data,
+      // not taste evidence, per spec §8.4 data rule.
       await apiRequest("/me/preferences", {
         method: "PATCH",
         token: sessionToken,
@@ -286,10 +350,14 @@ export default function OnboardingScreen() {
           connected_streaming_services: Array.from(selectedServices),
         }),
       });
-      trackEvent("onboarding_started", { country: selectedCountry });
-      advance("calibrate");
+      trackEvent(
+        skipped ? "onboarding_providers_skipped" : "onboarding_providers_completed",
+        { services_count: selectedServices.size },
+      );
+      advance("calibrate-intro");
     } catch {
-      advance("calibrate");
+      trackEvent("onboarding_error", { step: "services", code: "prefs_save_failed" });
+      advance("calibrate-intro");
     } finally {
       setIsSaving(false);
     }
@@ -305,11 +373,6 @@ export default function OnboardingScreen() {
         body: JSON.stringify({ onboarding_completed: true }),
       });
       await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
-      trackEvent("onboarding_completed", {
-        country: selectedCountry,
-        services_count: selectedServices.size,
-        swipes: swipeCount,
-      });
     } catch {
       await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
     } finally {
@@ -326,15 +389,22 @@ export default function OnboardingScreen() {
         body: JSON.stringify({ onboarding_completed: true }),
       });
       await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
-      trackEvent("onboarding_skipped", { step, swipes: swipeCount });
+      // Per spec §5.5 Preserve Momentum: skip is neutral, never
+      // recorded as dislike. Spec §14 event name: no dedicated "skip"
+      // event required, just onboarding_completed with the state we
+      // reached. This preserves funnel visibility without inventing
+      // a signal.
+      trackEvent("onboarding_completed", { swipes: swipeCount, skipped_at: step });
     } catch {
       await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
     }
     router.replace("/(tabs)");
   }
 
-  // Progress bar — show during calibration
-  const MAIN_STEPS: Step[] = ["welcome", "basics", "region", "services", "calibrate"];
+  // Progress bar — show as small dots between Basics and Calibration.
+  // Removed the "region" step per spec §7 (country_code stays at
+  // account default). Removed "first-list" step per spec §4 Non-Goals.
+  const MAIN_STEPS: Step[] = ["welcome", "basics", "services", "calibrate-intro", "calibrate"];
   const stepIndex = MAIN_STEPS.indexOf(step);
   const showDots = stepIndex !== -1 && step !== "welcome";
 
@@ -365,38 +435,24 @@ export default function OnboardingScreen() {
         ) : null}
       </View>
 
-      {/* WELCOME */}
+      {/* WELCOME — spec §8.1 canonical hero copy. */}
       {step === "welcome" ? (
         <Animated.View style={[styles.stepWrap, slideStyle]}>
           <View style={styles.headerBlock}>
             <Text style={styles.eyebrow}>SEENSNAP</Text>
             <View style={styles.goldRule} />
-            <Text style={styles.serif}>Taste is{"\n"}personal.</Text>
+            <Text style={styles.serif}>Find what{"\n"}to watch next.</Text>
           </View>
           <Text style={styles.body}>
-            Swipe through titles to teach SeenSnap your taste. Two minutes of calibration unlocks
-            your Scene DNA — a living taste profile that makes every recommendation sharper.
+            Build your SceneDNA from what you love, save picks, and discover titles worth
+            your time.
           </Text>
-          <View style={styles.propList}>
-            <View style={styles.propRow}>
-              <Text style={styles.propIndex}>01</Text>
-              <Text style={styles.propText}>Pick your region and streaming subscriptions.</Text>
-            </View>
-            <View style={styles.propRow}>
-              <Text style={styles.propIndex}>02</Text>
-              <Text style={styles.propText}>Swipe 20 titles to calibrate your taste.</Text>
-            </View>
-            <View style={styles.propRow}>
-              <Text style={styles.propIndex}>03</Text>
-              <Text style={styles.propText}>Unlock your Scene DNA and start discovering.</Text>
-            </View>
-          </View>
           <GoldButton
             label="Get started"
             icon="arrow-forward"
             size="lg"
             onPress={() => {
-              trackEvent("onboarding_started", {});
+              trackEvent("onboarding_welcome_viewed", {});
               advance("basics");
             }}
             style={styles.cta}
@@ -404,7 +460,12 @@ export default function OnboardingScreen() {
         </Animated.View>
       ) : null}
 
-      {/* BASICS — display name */}
+      {/* BASICS — display name + unique handle. Handle is optional
+           per spec §8.3 ("Optional field: Profile photo" — profile
+           photo is optional; display name + handle are required
+           per §7 "Minimal fields required"). We treat handle as
+           optional-with-nudge: it's a required input, but skipping
+           lets us fall back to the email-derived default from signup. */}
       {step === "basics" ? (
         <KeyboardAvoidingView
           style={{ flex: 1 }}
@@ -412,7 +473,7 @@ export default function OnboardingScreen() {
         >
           <Animated.View style={[styles.stepWrap, slideStyle]}>
             <View style={styles.headerBlock}>
-              <Text style={styles.eyebrow}>STEP 1 / 4</Text>
+              <Text style={styles.eyebrow}>STEP 1 / 3</Text>
               <View style={styles.goldRule} />
               <Text style={styles.serif}>What should{"\n"}we call you?</Text>
             </View>
@@ -429,9 +490,48 @@ export default function OnboardingScreen() {
               onChangeText={setDisplayName}
               style={styles.nameInput}
               maxLength={60}
+              returnKeyType="next"
+            />
+            <Text style={styles.bodySmall}>
+              Pick a handle — this is your public @-name. Letters, numbers, dots and underscores.
+            </Text>
+            <TextInput
+              autoCapitalize="none"
+              autoComplete="username"
+              autoCorrect={false}
+              placeholder="@yourhandle"
+              placeholderTextColor={colors.muted2}
+              value={handle}
+              onChangeText={(v) => {
+                setHandle(v);
+                checkHandleAvailability(v);
+              }}
+              style={styles.nameInput}
+              maxLength={40}
               returnKeyType="done"
               onSubmitEditing={() => void saveBasicsAndContinue()}
             />
+            {handleStatus.state === "checking" ? (
+              <Text style={[styles.bodySmall, { color: colors.muted2, marginTop: -spacing.lg }]}>
+                Checking…
+              </Text>
+            ) : handleStatus.state === "available" ? (
+              <Text style={[styles.bodySmall, { color: colors.accent, marginTop: -spacing.lg }]}>
+                ✓ @{handleStatus.normalized} is available
+              </Text>
+            ) : handleStatus.state === "unavailable" ? (
+              <Text style={[styles.bodySmall, { color: colors.danger ?? "#E74C3C", marginTop: -spacing.lg }]}>
+                {handleStatus.reason === "taken"
+                  ? "Already taken — try another."
+                  : handleStatus.reason === "too_short"
+                    ? "At least 3 characters."
+                    : handleStatus.reason === "too_long"
+                      ? "Under 40 characters."
+                      : handleStatus.reason === "invalid_chars"
+                        ? "Letters, numbers, dots and underscores only."
+                        : "Not available."}
+              </Text>
+            ) : null}
             <GoldButton
               label={isSaving ? "Saving..." : "Continue"}
               icon="arrow-forward"
@@ -443,51 +543,18 @@ export default function OnboardingScreen() {
         </KeyboardAvoidingView>
       ) : null}
 
-      {/* REGION */}
-      {step === "region" ? (
-        <Animated.View style={[styles.stepWrap, slideStyle]}>
-          <View style={styles.headerBlock}>
-            <Text style={styles.eyebrow}>STEP 2 / 4</Text>
-            <View style={styles.goldRule} />
-            <Text style={styles.serif}>Where are{"\n"}you watching?</Text>
-          </View>
-          <Text style={styles.bodySmall}>We'll surface providers available in your region.</Text>
-          <ScrollView style={styles.listWrap} showsVerticalScrollIndicator={false}>
-            {COUNTRIES.map((c) => (
-              <Pressable
-                key={c.code}
-                style={[styles.listItem, selectedCountry === c.code && styles.listItemSelected]}
-                onPress={() => setSelectedCountry(c.code)}
-              >
-                <Text style={[styles.listItemText, selectedCountry === c.code && styles.listItemTextSelected]}>
-                  {c.label}
-                </Text>
-                {selectedCountry === c.code ? (
-                  <Text style={styles.listCheckmark}>✓</Text>
-                ) : null}
-              </Pressable>
-            ))}
-          </ScrollView>
-          <GoldButton
-            label="Continue"
-            icon="arrow-forward"
-            size="lg"
-            onPress={() => advance("services")}
-            style={styles.cta}
-          />
-        </Animated.View>
-      ) : null}
-
-      {/* STREAMING SERVICES */}
+      {/* STREAMING SERVICES — spec §8.4 canonical heading + copy +
+           explicit "Skip for now" secondary action. */}
       {step === "services" ? (
         <Animated.View style={[styles.stepWrap, slideStyle]}>
           <View style={styles.headerBlock}>
-            <Text style={styles.eyebrow}>STEP 3 / 4</Text>
+            <Text style={styles.eyebrow}>STEP 2 / 3</Text>
             <View style={styles.goldRule} />
-            <Text style={styles.serif}>What are{"\n"}you subscribed to?</Text>
+            <Text style={styles.serif}>Where do{"\n"}you watch?</Text>
           </View>
           <Text style={styles.bodySmall}>
-            Pick as many as you want. We'll show the right streaming options first.
+            Choose any services you use. We'll prioritize titles you can stream — but this
+            won't limit what you can discover.
           </Text>
           <View style={styles.serviceGrid}>
             {STREAMING_SERVICES.map((s) => {
@@ -507,14 +574,57 @@ export default function OnboardingScreen() {
             })}
           </View>
           <GoldButton
-            label={isSaving ? "Saving..." : "Start calibrating"}
+            label={isSaving ? "Saving..." : "Continue"}
             icon="arrow-forward"
             size="lg"
-            onPress={() => void saveAndContinue()}
+            onPress={() => void saveAndContinue(false)}
             style={styles.cta}
           />
-          <Pressable style={styles.skipLink} onPress={() => void saveAndContinue()}>
-            <Text style={styles.skipLinkText}>Skip — I'll set this up later</Text>
+          <Pressable style={styles.skipLink} onPress={() => void saveAndContinue(true)}>
+            <Text style={styles.skipLinkText}>Skip for now</Text>
+          </Pressable>
+        </Animated.View>
+      ) : null}
+
+      {/* CALIBRATION INTRO — spec §8.5 sets expectations before the
+           first swipe. Shown ONCE. No multi-screen tutorial. */}
+      {step === "calibrate-intro" ? (
+        <Animated.View style={[styles.stepWrap, slideStyle]}>
+          <View style={styles.headerBlock}>
+            <Text style={styles.eyebrow}>STEP 3 / 3</Text>
+            <View style={styles.goldRule} />
+            <Text style={styles.serif}>Let's tune{"\n"}your picks.</Text>
+          </View>
+          <Text style={styles.body}>
+            React to a few titles so SeenSnap can start learning what fits you. Aim for 20 —
+            you can leave anytime.
+          </Text>
+          <View style={styles.propList}>
+            <View style={styles.propRow}>
+              <Text style={styles.propIndex}>←</Text>
+              <Text style={styles.propText}>Swipe left: Pass</Text>
+            </View>
+            <View style={styles.propRow}>
+              <Text style={styles.propIndex}>→</Text>
+              <Text style={styles.propText}>Swipe right: More Like This</Text>
+            </View>
+            <View style={styles.propRow}>
+              <Text style={styles.propIndex}>↑</Text>
+              <Text style={styles.propText}>Save it to My Picks — a strong positive signal</Text>
+            </View>
+          </View>
+          <GoldButton
+            label="Start swiping"
+            icon="arrow-forward"
+            size="lg"
+            onPress={() => {
+              trackEvent("onboarding_calibration_started", {});
+              advance("calibrate");
+            }}
+            style={styles.cta}
+          />
+          <Pressable style={styles.skipLink} onPress={() => void skip()}>
+            <Text style={styles.skipLinkText}>Do this later</Text>
           </Pressable>
         </Animated.View>
       ) : null}
@@ -631,13 +741,13 @@ export default function OnboardingScreen() {
 
               {/* Action bar */}
               <View style={styles.actionBar}>
-                <Pressable style={styles.actionBtn} onPress={() => swipeCard("left")}>
+                <Pressable style={styles.actionBtn} onPress={() => swipeCard("left", "button")}>
                   <Text style={styles.actionBtnTextPass}>← PASS</Text>
                 </Pressable>
                 <Pressable style={styles.actionBtn} onPress={skipCard} hitSlop={6}>
                   <Text style={styles.actionBtnTextSkip}>SKIP</Text>
                 </Pressable>
-                <Pressable style={styles.actionBtn} onPress={() => swipeCard("right")}>
+                <Pressable style={styles.actionBtn} onPress={() => swipeCard("right", "button")}>
                   <Text style={styles.actionBtnTextLike}>MORE LIKE THIS →</Text>
                 </Pressable>
               </View>
@@ -646,121 +756,51 @@ export default function OnboardingScreen() {
         </View>
       ) : null}
 
-      {/* SCENE DNA REVEAL */}
+      {/* SCENE DNA REVEAL — spec §8.7 canonical HONEST state.
+           No invented "signals collected / recs to unlock ∞" stats
+           (those were flagged in spec §8.7: "Do not render empty
+           charts, invented percentages, personality labels, or
+           unsupported strongest signals.")
+           The reveal reflects reality: if the user reached the 20-swipe
+           target, their profile is forming; if they skipped early,
+           we say so — same honest headline either way.
+           Primary CTA routes to Discover per spec §7 handoff. */}
       {step === "dna" ? (
         <Animated.View style={[styles.stepWrap, slideStyle]}>
           <View style={styles.headerBlock}>
-            <Text style={styles.eyebrow}>YOUR SCENE DNA</Text>
+            <Text style={styles.eyebrow}>YOUR SCENEDNA</Text>
             <View style={styles.goldRule} />
-            <Text style={styles.serif}>Taste profile{"\n"}unlocked.</Text>
+            <Text style={styles.serif}>Your SceneDNA{"\n"}is taking shape.</Text>
           </View>
           <Text style={styles.body}>
-            Based on {swipeCount} calibration signals, SeenSnap has built your initial taste
-            profile. It gets sharper every time you swipe, save, or rate.
+            {swipeCount >= 5
+              ? `You made ${swipeCount} decisions — that's a real head start. The more you rate, save, and swipe, the more personal your recommendations become.`
+              : "The more you rate, save, and swipe, the more personal your recommendations become."}
           </Text>
-          <View style={styles.dnaStats}>
-            <View style={styles.dnaStat}>
-              <Text style={styles.dnaStatValue}>{swipeCount}</Text>
-              <Text style={styles.dnaStatLabel}>Signals collected</Text>
-            </View>
-            <View style={styles.dnaStatDivider} />
-            <View style={styles.dnaStat}>
-              <Text style={styles.dnaStatValue}>∞</Text>
-              <Text style={styles.dnaStatLabel}>Recs to unlock</Text>
-            </View>
-          </View>
           <GoldButton
-            label="Continue"
+            label="Go to Discover"
             icon="arrow-forward"
             size="lg"
-            onPress={() => {
-              trackEvent("scene_dna_first_view", { swipes: swipeCount });
-              advance("first-list");
+            onPress={async () => {
+              trackEvent("onboarding_scenedna_reveal_viewed", { swipes: swipeCount });
+              await completeOnboarding();
+              trackEvent("onboarding_completed", {
+                services_count: selectedServices.size,
+                swipes: swipeCount,
+              });
+              router.replace("/(tabs)");
             }}
             style={styles.cta}
           />
+          <Pressable
+            style={styles.skipLink}
+            onPress={() => {
+              advance("calibrate");
+            }}
+          >
+            <Text style={styles.skipLinkText}>Keep swiping</Text>
+          </Pressable>
         </Animated.View>
-      ) : null}
-
-      {/* FIRST LIST — spec §07: optional custom list creation from onboarding */}
-      {step === "first-list" ? (
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-        >
-          <Animated.View style={[styles.stepWrap, slideStyle]}>
-            <View style={styles.headerBlock}>
-              <Text style={styles.eyebrow}>OPTIONAL</Text>
-              <View style={styles.goldRule} />
-              <Text style={styles.serif}>Start your{"\n"}first list.</Text>
-            </View>
-            <Text style={styles.bodySmall}>
-              Make discovery yours. Name a list, or use a prompt — you can always change it later.
-              My Picks already exists as your default archive.
-            </Text>
-            <TextInput
-              autoCapitalize="words"
-              autoCorrect={false}
-              placeholder="e.g. Weekend Watch"
-              placeholderTextColor={colors.muted2}
-              value={listName}
-              onChangeText={setListName}
-              style={styles.nameInput}
-              maxLength={60}
-              returnKeyType="done"
-            />
-            <View style={styles.serviceGrid}>
-              {LIST_PROMPTS.map((prompt) => {
-                const selected = listName === prompt;
-                return (
-                  <Pressable
-                    key={prompt}
-                    style={[styles.serviceChip, selected && styles.serviceChipSelected]}
-                    onPress={() => setListName(prompt)}
-                  >
-                    {selected ? <Text style={styles.serviceCheck}>✓ </Text> : null}
-                    <Text style={[styles.serviceChipText, selected && styles.serviceChipTextSelected]}>
-                      {prompt}
-                    </Text>
-                  </Pressable>
-                );
-              })}
-            </View>
-            <GoldButton
-              label={isSaving ? "Saving..." : listName.trim() ? "Create list" : "Enter SeenSnap"}
-              icon="arrow-forward"
-              size="lg"
-              onPress={async () => {
-                setIsSaving(true);
-                if (listName.trim() && sessionToken) {
-                  try {
-                    await apiRequest("/me/watchlist/lists", {
-                      method: "POST",
-                      token: sessionToken,
-                      body: JSON.stringify({ name: listName.trim() }),
-                    });
-                    trackEvent("first_custom_list_created", { source: "onboarding" });
-                  } catch {
-                    // Non-blocking — user can create later.
-                  }
-                }
-                await completeOnboarding();
-                advance("complete");
-              }}
-              style={styles.cta}
-            />
-            <Pressable
-              style={styles.skipLink}
-              onPress={async () => {
-                setIsSaving(true);
-                await completeOnboarding();
-                advance("complete");
-              }}
-            >
-              <Text style={styles.skipLinkText}>Skip — I'll set this up later</Text>
-            </Pressable>
-          </Animated.View>
-        </KeyboardAvoidingView>
       ) : null}
 
       {/* COMPLETE */}
