@@ -388,7 +388,23 @@ export default function SwipeTab() {
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => true,
+      // Claim the touch aggressively so the parent ScrollView doesn't
+      // steal horizontal drags. The old `() => true` returned true only
+      // on the FIRST move sample; some browsers / RN-Web then handed the
+      // gesture to the scroll container. Capture-phase variants and the
+      // termination guard below keep the card in charge for the whole
+      // gesture. Fixes "can't swipe easily with your finger" on mobile.
+      onStartShouldSetPanResponderCapture: () => true,
       onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: (_, gesture) => {
+        // Only "capture" (steal from scroll) when the movement is
+        // clearly horizontal-ish — a modest 4px threshold. Pure
+        // vertical scrolls still work if the user isn't touching the
+        // card intending to swipe.
+        return Math.abs(gesture.dx) > 4 && Math.abs(gesture.dx) > Math.abs(gesture.dy);
+      },
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
       onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], { useNativeDriver: false }),
       onPanResponderRelease: (_, gesture) => {
         if (gesture.dx > SWIPE_X_THRESHOLD) {
@@ -631,15 +647,23 @@ export default function SwipeTab() {
   // banner and never let it grow beyond ~420px on huge displays.
   const { width: viewportWidth } = useWindowDimensions();
   const isWide = viewportWidth >= 900;
-  const workspacePadding = viewportWidth < 480 ? 16 : 20;
+  const workspacePadding = viewportWidth < 480 ? 12 : 20;
   const workspaceMaxWidth = 980;
   const availableWorkspaceWidth = Math.min(viewportWidth, workspaceMaxWidth);
-  const posterColumnWidth = isWide
-    ? Math.min(400, (availableWorkspaceWidth - workspacePadding * 2 - 32) * 0.48)
-    : availableWorkspaceWidth - workspacePadding * 2;
+  // Side-by-side (poster left / details right) at EVERY viewport per
+  // user feedback: on mobile, the old vertical stack forced scrolling
+  // to see details. Poster share is ~45% on narrow / ~48% on wide so
+  // both columns are usable on a phone without wrapping. The inter-
+  // column gap is workspaceGap.
+  const workspaceGap = isWide ? 32 : 12;
+  const posterShare = isWide ? 0.48 : 0.45;
+  const posterColumnWidth = Math.min(
+    isWide ? 400 : 260,
+    (availableWorkspaceWidth - workspacePadding * 2 - workspaceGap) * posterShare,
+  );
   const posterMaxWidth = isWide
     ? Math.min(400, Math.max(320, posterColumnWidth))
-    : Math.min(380, Math.max(240, posterColumnWidth - 24));
+    : Math.max(120, posterColumnWidth);
 
   animateSwipeRef.current = animateSwipe;
   openDetailsForActiveRef.current = () => {
@@ -935,17 +959,17 @@ export default function SwipeTab() {
         </Animated.View>
       ) : null}
 
-      {/* Swipe workspace per spec §6.3 — narrow = single column stack,
-          wide (>= 900) = deck on the left + details rail on the right.
-          Same detailsAndControls JSX in both compositions so behavior
-          stays identical. */}
+      {/* Swipe workspace — always side-by-side (poster left, details
+          right) so a phone user doesn't have to scroll to see the
+          synopsis / streaming / reason. Column widths are computed
+          from the viewport so nothing overflows on 375px. */}
       {!loading && !revealVisible ? (
-        <View style={[styles.workspace, isWide && styles.workspaceWide]}>
+        <View style={[styles.workspace, { gap: workspaceGap }]}>
           {/* Poster deck column */}
           <View
             style={[
               styles.deckColumn,
-              { width: isWide ? posterColumnWidth : "100%" },
+              { width: posterColumnWidth },
             ]}
           >
             <View
@@ -1040,8 +1064,10 @@ export default function SwipeTab() {
             </View>
           </View>
 
-          {/* Details + controls column */}
-          <View style={[styles.railColumn, isWide && { flex: 1, paddingLeft: 32 }]}>
+          {/* Details + controls column — always flex:1 so it takes
+              the remaining workspace width, gap is applied by the
+              parent row instead of paddingLeft. */}
+          <View style={[styles.railColumn, { flex: 1 }]}>
             {detailsAndControls}
           </View>
         </View>
@@ -1807,11 +1833,16 @@ const styles = StyleSheet.create({
   },
 
   workspace: {
-    flexDirection: "column",
-    alignItems: "center",
-    gap: spacing.lg,
+    // Always row per user feedback — poster left, details right at
+    // every viewport. Gap and column widths come from the caller
+    // (workspaceGap + posterColumnWidth) since they depend on the
+    // measured viewport.
+    flexDirection: "row",
+    alignItems: "flex-start",
   },
   workspaceWide: {
+    // No-op retained for API compat with older commits that referenced
+    // it. New code should not add narrow-vs-wide direction switches.
     flexDirection: "row",
     alignItems: "flex-start",
   },
@@ -1819,7 +1850,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   railColumn: {
-    width: "100%",
+    minWidth: 0,
   },
 
   // Deck — 2:3 portrait container that holds the active card + queued
@@ -1861,6 +1892,13 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.6,
     shadowRadius: 24,
     elevation: 12,
+    // Web-only: block the browser's default touch-scroll while
+    // dragging so the PanResponder receives every move event without
+    // the parent ScrollView stealing the gesture. RN Native ignores
+    // this CSS property; RN-Web forwards it to the div. `none` means
+    // no browser-managed scrolling starts on this element — the card
+    // owns the gesture end-to-end.
+    touchAction: "none",
   },
   deckActivePoster: {
     ...StyleSheet.absoluteFillObject,
