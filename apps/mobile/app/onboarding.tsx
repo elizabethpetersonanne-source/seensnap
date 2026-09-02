@@ -57,6 +57,109 @@ type Title = {
   genres: string[];
 };
 
+// Extracted body of the Basics step so the same JSX can render inside
+// a KeyboardAvoidingView on native and a plain ScrollView on web
+// without duplicating the form markup.
+type HandleStatus =
+  | { state: "idle" }
+  | { state: "checking" }
+  | { state: "available"; normalized: string }
+  | { state: "unavailable"; reason: string };
+
+function BasicsBody({
+  slideStyle,
+  displayName,
+  setDisplayName,
+  handle,
+  setHandle,
+  checkHandleAvailability,
+  handleStatus,
+  isSaving,
+  onContinue,
+}: {
+  slideStyle: { transform: { translateX: Animated.AnimatedInterpolation<string | number> }[] };
+  displayName: string;
+  setDisplayName: (v: string) => void;
+  handle: string;
+  setHandle: (v: string) => void;
+  checkHandleAvailability: (v: string) => void;
+  handleStatus: HandleStatus;
+  isSaving: boolean;
+  onContinue: () => void;
+}) {
+  return (
+    <Animated.View style={[styles.stepWrap, slideStyle]}>
+      <View style={styles.headerBlock}>
+        <Text style={styles.eyebrow}>STEP 1 / 3</Text>
+        <View style={styles.goldRule} />
+        <Text style={styles.serif}>What should{"\n"}we call you?</Text>
+      </View>
+      <Text style={styles.bodySmall}>
+        This is the name shown on your Picks, Teams and profile.
+      </Text>
+      <TextInput
+        autoCapitalize="words"
+        autoComplete="name"
+        autoCorrect={false}
+        placeholder="Your name"
+        placeholderTextColor={colors.muted2}
+        value={displayName}
+        onChangeText={setDisplayName}
+        style={styles.nameInput}
+        maxLength={60}
+        returnKeyType="next"
+      />
+      <Text style={styles.bodySmall}>
+        Pick a handle — this is your public @-name. Letters, numbers, dots and underscores.
+      </Text>
+      <TextInput
+        autoCapitalize="none"
+        autoComplete="username"
+        autoCorrect={false}
+        placeholder="@yourhandle"
+        placeholderTextColor={colors.muted2}
+        value={handle}
+        onChangeText={(v) => {
+          setHandle(v);
+          checkHandleAvailability(v);
+        }}
+        style={styles.nameInput}
+        maxLength={40}
+        returnKeyType="done"
+        onSubmitEditing={onContinue}
+      />
+      {handleStatus.state === "checking" ? (
+        <Text style={[styles.bodySmall, { color: colors.muted2, marginTop: -spacing.lg }]}>
+          Checking…
+        </Text>
+      ) : handleStatus.state === "available" ? (
+        <Text style={[styles.bodySmall, { color: colors.accent, marginTop: -spacing.lg }]}>
+          ✓ @{handleStatus.normalized} is available
+        </Text>
+      ) : handleStatus.state === "unavailable" ? (
+        <Text style={[styles.bodySmall, { color: colors.danger ?? "#E74C3C", marginTop: -spacing.lg }]}>
+          {handleStatus.reason === "taken"
+            ? "Already taken — try another."
+            : handleStatus.reason === "too_short"
+              ? "At least 3 characters."
+              : handleStatus.reason === "too_long"
+                ? "Under 40 characters."
+                : handleStatus.reason === "invalid_chars"
+                  ? "Letters, numbers, dots and underscores only."
+                  : "Not available."}
+        </Text>
+      ) : null}
+      <GoldButton
+        label={isSaving ? "Saving..." : "Continue"}
+        icon="arrow-forward"
+        size="lg"
+        onPress={onContinue}
+        style={styles.cta}
+      />
+    </Animated.View>
+  );
+}
+
 export default function OnboardingScreen() {
   const { sessionToken, user, updateSessionUser } = useAuth();
   const [step, setStep] = useState<Step>("welcome");
@@ -469,87 +572,50 @@ export default function OnboardingScreen() {
         </Animated.View>
       ) : null}
 
-      {/* BASICS — display name + unique handle. Handle is optional
-           per spec §8.3 ("Optional field: Profile photo" — profile
-           photo is optional; display name + handle are required
-           per §7 "Minimal fields required"). We treat handle as
-           optional-with-nudge: it's a required input, but skipping
-           lets us fall back to the email-derived default from signup. */}
+      {/* BASICS — display name + unique handle.
+           Prior version wrapped the step in KeyboardAvoidingView with
+           behavior=undefined on web, and inside that a
+           Animated.View style={[stepWrap:flex:1, slideStyle]}.
+           On some RN-Web versions the KAV rendered a wrapping div
+           without explicit sizing so the child flex:1 collapsed to
+           zero height = blank page reported after "Get Started".
+           Switched to a plain ScrollView on web — KAV is a no-op
+           there anyway (no on-screen keyboard) and ScrollView guarantees
+           a concrete render box + lets long content (name + handle +
+           status + CTA) scroll on short viewports. */}
       {step === "basics" ? (
-        <KeyboardAvoidingView
-          style={{ flex: 1 }}
-          behavior={Platform.OS === "ios" ? "padding" : undefined}
-        >
-          <Animated.View style={[styles.stepWrap, slideStyle]}>
-            <View style={styles.headerBlock}>
-              <Text style={styles.eyebrow}>STEP 1 / 3</Text>
-              <View style={styles.goldRule} />
-              <Text style={styles.serif}>What should{"\n"}we call you?</Text>
-            </View>
-            <Text style={styles.bodySmall}>
-              This is the name shown on your Picks, Teams and profile.
-            </Text>
-            <TextInput
-              autoCapitalize="words"
-              autoComplete="name"
-              autoCorrect={false}
-              placeholder="Your name"
-              placeholderTextColor={colors.muted2}
-              value={displayName}
-              onChangeText={setDisplayName}
-              style={styles.nameInput}
-              maxLength={60}
-              returnKeyType="next"
+        Platform.OS === "web" ? (
+          <ScrollView contentContainerStyle={styles.stepScroll}>
+            <BasicsBody
+              slideStyle={slideStyle}
+              displayName={displayName}
+              setDisplayName={setDisplayName}
+              handle={handle}
+              setHandle={setHandle}
+              checkHandleAvailability={checkHandleAvailability}
+              handleStatus={handleStatus}
+              isSaving={isSaving}
+              onContinue={() => void saveBasicsAndContinue()}
             />
-            <Text style={styles.bodySmall}>
-              Pick a handle — this is your public @-name. Letters, numbers, dots and underscores.
-            </Text>
-            <TextInput
-              autoCapitalize="none"
-              autoComplete="username"
-              autoCorrect={false}
-              placeholder="@yourhandle"
-              placeholderTextColor={colors.muted2}
-              value={handle}
-              onChangeText={(v) => {
-                setHandle(v);
-                checkHandleAvailability(v);
-              }}
-              style={styles.nameInput}
-              maxLength={40}
-              returnKeyType="done"
-              onSubmitEditing={() => void saveBasicsAndContinue()}
+          </ScrollView>
+        ) : (
+          <KeyboardAvoidingView
+            style={{ flex: 1 }}
+            behavior={Platform.OS === "ios" ? "padding" : undefined}
+          >
+            <BasicsBody
+              slideStyle={slideStyle}
+              displayName={displayName}
+              setDisplayName={setDisplayName}
+              handle={handle}
+              setHandle={setHandle}
+              checkHandleAvailability={checkHandleAvailability}
+              handleStatus={handleStatus}
+              isSaving={isSaving}
+              onContinue={() => void saveBasicsAndContinue()}
             />
-            {handleStatus.state === "checking" ? (
-              <Text style={[styles.bodySmall, { color: colors.muted2, marginTop: -spacing.lg }]}>
-                Checking…
-              </Text>
-            ) : handleStatus.state === "available" ? (
-              <Text style={[styles.bodySmall, { color: colors.accent, marginTop: -spacing.lg }]}>
-                ✓ @{handleStatus.normalized} is available
-              </Text>
-            ) : handleStatus.state === "unavailable" ? (
-              <Text style={[styles.bodySmall, { color: colors.danger ?? "#E74C3C", marginTop: -spacing.lg }]}>
-                {handleStatus.reason === "taken"
-                  ? "Already taken — try another."
-                  : handleStatus.reason === "too_short"
-                    ? "At least 3 characters."
-                    : handleStatus.reason === "too_long"
-                      ? "Under 40 characters."
-                      : handleStatus.reason === "invalid_chars"
-                        ? "Letters, numbers, dots and underscores only."
-                        : "Not available."}
-              </Text>
-            ) : null}
-            <GoldButton
-              label={isSaving ? "Saving..." : "Continue"}
-              icon="arrow-forward"
-              size="lg"
-              onPress={() => void saveBasicsAndContinue()}
-              style={styles.cta}
-            />
-          </Animated.View>
-        </KeyboardAvoidingView>
+          </KeyboardAvoidingView>
+        )
       ) : null}
 
       {/* STREAMING SERVICES — spec §8.4 canonical heading + copy +
@@ -875,6 +941,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.xl,
     paddingTop: spacing.lg,
     paddingBottom: spacing.lg,
+  },
+  stepScroll: {
+    // ScrollView contentContainerStyle for the web variant of the
+    // basics step. flexGrow ensures the child Animated.View's flex:1
+    // has a concrete parent height even when the browser hasn't laid
+    // out anything yet.
+    flexGrow: 1,
   },
   completeWrap: {
     justifyContent: "center",
