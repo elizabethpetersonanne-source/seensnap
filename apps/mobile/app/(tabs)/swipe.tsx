@@ -472,6 +472,32 @@ export default function SwipeTab() {
     if (direction === "right") {
       void saveToNextWatch(item.title.id, item.title.title);
     }
+    if (direction === "up") {
+      // "Watch Now" — save to Next Watch AND open the primary
+      // streaming destination if we have one on hand from the
+      // prefetched detail cache. Previously up-swipe only recorded
+      // the signal, so the button did nothing observable except
+      // advance the deck — user reported "Watch Now doesn't take
+      // you to stream, it just saves the title".
+      void saveToNextWatch(item.title.id, item.title.title);
+      const detail = detailCache[item.title.id];
+      const primary = detail
+        ? rankStreamingOptions(detail.streamingAvailability ?? [], preferredServices)[0]
+        : undefined;
+      const target = primary?.appUrl || primary?.webUrl;
+      if (target) {
+        trackEvent("recommendation_accept", {
+          title_id: item.title.id,
+          session_id: sessionId,
+          source: "swipe_watch_now",
+        });
+        void Linking.openURL(target).catch(() => {});
+      } else {
+        // No streaming URL — fall back to opening the title detail
+        // sheet so the user can pick from all providers there.
+        void openDetails(item);
+      }
+    }
     trackEvent(`swipe_${direction}`, {
       title_id: item.title.id,
       session_id: sessionId,

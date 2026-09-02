@@ -13,6 +13,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  useWindowDimensions,
   View,
   type NativeSyntheticEvent,
   type NativeScrollEvent,
@@ -104,6 +105,12 @@ export function UniversalTitleModal({
 }: Props) {
   const { sessionToken, user } = useAuth();
   const insets = useSafeAreaInsets();
+  // Live viewport tracking so the hero carousel slide width adapts to
+  // resizes (browser window changes on web, device rotations on
+  // native). Module-scope Dimensions.get was frozen at boot, so on
+  // mobile web the slide width was often wrong and paging snapped to
+  // the wrong offsets — user reported "can't swipe through posters".
+  const { width: liveWidth } = useWindowDimensions();
   const [watchOptions, setWatchOptions] = useState<WatchOptionsResponse | null>(null);
   const [watchOptionsLoading, setWatchOptionsLoading] = useState(false);
   const [expandedDescription, setExpandedDescription] = useState(false);
@@ -308,7 +315,9 @@ export function UniversalTitleModal({
   ], [currentTitle?.cast, currentTitle?.creators]);
 
   function handleImageScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
-    const nextIndex = Math.round(event.nativeEvent.contentOffset.x / Math.max(screenWidth, 1));
+    // Use LIVE viewport width, not the frozen module-scope screenWidth,
+    // so paging indices are correct after resize / rotation.
+    const nextIndex = Math.round(event.nativeEvent.contentOffset.x / Math.max(liveWidth, 1));
     if (nextIndex !== activeImageIndex) setActiveImageIndex(nextIndex);
   }
 
@@ -432,18 +441,27 @@ export function UniversalTitleModal({
             </Pressable>
 
             <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-              {/* Hero image carousel */}
-              <Animated.View style={[styles.heroCard, { opacity: heroOpacity }]}>
+              {/* Hero image carousel — swipeable through the TMDB
+                   gallery (multiple backdrops + posters). Slide width
+                   uses the LIVE viewport width so paging aligns after
+                   window resize; touchAction pan-x on the container
+                   tells the browser to let horizontal drags reach the
+                   ScrollView (RN-Native ignores it). */}
+              <Animated.View
+                style={[styles.heroCard, { opacity: heroOpacity, touchAction: "pan-x" as unknown as undefined }]}
+              >
                 <ScrollView
                   ref={heroScrollRef}
                   horizontal
                   pagingEnabled
                   showsHorizontalScrollIndicator={false}
                   onMomentumScrollEnd={handleImageScroll}
+                  onScrollEndDrag={handleImageScroll}
                   scrollEventThrottle={16}
+                  decelerationRate="fast"
                 >
                   {(galleryImages.length ? galleryImages : [{ url: "", kind: "backdrop" }]).map((image, index) => (
-                    <View key={`${image.url}-${index}`} style={styles.heroSlide}>
+                    <View key={`${image.url}-${index}`} style={[styles.heroSlide, { width: liveWidth }]}>
                       {image.url
                         ? <Image source={{ uri: image.url }} style={styles.heroImage} resizeMode="cover" />
                         : <View style={styles.heroFallback} />
