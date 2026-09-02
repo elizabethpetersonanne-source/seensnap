@@ -152,6 +152,13 @@ REASON_TYPE_WATCH_TEAM = "WATCH_TEAM"
 REASON_TYPE_TRENDING_PERSONALIZED = "TRENDING_PERSONALIZED"
 REASON_TYPE_CREATOR_AFFINITY = "CREATOR_AFFINITY"
 REASON_TYPE_TRENDING = "TRENDING_PERSONALIZED"  # cold-start alias
+# Definitive Recommendation Mix spec (2026-09-02):
+# - CLIMBING_ON_SEENSNAP: SeenSnap-native 7-day save velocity signal.
+#   Distinct from TRENDING_PERSONALIZED, which used TMDB popularity.
+# - SOCIAL_ACTIVITY: titles saved by a user the viewer actually follows.
+#   Hard-capped at 2 per session per spec §4.
+REASON_TYPE_CLIMBING_ON_SEENSNAP = "CLIMBING_ON_SEENSNAP"
+REASON_TYPE_SOCIAL_ACTIVITY = "SOCIAL_ACTIVITY"
 # Phase 2 additions per spec §17:
 REASON_TYPE_HIDDEN_GEM = "HIDDEN_GEM"
 REASON_TYPE_TASTE_NEIGHBORS = "TASTE_NEIGHBORS"
@@ -184,15 +191,25 @@ REASON_TYPE_GENERIC_HIDDEN_GEM = "GENERIC_HIDDEN_GEM"      # deprecated — not 
 # saved / because of your scenedna". HIDDEN_GEM taken from 0.05 → 0.03
 # and TASTE_NEIGHBORS from 0.02 → 0.01 to make room.
 FEED_MIX_TARGETS: dict[str, float] = {
-    REASON_TYPE_PICKS_SIMILARITY: 0.50,
-    REASON_TYPE_SCENEDNA_MATCH: 0.20,
-    REASON_TYPE_PICKS_SCENEDNA_OVERLAP: 0.13,
-    REASON_TYPE_TRENDING_PERSONALIZED: 0.03,
-    REASON_TYPE_WATCH_TEAM: 0.03,
-    REASON_TYPE_CREATOR_AFFINITY: 0.04,
-    REASON_TYPE_HIDDEN_GEM: 0.03,
-    REASON_TYPE_TASTE_NEIGHBORS: 0.01,
-    REASON_TYPE_SERENDIPITY: 0.03,
+    # Definitive Recommendation Mix (2026-09-02) — for a 20-title
+    # session: 9 SceneDNA, 6 Saved, 3 Climbing, 2 Social (max).
+    # All other historical buckets (CREATOR_AFFINITY, HIDDEN_GEM,
+    # TASTE_NEIGHBORS, SERENDIPITY, PICKS_SCENEDNA_OVERLAP,
+    # WATCH_TEAM, TRENDING_PERSONALIZED) are intentionally zero —
+    # the source functions still exist for cold-start fallback
+    # via the slack-absorption pass in _apply_quotas, but they
+    # will not contribute unless a higher-target bucket runs dry.
+    REASON_TYPE_SCENEDNA_MATCH: 0.45,
+    REASON_TYPE_PICKS_SIMILARITY: 0.30,
+    REASON_TYPE_CLIMBING_ON_SEENSNAP: 0.15,
+    REASON_TYPE_SOCIAL_ACTIVITY: 0.10,
+    REASON_TYPE_PICKS_SCENEDNA_OVERLAP: 0.0,
+    REASON_TYPE_TRENDING_PERSONALIZED: 0.0,
+    REASON_TYPE_WATCH_TEAM: 0.0,
+    REASON_TYPE_CREATOR_AFFINITY: 0.0,
+    REASON_TYPE_HIDDEN_GEM: 0.0,
+    REASON_TYPE_TASTE_NEIGHBORS: 0.0,
+    REASON_TYPE_SERENDIPITY: 0.0,
 }
 
 # Per-bucket ceiling for slack absorption. Defaults to 40% (defensive
@@ -201,7 +218,12 @@ FEED_MIX_TARGETS: dict[str, float] = {
 # concern that motivated the 40% cap (GENERIC_TRENDING flooding heavy
 # users) doesn't apply to a signal that IS the user's declared taste.
 _BUCKET_CAP_OVERRIDES: dict[str, float] = {
-    REASON_TYPE_PICKS_SIMILARITY: 0.70,
+    REASON_TYPE_PICKS_SIMILARITY: 0.50,
+    REASON_TYPE_SCENEDNA_MATCH: 0.60,
+    REASON_TYPE_CLIMBING_ON_SEENSNAP: 0.20,
+    # Spec §4: "social recommendations must remain limited to one or
+    # two titles per session". 0.10 hard cap == 2/20 in a session.
+    REASON_TYPE_SOCIAL_ACTIVITY: 0.10,
 }
 
 
@@ -286,6 +308,30 @@ def _copy_from_evidence(
             "People keep coming back to this one.",
         ]
         return cold_templates[hash(str(candidate.id)) % len(cold_templates)]
+    if reason_type == REASON_TYPE_CLIMBING_ON_SEENSNAP:
+        # Definitive spec §3: exact label is "Climbing on SeenSnap this
+        # week". Optional supporting detail may live in an evidence
+        # trait ("Saved 64% more this week"); if present the caller
+        # passed it through as contributing_traits[0].
+        if contributing_traits and any("%" in t or "more" in t.lower() for t in contributing_traits):
+            detail = next(t for t in contributing_traits if "%" in t or "more" in t.lower())
+            return f"Climbing on SeenSnap this week — {detail}."
+        return "Climbing on SeenSnap this week."
+    if reason_type == REASON_TYPE_SOCIAL_ACTIVITY and contributing_titles:
+        # Spec §4: the presented actor name is the "contributing_titles"
+        # first slot (repurposed to carry the actor display name here;
+        # scenario A: named user, scenario B: anonymized fallback).
+        # Multi-follower case: "Saved by Maya and 2 others you follow"
+        actor = contributing_titles[0]
+        if len(contributing_titles) >= 3:
+            extra = len(contributing_titles) - 1
+            return f"Saved by {actor} and {extra} others you follow."
+        if len(contributing_titles) == 2:
+            return f"Saved by {actor} and {contributing_titles[1]}."
+        return f"Saved by {actor}."
+    if reason_type == REASON_TYPE_SOCIAL_ACTIVITY:
+        # Anonymized fallback — privacy-restricted or no display name.
+        return "Saved by someone you follow."
     if reason_type == REASON_TYPE_HIDDEN_GEM:
         if labels or genres:
             trait = labels[0] if labels else genres[0]
@@ -935,6 +981,197 @@ def _source_serendipity(
     return out
 
 
+def _source_climbing_on_seensnap(
+    db: Session,
+    exclude: set[UUID],
+    limit: int,
+) -> list[dict]:
+    """CLIMBING_ON_SEENSNAP — Definitive Recommendation Mix spec §3.
+
+    Ranks candidates by SeenSnap-native save velocity in the last 7 days
+    vs. the previous 7 days. This is the "real platform behavior" signal
+    the spec insists we use instead of TMDB popularity dressed up as
+    trending.
+
+    Ranking factors (spec §3):
+      - Unique users saving in the last 7 days.
+      - Growth vs the prior 7-day window.
+      - Minimum unique-user threshold to prevent one person / a small
+        coordinated group from creating a trend.
+
+    Returned trait carries the growth phrase so the copy layer can
+    show optional supporting detail ("Saved 64% more this week")
+    when the underlying counts are large enough for privacy safety.
+    """
+    now = datetime.now(timezone.utc)
+    this_start = now - timedelta(days=7)
+    prev_start = now - timedelta(days=14)
+
+    # Counts per title in the current and prior windows. Uniqueness is
+    # by watchlist owner (a user saving the same title to two lists
+    # counts once), which the spec explicitly requires.
+    this_rows = db.execute(
+        select(
+            WatchlistItem.content_title_id,
+            func.count(func.distinct(Watchlist.owner_user_id)).label("uniq"),
+        )
+        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+        .where(WatchlistItem.created_at >= this_start)
+        .group_by(WatchlistItem.content_title_id)
+    ).all()
+    prev_rows = db.execute(
+        select(
+            WatchlistItem.content_title_id,
+            func.count(func.distinct(Watchlist.owner_user_id)).label("uniq"),
+        )
+        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+        .where(
+            WatchlistItem.created_at >= prev_start,
+            WatchlistItem.created_at < this_start,
+        )
+        .group_by(WatchlistItem.content_title_id)
+    ).all()
+
+    prev_by_id: dict[UUID, int] = {row[0]: int(row[1]) for row in prev_rows if row[0] is not None}
+    MIN_UNIQUE_THIS_WEEK = 3  # privacy + noise guard per spec §3
+
+    ranked: list[tuple[UUID, int, float]] = []
+    for row in this_rows:
+        title_id = row[0]
+        if title_id is None or title_id in exclude:
+            continue
+        this_count = int(row[1])
+        if this_count < MIN_UNIQUE_THIS_WEEK:
+            continue
+        prev_count = prev_by_id.get(title_id, 0)
+        # Growth ratio — capped so a 0→10 doesn't score infinity. A
+        # steady-state 10→10 = 1.0; a 5→15 = 3.0; a 0→10 = ~10 (capped).
+        base = max(prev_count, 1)
+        growth = min(this_count / base, 10.0)
+        # Blend absolute velocity with acceleration so a title that
+        # went 0→30 outranks one that went 3→9.
+        score = (this_count * 1.5) + (growth * 4.0)
+        ranked.append((title_id, this_count, growth))
+
+    if not ranked:
+        return []
+
+    ranked.sort(key=lambda tup: -((tup[1] * 1.5) + (tup[2] * 4.0)))
+    ranked = ranked[: limit * 2]  # over-fetch, we'll drop those that can't hydrate
+
+    titles = db.execute(
+        select(ContentTitle).where(ContentTitle.id.in_([t[0] for t in ranked]))
+    ).scalars().all()
+    title_by_id = {t.id: t for t in titles}
+
+    out: list[dict] = []
+    for title_id, this_count, growth in ranked:
+        title = title_by_id.get(title_id)
+        if title is None:
+            continue
+        # Only display an exact percentage when the counts are big
+        # enough to be privacy-safe (spec §3: "Only display exact
+        # statistics when the underlying count is sufficiently large").
+        trait: str | None = None
+        if this_count >= 10 and growth > 1.15:
+            pct = int(round((growth - 1) * 100))
+            trait = f"Saved {pct}% more this week"
+        traits = [trait] if trait else []
+        out.append({
+            "title": title,
+            "reason_type": REASON_TYPE_CLIMBING_ON_SEENSNAP,
+            "score": (this_count * 1.5) + (growth * 4.0),
+            "contributing_titles": [],
+            "contributing_traits": traits,
+            "confidence": 0.65,
+        })
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _source_social_saves(
+    db: Session,
+    user_id: UUID,
+    exclude: set[UUID],
+    limit: int,
+) -> list[dict]:
+    """SOCIAL_ACTIVITY — Definitive Recommendation Mix spec §4.
+
+    Titles saved by a user the viewer actually follows. Uses live
+    UserFollow edges (no synthetic relationships, no demo accounts).
+    A candidate is eligible only when:
+      - The follower_user_id → following_user_id edge exists.
+      - The followed user's save is on a Watchlist whose owner is
+        that user (structural — no cross-user leakage).
+      - The current viewer has not already saved the title (via the
+        `exclude` set the blender passes in, which includes viewer's
+        own saves, dismisses, and recently-shown).
+
+    When multiple followed users have saved the same title we group by
+    title and stash all actor display names in `contributing_titles`
+    so the copy layer can render "Saved by Maya and 2 others you
+    follow" per spec.
+
+    Hard cap of 2 titles per session is enforced by _BUCKET_CAP_OVERRIDES
+    on the blender side — this function returns up to `limit` so the
+    blender has choices for diversity/interleave.
+    """
+    following_ids_row = db.execute(
+        select(UserFollow.following_user_id).where(UserFollow.follower_user_id == user_id)
+    ).all()
+    following_ids = {row[0] for row in following_ids_row if row[0] is not None}
+    if not following_ids:
+        return []
+
+    # Pull recent saves from followed users. 30-day window keeps this
+    # feeling "current" without excluding a followed user's rare-but-
+    # meaningful save just because it's old. Ordered by recency.
+    cutoff = datetime.now(timezone.utc) - timedelta(days=30)
+    rows = db.execute(
+        select(WatchlistItem, Watchlist, ContentTitle, UserProfile)
+        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
+        .join(UserProfile, UserProfile.user_id == Watchlist.owner_user_id)
+        .where(
+            Watchlist.owner_user_id.in_(following_ids),
+            WatchlistItem.created_at >= cutoff,
+        )
+        .order_by(WatchlistItem.created_at.desc())
+    ).all()
+
+    # Group by title so a title saved by 3 followed users becomes ONE
+    # candidate with the aggregated actor list.
+    by_title: dict[UUID, dict] = {}
+    for _wl_item, _wl, title, profile in rows:
+        if title.id in exclude:
+            continue
+        actor_name = profile.display_name or profile.username or "Someone"
+        entry = by_title.setdefault(title.id, {
+            "title": title,
+            "actors": [],
+        })
+        if actor_name not in entry["actors"]:
+            entry["actors"].append(actor_name)
+
+    out: list[dict] = []
+    for entry in by_title.values():
+        actors = entry["actors"]
+        # Score by number of distinct followed savers — more social
+        # signal = more prominent placement within the SOCIAL bucket.
+        score = 5 + len(actors) * 2
+        out.append({
+            "title": entry["title"],
+            "reason_type": REASON_TYPE_SOCIAL_ACTIVITY,
+            "score": score,
+            "contributing_titles": actors,  # copy layer reads first + count
+            "contributing_traits": [],
+            "confidence": 0.85 if len(actors) > 1 else 0.7,
+        })
+    out.sort(key=lambda d: -d["score"])
+    return out[:limit]
+
+
 def _blend_and_diversify(
     buckets: dict[str, list[dict]],
     limit: int,
@@ -1170,10 +1407,22 @@ def get_social_recommendations(
     ).delete(synchronize_session=False)
 
     # --- Fan out to each source strategy ---
+    # Definitive Mix (2026-09-02): the four target buckets are
+    # SCENEDNA_MATCH, PICKS_SIMILARITY, CLIMBING_ON_SEENSNAP, and
+    # SOCIAL_ACTIVITY. The legacy buckets (CREATOR_AFFINITY, HIDDEN_GEM,
+    # TASTE_NEIGHBORS, SERENDIPITY, PICKS_SCENEDNA_OVERLAP, WATCH_TEAM,
+    # TRENDING_PERSONALIZED) still produce candidates as cold-start
+    # fallback material — the blender's slack-absorption pass promotes
+    # from them only when a primary bucket runs dry.
     per_source_cap = max(limit, 8)
     picks_recs = _source_picks_similarity(db, user_id, exclude, per_source_cap, session_id=session_id)
     cluster_recs = _source_picks_cluster(db, user_id, exclude, per_source_cap // 2)
     dna_recs = _source_scene_dna_match(db, user_id, taste_profile, exclude, per_source_cap)
+    climbing_recs = _source_climbing_on_seensnap(db, exclude, per_source_cap)
+    social_recs = _source_social_saves(db, user_id, exclude, per_source_cap)
+    # Legacy / fallback sources — kept live so we degrade gracefully when
+    # a primary bucket is empty (e.g. brand-new user with no follows =>
+    # SOCIAL_ACTIVITY empty; blender back-fills from these).
     overlap_recs = _source_picks_scenedna_overlap(db, picks_recs, dna_recs, per_source_cap // 2)
     team_recs = _source_watch_team(db, team_ids, exclude, per_source_cap // 2)
     creator_recs = _source_creator_affinity(db, user_id, exclude, per_source_cap // 2)
@@ -1188,8 +1437,10 @@ def get_social_recommendations(
         picks_recs.append(item)
 
     buckets: dict[str, list[dict]] = {
-        REASON_TYPE_PICKS_SIMILARITY: picks_recs,
         REASON_TYPE_SCENEDNA_MATCH: dna_recs,
+        REASON_TYPE_PICKS_SIMILARITY: picks_recs,
+        REASON_TYPE_CLIMBING_ON_SEENSNAP: climbing_recs,
+        REASON_TYPE_SOCIAL_ACTIVITY: social_recs,
         REASON_TYPE_PICKS_SCENEDNA_OVERLAP: overlap_recs,
         REASON_TYPE_WATCH_TEAM: team_recs,
         REASON_TYPE_CREATOR_AFFINITY: creator_recs,
