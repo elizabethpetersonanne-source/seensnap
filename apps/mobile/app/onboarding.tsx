@@ -13,15 +13,18 @@ import {
   StyleSheet,
   Text,
   TextInput,
+  useWindowDimensions,
   View,
 } from "react-native";
 
+import { Ionicons } from "@expo/vector-icons";
 import { GoldButton } from "@/components/gold-button";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
 import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
+import { playSwipeSound } from "@/lib/swipe-sfx";
 
 // COUNTRIES list removed — region picker no longer in the onboarding
 // flow per spec §7 (country_code defaults to "US" at account creation
@@ -349,6 +352,9 @@ export default function OnboardingScreen() {
       const card = candidates[calibrateIndex];
       if (!card) return;
 
+      // Match main-tab swipe: direction-specific sound cue at exit start.
+      playSwipeSound(direction);
+
       const toX = direction === "right" ? 400 : -400;
       const positionAtSwipe = swipeCount + 1;
       Animated.timing(pan, {
@@ -390,8 +396,16 @@ export default function OnboardingScreen() {
 
   const panResponder = useRef(
     PanResponder.create({
+      // Same capture-phase + termination guards as the main Swipe tab
+      // so horizontal drags aren't stolen by the parent ScrollView on
+      // RN-Web / mobile Safari (fixes stuck-finger swipe on mobile).
       onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
       onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: (_, gesture) =>
+        Math.abs(gesture.dx) > 4 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
       onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
         useNativeDriver: false,
       }),
@@ -521,11 +535,32 @@ export default function OnboardingScreen() {
   const showDots = stepIndex !== -1 && step !== "welcome";
 
   const currentCard = candidates[calibrateIndex] ?? null;
+  const nextCard = candidates[calibrateIndex + 1] ?? null;
   const cardRotate = pan.x.interpolate({
     inputRange: [-200, 0, 200],
     outputRange: ["-8deg", "0deg", "8deg"],
     extrapolate: "clamp",
   });
+  const leftLabelOpacity = pan.x.interpolate({
+    inputRange: [-SWIPE_THRESHOLD, -20, 0],
+    outputRange: [1, 0.3, 0],
+    extrapolate: "clamp",
+  });
+  const rightLabelOpacity = pan.x.interpolate({
+    inputRange: [0, 20, SWIPE_THRESHOLD],
+    outputRange: [0, 0.3, 1],
+    extrapolate: "clamp",
+  });
+
+  // Poster deck geometry — mirrors the main Swipe tab so calibration
+  // teaches the exact interaction users see after onboarding.
+  const { width: calibrateViewport } = useWindowDimensions();
+  const calibratePadding = calibrateViewport < 480 ? 16 : 20;
+  const posterMaxWidth = Math.min(
+    360,
+    Math.max(200, calibrateViewport - calibratePadding * 2),
+  );
+  const posterHeight = posterMaxWidth * 1.5;
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -704,129 +739,161 @@ export default function OnboardingScreen() {
         </Animated.View>
       ) : null}
 
-      {/* CALIBRATION SWIPE */}
+      {/* CALIBRATION SWIPE — visually + interactively matches the
+           production Swipe tab so users learn the real gesture once.
+           Poster-first (2:3 contain), stacked queue behind the active
+           card, direction-chip edge overlays, and the same yellow
+           "More Like This" primary / neutral "Pass" button pair. */}
       {step === "calibrate" ? (
         <View style={styles.calibrateWrap}>
-          {/* Counter */}
           <View style={styles.calibrateHeader}>
-            <Text style={styles.calibrateCount}>
-              {String(Math.min(swipeCount, CALIBRATION_TARGET)).padStart(2, "0")} / {CALIBRATION_TARGET}
+            <View style={{ flex: 1, gap: 4 }}>
+              <Text style={styles.featureEyebrow}>TASTE CALIBRATION</Text>
+              <Text style={styles.featureTitle}>What&apos;s Next?</Text>
+              <Text style={styles.featureSubtitle}>Swipe to shape your SceneDNA.</Text>
+            </View>
+            <Text style={styles.featureProgress}>
+              {Math.min(swipeCount, CALIBRATION_TARGET)}/{CALIBRATION_TARGET}
             </Text>
-            <Text style={styles.calibrateLabel}>TASTE CALIBRATION</Text>
           </View>
-          <View style={styles.calibrateRule} />
 
           {loadingCandidates || !currentCard ? (
             <View style={styles.calibrateLoading}>
               <Text style={styles.calibrateLoadingTitle}>Building your candidate pool</Text>
               <View style={styles.calibrateLoadingRule} />
-              <Text style={styles.calibrateLoadingBody}>Fetching titles from TMDB…</Text>
+              <Text style={styles.calibrateLoadingBody}>Just a moment…</Text>
             </View>
           ) : (
-            <>
-              {/* Next card ghost */}
-              {candidates[calibrateIndex + 1] ? (
-                <View style={styles.cardGhost}>
-                  {candidates[calibrateIndex + 1].poster_url ? (
-                    <Image
-                      source={{ uri: candidates[calibrateIndex + 1].poster_url! }}
-                      style={StyleSheet.absoluteFill}
-                      resizeMode="cover"
-                    />
-                  ) : null}
-                </View>
-              ) : null}
-
-              {/* Active swipe card */}
-              <Animated.View
+            <View style={styles.calibrateBody}>
+              <View
                 style={[
-                  styles.card,
-                  {
-                    transform: [
-                      { translateX: pan.x },
-                      { translateY: pan.y },
-                      { rotate: cardRotate },
-                    ],
-                  },
+                  styles.posterDeck,
+                  { width: posterMaxWidth, height: posterHeight },
                 ]}
-                {...panResponder.panHandlers}
               >
-                {currentCard.poster_url ? (
-                  <Image
-                    source={{ uri: currentCard.poster_url }}
-                    style={StyleSheet.absoluteFill}
-                    resizeMode="cover"
-                  />
-                ) : (
-                  <View style={styles.cardFallback} />
-                )}
+                {/* Queued next card behind the active one. */}
+                {nextCard ? (
+                  <View
+                    pointerEvents="none"
+                    style={[
+                      styles.deckLayer,
+                      {
+                        transform: [{ translateX: 8 }, { translateY: 8 }, { scale: 0.97 }],
+                        opacity: 0.35,
+                      },
+                    ]}
+                  >
+                    {nextCard.poster_url ? (
+                      <Image
+                        source={{ uri: nextCard.poster_url }}
+                        style={styles.deckLayerImage}
+                        resizeMode="contain"
+                      />
+                    ) : null}
+                  </View>
+                ) : null}
 
-                {/* Corner frame marks */}
-                <View style={[styles.frameMark, styles.frameMarkTL]} />
-                <View style={[styles.frameMark, styles.frameMarkTR]} />
-                <View style={[styles.frameMark, styles.frameMarkBL]} />
-                <View style={[styles.frameMark, styles.frameMarkBR]} />
-
-                {/* Direction overlays */}
+                {/* Active card — draggable. */}
                 <Animated.View
                   style={[
-                    styles.directionLabel,
-                    styles.directionLabelLeft,
+                    styles.deckActiveCard,
                     {
-                      opacity: pan.x.interpolate({
-                        inputRange: [-SWIPE_THRESHOLD, 0],
-                        outputRange: [1, 0],
-                        extrapolate: "clamp",
-                      }),
+                      transform: [
+                        { translateX: pan.x },
+                        { translateY: pan.y },
+                        { rotate: cardRotate },
+                      ],
                     },
                   ]}
+                  {...panResponder.panHandlers}
                 >
-                  <Text style={styles.directionTextLeft}>← NOT FOR ME</Text>
-                </Animated.View>
-                <Animated.View
-                  style={[
-                    styles.directionLabel,
-                    styles.directionLabelRight,
-                    {
-                      opacity: pan.x.interpolate({
-                        inputRange: [0, SWIPE_THRESHOLD],
-                        outputRange: [0, 1],
-                        extrapolate: "clamp",
-                      }),
-                    },
-                  ]}
-                >
-                  <Text style={styles.directionTextRight}>MORE LIKE THIS →</Text>
-                </Animated.View>
+                  {currentCard.poster_url ? (
+                    <Image
+                      source={{ uri: currentCard.poster_url }}
+                      style={StyleSheet.absoluteFillObject}
+                      resizeMode="contain"
+                      accessibilityLabel={`${currentCard.title} poster`}
+                    />
+                  ) : (
+                    <View style={styles.deckPosterFallback}>
+                      <Text style={styles.deckPosterFallbackTitle} numberOfLines={4}>
+                        {currentCard.title}
+                      </Text>
+                      <Text style={styles.deckPosterFallbackMeta}>
+                        {currentCard.media_type === "movie" ? "FILM" : "SERIES"}
+                      </Text>
+                    </View>
+                  )}
 
-                {/* Card info panel */}
-                <View style={styles.cardPanel}>
-                  <Text style={styles.cardTitle} numberOfLines={2}>{currentCard.title}</Text>
-                  <Text style={styles.cardMeta}>
-                    {[
-                      currentCard.media_type === "movie" ? "FILM" : "SERIES",
-                      currentCard.release_year,
-                      currentCard.genres[0]?.toUpperCase(),
-                    ]
-                      .filter(Boolean)
-                      .join("  ·  ")}
-                  </Text>
+                  <Animated.View
+                    style={[styles.deckEdgeChip, styles.deckEdgeChipLeft, { opacity: leftLabelOpacity }]}
+                  >
+                    <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
+                  </Animated.View>
+                  <Animated.View
+                    style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}
+                  >
+                    <Text style={styles.deckEdgeChipTextRight}>MORE LIKE THIS</Text>
+                  </Animated.View>
+                </Animated.View>
+              </View>
+
+              {/* Details block — mirrors main Swipe tab: title + meta chip + genre chips. */}
+              <View style={styles.detailsBlock}>
+                <Text style={styles.detailsTitle} numberOfLines={2}>
+                  {currentCard.title}
+                </Text>
+                <Text style={styles.detailsMeta}>
+                  {[
+                    currentCard.media_type === "movie" ? "FILM" : "SERIES",
+                    currentCard.release_year,
+                  ]
+                    .filter(Boolean)
+                    .join("  ·  ")}
+                </Text>
+                {currentCard.genres.length > 0 ? (
+                  <View style={styles.detailsGenreRow}>
+                    {currentCard.genres.slice(0, 2).map((g) => (
+                      <View key={g} style={styles.detailsGenreChip}>
+                        <Text style={styles.detailsGenreChipText}>{g}</Text>
+                      </View>
+                    ))}
+                  </View>
+                ) : null}
+
+                <View style={styles.controlRow}>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.controlBtn,
+                      styles.controlBtnNeutral,
+                      pressed && { opacity: 0.7 },
+                    ]}
+                    onPress={() => swipeCard("left", "button")}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Pass on ${currentCard.title}`}
+                  >
+                    <Ionicons name="close" size={18} color={colors.muted} />
+                    <Text style={styles.controlBtnNeutralText}>Pass</Text>
+                  </Pressable>
+                  <Pressable
+                    style={({ pressed }) => [
+                      styles.controlBtn,
+                      styles.controlBtnPrimary,
+                      pressed && { opacity: 0.85 },
+                    ]}
+                    onPress={() => swipeCard("right", "button")}
+                    accessibilityRole="button"
+                    accessibilityLabel={`More like ${currentCard.title}`}
+                  >
+                    <Ionicons name="heart" size={16} color={colors.background} />
+                    <Text style={styles.controlBtnPrimaryText}>More Like This</Text>
+                  </Pressable>
                 </View>
-              </Animated.View>
-
-              {/* Action bar */}
-              <View style={styles.actionBar}>
-                <Pressable style={styles.actionBtn} onPress={() => swipeCard("left", "button")}>
-                  <Text style={styles.actionBtnTextPass}>← PASS</Text>
-                </Pressable>
-                <Pressable style={styles.actionBtn} onPress={skipCard} hitSlop={6}>
-                  <Text style={styles.actionBtnTextSkip}>SKIP</Text>
-                </Pressable>
-                <Pressable style={styles.actionBtn} onPress={() => swipeCard("right", "button")}>
-                  <Text style={styles.actionBtnTextLike}>MORE LIKE THIS →</Text>
+                <Pressable style={styles.skipCardLink} onPress={skipCard} hitSlop={8}>
+                  <Text style={styles.skipCardLinkText}>Skip this card</Text>
                 </Pressable>
               </View>
-            </>
+            </View>
           )}
         </View>
       ) : null}
@@ -1108,7 +1175,9 @@ const styles = StyleSheet.create({
     color: colors.ink,
   },
 
-  // Calibration
+  // Calibration — mirrors the main Swipe tab visual language so
+  // users learn the real interaction here rather than an onboarding-
+  // specific fork (spec §5.1 "teach the real product").
   calibrateWrap: {
     flex: 1,
     paddingHorizontal: spacing.lg,
@@ -1116,27 +1185,38 @@ const styles = StyleSheet.create({
   },
   calibrateHeader: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    alignItems: "baseline",
+    alignItems: "flex-start",
     paddingHorizontal: 4,
-    marginBottom: spacing.xs,
-  },
-  calibrateCount: {
-    fontFamily: fonts.serifBold,
-    fontSize: 28,
-    color: colors.ink,
-    letterSpacing: -0.5,
-  },
-  calibrateLabel: {
-    fontFamily: fonts.monoSemiBold,
-    fontSize: 9,
-    color: colors.accent,
-    letterSpacing: 1.5,
-  },
-  calibrateRule: {
-    height: 1,
-    backgroundColor: rules.default,
     marginBottom: spacing.md,
+    gap: spacing.sm,
+  },
+  featureEyebrow: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    color: colors.accent,
+    textTransform: "uppercase",
+  },
+  featureTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 22,
+    color: colors.ink,
+  },
+  featureSubtitle: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    color: colors.muted,
+  },
+  featureProgress: {
+    fontFamily: fonts.serifBold,
+    fontSize: 22,
+    color: colors.ink,
+    letterSpacing: -0.4,
+  },
+  calibrateBody: {
+    flex: 1,
+    alignItems: "center",
+    gap: spacing.md,
   },
   calibrateLoading: {
     flex: 1,
@@ -1161,119 +1241,170 @@ const styles = StyleSheet.create({
     color: colors.muted2,
     letterSpacing: 0.5,
   },
-  cardGhost: {
+  posterDeck: {
+    position: "relative",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  deckLayer: {
     position: "absolute",
-    top: 100,
-    left: spacing.lg + 8,
-    right: spacing.lg + 8,
-    bottom: 80,
-    borderRadius: radii.sm,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: rules.default,
-    overflow: "hidden",
-    opacity: 0.35,
-    transform: [{ scaleX: 0.94 }, { translateY: 10 }],
-  },
-  card: {
-    position: "absolute",
-    top: 90,
-    left: 4,
-    right: 4,
-    bottom: 72,
-    borderRadius: radii.sm,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: rules.default,
-    overflow: "hidden",
-  },
-  cardFallback: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: colors.backgroundElevated,
-  },
-  frameMark: {
-    position: "absolute",
-    backgroundColor: "rgba(244,196,48,0.50)",
-  },
-  frameMarkTL: { top: 14, left: 14, width: 14, height: 1 },
-  frameMarkTR: { top: 14, right: 14, width: 14, height: 1 },
-  frameMarkBL: { bottom: 96, left: 14, width: 14, height: 1 },
-  frameMarkBR: { bottom: 96, right: 14, width: 14, height: 1 },
-  directionLabel: {
-    position: "absolute",
-    top: 24,
-    paddingHorizontal: spacing.md,
-    paddingVertical: 6,
-  },
-  directionLabelLeft: { left: spacing.md },
-  directionLabelRight: { right: spacing.md },
-  directionTextLeft: {
-    fontFamily: fonts.monoSemiBold,
-    fontSize: 9,
-    letterSpacing: 1.1,
-    color: colors.muted,
-  },
-  directionTextRight: {
-    fontFamily: fonts.monoSemiBold,
-    fontSize: 9,
-    letterSpacing: 1.1,
-    color: colors.accent,
-  },
-  cardPanel: {
-    position: "absolute",
-    bottom: 0,
+    top: 0,
     left: 0,
     right: 0,
-    backgroundColor: "rgba(7,11,18,0.88)",
-    borderTopWidth: 1,
-    borderTopColor: rules.default,
-    padding: spacing.md,
-    gap: 4,
+    bottom: 0,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#0a0f18",
   },
-  cardTitle: {
+  deckLayerImage: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  deckActiveCard: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    borderRadius: 18,
+    overflow: "hidden",
+    backgroundColor: "#0a0f18",
+    borderWidth: 1,
+    borderColor: rules.default,
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.6,
+    shadowRadius: 24,
+    elevation: 12,
+    touchAction: "none",
+  },
+  deckPosterFallback: {
+    ...StyleSheet.absoluteFillObject,
+    padding: spacing.lg,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 8,
+    backgroundColor: colors.backgroundElevated,
+  },
+  deckPosterFallbackTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 22,
+    color: colors.ink,
+    textAlign: "center",
+  },
+  deckPosterFallbackMeta: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    color: colors.muted2,
+    letterSpacing: 1,
+  },
+  deckEdgeChip: {
+    position: "absolute",
+    top: 18,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  deckEdgeChipLeft: { left: 12 },
+  deckEdgeChipRight: { right: 12 },
+  deckEdgeChipTextLeft: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    color: colors.ink,
+  },
+  deckEdgeChipTextRight: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    color: colors.accent,
+  },
+  detailsBlock: {
+    width: "100%",
+    gap: 8,
+    marginTop: spacing.md,
+  },
+  detailsTitle: {
     fontFamily: fonts.serifBold,
     fontSize: 20,
     lineHeight: 24,
     color: colors.ink,
   },
-  cardMeta: {
+  detailsMeta: {
     fontFamily: fonts.mono,
     fontSize: 10,
     color: colors.muted2,
     letterSpacing: 0.5,
   },
-  actionBar: {
-    position: "absolute",
-    bottom: 0,
-    left: 4,
-    right: 4,
+  detailsGenreRow: {
     flexDirection: "row",
-    justifyContent: "space-between",
-    paddingHorizontal: spacing.lg,
-    paddingBottom: 12,
-    paddingTop: 8,
+    gap: 6,
+    flexWrap: "wrap",
   },
-  actionBtn: {
-    paddingVertical: 8,
-    paddingHorizontal: 4,
+  detailsGenreChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: rules.default,
   },
-  actionBtnTextPass: {
-    fontFamily: fonts.monoSemiBold,
-    fontSize: 10,
-    letterSpacing: 1.1,
-    color: colors.muted2,
-  },
-  actionBtnTextSkip: {
+  detailsGenreChipText: {
     fontFamily: fonts.mono,
     fontSize: 10,
-    letterSpacing: 1.1,
-    color: colors.muted2,
+    letterSpacing: 0.5,
+    color: colors.ink,
   },
-  actionBtnTextLike: {
+  controlRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: spacing.sm,
+  },
+  controlBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+    minHeight: 44,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    flexGrow: 1,
+    flexBasis: 0,
+  },
+  controlBtnNeutral: {
+    borderWidth: 1,
+    borderColor: rules.default,
+  },
+  controlBtnNeutralText: {
     fontFamily: fonts.monoSemiBold,
-    fontSize: 10,
-    letterSpacing: 1.1,
-    color: colors.accent,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    color: colors.ink,
+    textTransform: "uppercase",
+  },
+  controlBtnPrimary: {
+    backgroundColor: colors.accent,
+    flexGrow: 1.4,
+  },
+  controlBtnPrimaryText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1.0,
+    color: colors.background,
+    textTransform: "uppercase",
+  },
+  skipCardLink: {
+    alignItems: "center",
+    marginTop: 4,
+    paddingVertical: 6,
+  },
+  skipCardLinkText: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    color: colors.muted2,
+    letterSpacing: 0.5,
+    textDecorationLine: "underline",
   },
 
   // Scene DNA reveal
