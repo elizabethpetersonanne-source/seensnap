@@ -28,6 +28,7 @@ import { trackEvent } from "@/lib/analytics";
 import { apiRequest, resolveMediaUrl, resolvedApiBaseUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { type StreamingAvailability, getStreamingServiceMeta } from "@/lib/streaming";
+import { playSwipeSound } from "@/lib/swipe-sfx";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
 type RecommendationItem = {
@@ -387,6 +388,11 @@ export default function SwipeTab() {
   ).current;
 
   async function animateSwipe(direction: SwipeDirection) {
+    // Spec v1.1 §9 — fire the flick sound at the start of the exit
+    // animation so audio and motion feel simultaneous. Fires once per
+    // committed decision; the animation-guard below prevents re-entry.
+    playSwipeSound();
+
     const toValue =
       direction === "left"
         ? { x: -420, y: 30 }
@@ -566,7 +572,21 @@ export default function SwipeTab() {
   const activeBackdrop = resolveMediaUrl(
     currentDetail?.backdropUrl || activeCard?.title.backdrop_url || null
   );
-  const activePoster = resolveMediaUrl(currentDetail?.posterUrl || activeCard?.title.poster_url || null);
+  // Poster stability per Swipe v1.1 spec §10 "authoritative poster resolution
+  // and no-refresh contract". Pin to the recommendation-response poster
+  // (TMDB source of truth from /titles/recommendations/for-me) FIRST — never
+  // let the async hydrateCard() replace it 1-2s later. currentDetail is only
+  // consulted when the primary is genuinely absent.
+  //
+  // Root cause of the visible swap: the previous order preferred
+  // currentDetail?.posterUrl, which arrives from fetchUniversalTitle() after
+  // the card is already visible. If universal-title returned a different-
+  // sized/different-source poster (even a legitimate TMDB variant) it
+  // triggered a visible flicker/replacement. Freezing to the recs-response
+  // URL means the poster picked at render time is the one seen for the
+  // entire visible lifetime of the card.
+  const activePoster = resolveMediaUrl(activeCard?.title.poster_url || currentDetail?.posterUrl || null);
+  const activeSynopsis = currentDetail?.description ?? null;
   const activeGenres = buildGenreString(activeCard, currentDetail);
   const activeStreaming = rankStreamingOptions(currentDetail?.streamingAvailability ?? [], preferredServices).slice(0, 3);
 
@@ -611,6 +631,16 @@ export default function SwipeTab() {
             </View>
           ))}
         </View>
+      ) : null}
+      {/* Synopsis — canonical TMDB overview per Swipe v1.1 spec §6.5.
+          Placed between metadata and WHY IT'S HERE so users understand
+          what the title IS before we tell them why it's for them.
+          Clamped to ~3-4 lines; the full overview lives in title detail.
+          No Wikipedia/Wikimedia fallback per §10 no-refresh contract. */}
+      {activeSynopsis ? (
+        <Text style={styles.detailsSynopsis} numberOfLines={isWide ? 3 : 4}>
+          {activeSynopsis}
+        </Text>
       ) : null}
       {activeCard.reason ? (
         <View style={styles.detailsReasonBlock}>
@@ -687,6 +717,19 @@ export default function SwipeTab() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
+      {/* Restore the shared global app header per Swipe v1.1 spec §6.1 —
+          same component used on every other primary tab, so navigation
+          (logo · search · messages · notifications) stays consistent. Use
+          variant="standard" and pass NO artworkSource so it collapses to
+          the minimum shell height without a photographic banner —
+          poster is the workspace's focal element, not the header. */}
+      <SeenSnapHeader
+        variant="standard"
+        title=""
+        subtitle=""
+        artworkSource={null}
+        fallbackSeed={3}
+      />
       <ScrollView
         contentContainerStyle={[
           styles.workspaceScroll,
@@ -1885,6 +1928,14 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 11,
     letterSpacing: 0.5,
+  },
+  detailsSynopsis: {
+    fontFamily: fonts.sans,
+    color: colors.ink,
+    fontSize: 14,
+    lineHeight: 20,
+    marginTop: 6,
+    opacity: 0.9,
   },
   detailsReasonBlock: {
     flexDirection: "row",
