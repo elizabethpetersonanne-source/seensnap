@@ -20,6 +20,14 @@
   base = "apps/mobile"
   command = "npx expo export --platform web --clear"
   publish = "dist"
+  # Skip the build when a push only touched non-mobile files
+  # (apps/api/**, deploy/**, docs, etc.). Netlify runs `ignore` from
+  # the base directory (`apps/mobile`), so `./` scopes the diff to
+  # this project subtree. Exit 0 = skipped (green "no changes"),
+  # non-zero = build proceeds. Previously every backend-only push
+  # triggered a full mobile rebuild that ended up canceled by the
+  # next push, cluttering the deploy list.
+  ignore = "git diff --quiet $CACHED_COMMIT_REF $COMMIT_REF -- ./"
 
 [build.environment]
   # Pin the Node runtime Netlify uses for the build. Expo SDK 54 supports
