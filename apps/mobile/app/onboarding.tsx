@@ -366,7 +366,10 @@ export default function OnboardingScreen() {
       Animated.timing(pan, {
         toValue: { x: toX, y: 0 },
         duration: 200,
-        useNativeDriver: true,
+        // JS driver — useNativeDriver:true silently no-ops on some
+        // RN-Web paths for translate targets, leaving pan stuck at
+        // the dragged position and the completion callback never firing.
+        useNativeDriver: false,
       }).start(() => {
         pan.setValue({ x: 0, y: 0 });
         void recordSwipe(direction, card.id, inputMethod, positionAtSwipe);
@@ -429,8 +432,17 @@ export default function OnboardingScreen() {
           } else if (gesture.dx < -SWIPE_THRESHOLD) {
             swipeCard("left", "gesture");
           } else {
-            Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: true }).start();
+            // JS driver here too — see above. useNativeDriver:true
+            // was leaving the card stuck at the dragged position on
+            // web because the spring never actually ran.
+            Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: false }).start();
           }
+        },
+        // Terminate (e.g. browser interrupts the gesture, focus moves,
+        // pointercancel fires) — always snap the card back to origin
+        // so it's never left orbiting the screen with no way to reset.
+        onPanResponderTerminate: () => {
+          Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: false }).start();
         },
       }),
     [pan, swipeCard],
