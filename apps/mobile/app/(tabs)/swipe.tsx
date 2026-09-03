@@ -702,7 +702,10 @@ export default function SwipeTab() {
   // nav) then derive the poster from the SMALLER of width- and
   // height-constrained bounds so a squat viewport shrinks the card
   // rather than clipping the actions below it.
-  const RESERVED_SHARED_HEADER = 64;      // compact standard header baseline
+  // Shared header is not rendered on narrow modes (see JSX below) so
+  // its height reservation drops to 0 there, freeing that space for
+  // the poster.
+  const RESERVED_SHARED_HEADER = isNarrow ? 0 : 64;
   const RESERVED_FEATURE_HEADER =
     layoutMode === "narrow_short" ? 48 :
     layoutMode === "narrow_tall" ? 64 : 92;
@@ -855,17 +858,19 @@ export default function SwipeTab() {
           variant="standard" and pass NO artworkSource so it collapses to
           the minimum shell height without a photographic banner —
           poster is the workspace's focal element, not the header. */}
-      {/* Shared header — on narrow / short modes we drop the
-          photographic artwork so the header collapses to its
-          compact utility shell (~64px) per spec §8. Roomy/compact
-          wide keep the artwork treatment. */}
-      <SeenSnapHeader
-        variant="standard"
-        title=""
-        subtitle=""
-        artworkSource={isNarrow ? null : headerArtwork}
-        fallbackSeed={3}
-      />
+      {/* Shared header — removed entirely on narrow (mobile) modes
+          per product ask "get rid of the header on swipe so the
+          poster is bigger". Wide modes still render the header for
+          nav parity with the other primary tabs. */}
+      {!isNarrow ? (
+        <SeenSnapHeader
+          variant="standard"
+          title=""
+          subtitle=""
+          artworkSource={headerArtwork}
+          fallbackSeed={3}
+        />
+      ) : null}
       <ScrollView
         contentContainerStyle={[
           styles.workspaceScroll,
