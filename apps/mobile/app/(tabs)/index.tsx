@@ -386,7 +386,13 @@ export default function DiscoverScreen() {
       void loadDiscoverFeed();
       void loadTrending();       // still fetched for the header backdrop cycling
       void loadCollections();    // editorial collections stay a separate module
-      void loadRecommendations();
+      // loadRecommendations() removed — it called /titles/recommendations/for-me
+      // (the slow SceneDNA-fanout endpoint that spins up 10 TMDB related-titles
+      // calls per request) but nothing on Discover actually consumed the
+      // resulting `recommendations` state. It was a dead prefetch that added
+      // several seconds to first paint. The discover_feed endpoint already
+      // provides personalized rails from the same recommendation service via
+      // the unified /discover/feed response.
       void getRecentSearches().then(setRecentSearches);
       trackEvent("discover_viewed", {});
       return () => setIsFocused(false);

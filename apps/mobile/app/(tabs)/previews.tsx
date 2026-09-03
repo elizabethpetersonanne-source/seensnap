@@ -384,8 +384,13 @@ export default function PreviewsScreen() {
             </Pressable>
           ) : null}
           {activeIndex === 0 ? (
+            // Anchored to the TOP so it never covers the Save / Details /
+            // Sound action row at the bottom of the card. Sits just below
+            // the position badge and next to the up-chevron (which is
+            // absent on card 1). The next chevron sits at the very bottom
+            // so users still know to scroll.
             <View
-              style={[styles.firstUseHint, { bottom: 66 + insets.bottom + 78 }]}
+              style={[styles.firstUseHint, { top: insets.top + 56 }]}
               pointerEvents="none"
             >
               <Ionicons name="arrow-down" size={14} color={colors.background} />
