@@ -388,7 +388,8 @@ export default function OnboardingScreen() {
   // Ref that always points at the LATEST animateSwipe closure — same
   // pattern the main Swipe tab uses (animateSwipeRef). Assigned on
   // every render, read from PanResponder's release callback.
-  const animateSwipeRef = useRef<(dir: "left" | "right", input?: "gesture" | "button") => Promise<void>>(async () => {});
+  const noopSwipe = useRef<(dir: "left" | "right", input?: "gesture" | "button") => Promise<void>>(async () => {}).current;
+  const animateSwipeRef = useRef<(dir: "left" | "right", input?: "gesture" | "button") => Promise<void>>(noopSwipe);
   animateSwipeRef.current = animateSwipe;
 
   function skipCard() {
@@ -418,6 +419,15 @@ export default function OnboardingScreen() {
         useNativeDriver: false,
       }),
       onPanResponderRelease: (_, gesture) => {
+        // TEMP diagnostic — server-visible signal that release fires
+        // and what dx/dy the release callback sees. Confirms whether
+        // the "drag around screen, release does nothing" symptom is
+        // (a) release never firing or (b) firing but not committing.
+        trackEvent("onboarding_calibration_release_debug", {
+          dx: Math.round(gesture.dx),
+          dy: Math.round(gesture.dy),
+          ref_is_noop: animateSwipeRef.current === noopSwipe,
+        });
         if (gesture.dx > SWIPE_THRESHOLD) {
           void animateSwipeRef.current("right", "gesture");
           return;
