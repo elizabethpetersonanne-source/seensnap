@@ -98,13 +98,17 @@ def get_previews_feed(
     """Personalized Previews feed. Fetches candidates via the shared
     recommendation engine, then tries to pull an official teaser/trailer
     for each. Returns up to `limit` items that have a playable video."""
-    # Over-fetch recommendations because many candidates won't have an
-    # eligible YouTube teaser/trailer — spec §21 Phase 0 flags exactly
-    # this coverage risk. 3x oversample is a reasonable MVP heuristic.
+    # Over-fetch recommendations aggressively — many titles don't have
+    # an eligible YouTube teaser/trailer, and users reported "only see
+    # one preview". 5x oversample + 60 minimum keeps the feed deep
+    # even for cold-start users with thin rec pools. Spec §21 Phase 0
+    # flags this as the core coverage risk that a persistent
+    # media_videos index will eventually solve.
+    over_fetch = max(60, limit * 5)
     candidates = get_social_recommendations(
         db,
         current_user.id,
-        limit=min(limit * 3, 60),
+        limit=min(over_fetch, 120),
         session_id=session_id,
     )
 

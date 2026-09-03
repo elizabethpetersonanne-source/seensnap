@@ -155,6 +155,7 @@ export default function PreviewsScreen() {
   const [detailLoading, setDetailLoading] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const seenImpressionsRef = useRef<Set<string>>(new Set());
+  const listRef = useRef<FlatList<PreviewFeedItem>>(null);
 
   const RESERVED_BOTTOM_NAV = 66;
   const cardHeight = viewportHeight - insets.top - insets.bottom - RESERVED_BOTTOM_NAV;
@@ -166,7 +167,10 @@ export default function PreviewsScreen() {
     setLoading(true);
     setError(null);
     try {
-      const resp = await apiRequest<PreviewFeedResponse>("/previews/feed?limit=15", {
+      // Ask for 25 — the backend over-fetches candidates 3x on top of
+      // this because many recs don't have TMDB videos, but 25 keeps
+      // the feed feeling deep even if only a fraction resolve.
+      const resp = await apiRequest<PreviewFeedResponse>("/previews/feed?limit=25", {
         token: sessionToken,
       });
       setItems(resp.items);
@@ -251,6 +255,7 @@ export default function PreviewsScreen() {
         </View>
       ) : (
         <FlatList
+          ref={listRef}
           data={items}
           keyExtractor={(item) => item.feed_item_id}
           pagingEnabled
@@ -338,6 +343,59 @@ export default function PreviewsScreen() {
           }}
         />
       )}
+
+      {/* Feed-position indicator + navigation controls — makes it
+          obvious that the feed continues beyond the first card and
+          gives keyboard / mouse users an explicit next/prev affordance.
+          Hidden when loading / empty / error. */}
+      {!loading && !error && items.length > 0 ? (
+        <>
+          <View style={[styles.positionBadge, { top: insets.top + 12 }]}>
+            <Text style={styles.positionBadgeText}>
+              {activeIndex + 1} / {items.length}
+            </Text>
+          </View>
+          {activeIndex > 0 ? (
+            <Pressable
+              style={[styles.navChevron, styles.navChevronTop, { top: insets.top + 12 }]}
+              onPress={() => {
+                const target = Math.max(0, activeIndex - 1);
+                listRef.current?.scrollToIndex({ index: target, animated: true });
+              }}
+              accessibilityLabel="Previous preview"
+            >
+              <Ionicons name="chevron-up" size={22} color={colors.ink} />
+            </Pressable>
+          ) : null}
+          {activeIndex < items.length - 1 ? (
+            <Pressable
+              style={[
+                styles.navChevron,
+                styles.navChevronBottom,
+                { bottom: 66 + insets.bottom + 16 },
+              ]}
+              onPress={() => {
+                const target = Math.min(items.length - 1, activeIndex + 1);
+                listRef.current?.scrollToIndex({ index: target, animated: true });
+              }}
+              accessibilityLabel="Next preview"
+            >
+              <Ionicons name="chevron-down" size={22} color={colors.ink} />
+            </Pressable>
+          ) : null}
+          {activeIndex === 0 ? (
+            <View
+              style={[styles.firstUseHint, { bottom: 66 + insets.bottom + 78 }]}
+              pointerEvents="none"
+            >
+              <Ionicons name="arrow-down" size={14} color={colors.background} />
+              <Text style={styles.firstUseHintText}>
+                Scroll or tap ⌄ for the next preview
+              </Text>
+            </View>
+          ) : null}
+        </>
+      ) : null}
 
       <SaveToListSheet
         visible={showSaveSheet}
@@ -505,5 +563,52 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     color: colors.ink,
     textTransform: "uppercase",
+  },
+  positionBadge: {
+    position: "absolute",
+    right: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+  },
+  positionBadgeText: {
+    fontFamily: fonts.mono,
+    fontSize: 11,
+    letterSpacing: 0.5,
+    color: colors.ink,
+  },
+  navChevron: {
+    position: "absolute",
+    left: 12,
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.6)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.12)",
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  navChevronTop: {},
+  navChevronBottom: {},
+  firstUseHint: {
+    position: "absolute",
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  firstUseHintText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 0.6,
+    color: colors.background,
   },
 });
