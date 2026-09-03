@@ -19,6 +19,7 @@ type TabRouteName =
   | "index"
   | "social"
   | "swipe"
+  | "previews"
   | "for-you"
   | "my-picks"
   | "teams"
@@ -35,6 +36,8 @@ const TAB_CONFIG: Record<
   index: { label: "Discover", icon: "compass-outline", iconFocused: "compass" },
   social: { label: "Social", icon: "people-circle-outline", iconFocused: "people-circle" },
   swipe: { label: "Swipe", icon: "layers-outline", iconFocused: "layers" },
+  // Previews spec §6 — dedicated top-level destination. Play-in-frame icon.
+  previews: { label: "Previews", icon: "play-circle-outline", iconFocused: "play-circle" },
   "for-you": { label: "Scene DNA", icon: "map-outline", iconFocused: "map" },
   "my-picks": { label: "My Picks", icon: "bookmark-outline", iconFocused: "bookmark" },
   teams: { label: "Teams", icon: "people-outline", iconFocused: "people" },
@@ -157,6 +160,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="search" options={{ href: null }} />
       <Tabs.Screen name="social" />
       <Tabs.Screen name="swipe" />
+      <Tabs.Screen name="previews" />
       <Tabs.Screen name="for-you" />
       <Tabs.Screen name="my-picks" />
       <Tabs.Screen name="teams" />
