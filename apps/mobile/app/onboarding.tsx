@@ -1,6 +1,6 @@
 import * as SessionStorage from "@/lib/session-storage";
 import { router } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
   Image,
@@ -308,145 +308,141 @@ export default function OnboardingScreen() {
     }
   }, [user?.display_name, displayName]);
 
-  // Calibration swipe card
+  // ─── Gesture wiring — mirrors main Swipe tab EXACTLY ──────────────
+  // Refs (not state) for the index/count the release callback reads,
+  // so the once-created PanResponder always sees fresh values without
+  // needing to be recreated. State updates go through functional
+  // setState so React batching doesn't cause race conditions.
+
   const pan = useRef(new Animated.ValueXY()).current;
-  // Ref that always points at the LATEST swipeCard closure. The
-  // PanResponder is created once with useRef and its release callback
-  // otherwise captures the first-render swipeCard — which sees
-  // candidates=[] / calibrateIndex=0 and early-returns. Same pattern
-  // as the main Swipe tab's animateSwipeRef.
-  const swipeCardRef = useRef<(dir: "left" | "right", input?: "gesture" | "button") => void>(() => {});
+  const calibrateIndexRef = useRef(0);
+  const swipeCountRef = useRef(0);
+  const candidatesRef = useRef<Title[]>([]);
+  const sessionTokenRef = useRef<string | null>(null);
 
-  const recordSwipe = useCallback(
-    async (
-      direction: "left" | "right",
-      titleId: string,
-      inputMethod: "gesture" | "button",
-      position: number,
-    ) => {
-      if (!sessionToken) return;
-      try {
-        await apiRequest("/titles/swipes", {
-          method: "POST",
-          token: sessionToken,
-          body: JSON.stringify({
-            title_id: titleId,
-            direction,
-            source_surface: "onboarding_calibration",
-            // Spec §12: idempotent swipe writes. Per-decision key so
-            // a retried POST doesn't count as a double signal.
-            idempotency_key: `onboarding:${titleId}:${direction}:${position}`,
-          }),
-        });
-        // Spec §14 canonical event with action/title_id/position/input_method.
-        trackEvent("onboarding_calibration_action", {
-          action: direction === "left" ? "pass" : "more_like_this",
+  useEffect(() => { calibrateIndexRef.current = calibrateIndex; }, [calibrateIndex]);
+  useEffect(() => { swipeCountRef.current = swipeCount; }, [swipeCount]);
+  useEffect(() => { candidatesRef.current = candidates; }, [candidates]);
+  useEffect(() => { sessionTokenRef.current = sessionToken ?? null; }, [sessionToken]);
+
+  async function recordSwipe(
+    direction: "left" | "right",
+    titleId: string,
+    inputMethod: "gesture" | "button",
+    position: number,
+  ) {
+    const tok = sessionTokenRef.current;
+    if (!tok) return;
+    try {
+      await apiRequest("/titles/swipes", {
+        method: "POST",
+        token: tok,
+        body: JSON.stringify({
           title_id: titleId,
-          position,
-          input_method: inputMethod,
-        });
-      } catch {
-        trackEvent("onboarding_error", { step: "calibrate", code: "swipe_record_failed" });
-        // Non-blocking — swipe is best-effort during calibration
-      }
-    },
-    [sessionToken]
-  );
-
-  const swipeCard = useCallback(
-    (direction: "left" | "right", inputMethod: "gesture" | "button" = "gesture") => {
-      const card = candidates[calibrateIndex];
-      if (!card) return;
-
-      // Match main-tab swipe: direction-specific sound cue at exit start.
-      playSwipeSound(direction);
-
-      const toX = direction === "right" ? 400 : -400;
-      const positionAtSwipe = swipeCount + 1;
-      Animated.timing(pan, {
-        toValue: { x: toX, y: 0 },
-        duration: 200,
-        // JS driver — useNativeDriver:true silently no-ops on some
-        // RN-Web paths for translate targets, leaving pan stuck at
-        // the dragged position and the completion callback never firing.
-        useNativeDriver: false,
-      }).start(() => {
-        pan.setValue({ x: 0, y: 0 });
-        void recordSwipe(direction, card.id, inputMethod, positionAtSwipe);
-        const next = calibrateIndex + 1;
-        const nextCount = swipeCount + 1;
-        setCalibrateIndex(next);
-        setSwipeCount(nextCount);
-        if (nextCount >= CALIBRATION_TARGET) {
-          trackEvent("onboarding_calibration_completed", { signals: nextCount });
-          advance("dna");
-        }
+          direction,
+          source_surface: "onboarding_calibration",
+          idempotency_key: `onboarding:${titleId}:${direction}:${position}`,
+        }),
       });
-    },
-    [calibrateIndex, candidates, pan, recordSwipe, swipeCount]
-  );
+      trackEvent("onboarding_calibration_action", {
+        action: direction === "left" ? "pass" : "more_like_this",
+        title_id: titleId,
+        position,
+        input_method: inputMethod,
+      });
+    } catch {
+      trackEvent("onboarding_error", { step: "calibrate", code: "swipe_record_failed" });
+    }
+  }
 
-  // Keep the ref pointed at the latest swipeCard closure so the
-  // memoized PanResponder release callback always sees fresh state.
-  swipeCardRef.current = swipeCard;
-
-  // Per spec ONB-01: skip / "don't know" is neutral. Advance past the card without
-  // recording a swipe and without incrementing swipeCount toward the 20-signal target.
-  const skipCard = useCallback(() => {
-    const card = candidates[calibrateIndex];
+  async function animateSwipe(
+    direction: "left" | "right",
+    inputMethod: "gesture" | "button" = "gesture",
+  ) {
+    const idx = calibrateIndexRef.current;
+    const card = candidatesRef.current[idx];
     if (!card) return;
-    // Non-decision — no swipe event recorded, no signal counted.
-    // Spec §14 has no dedicated skip event; the funnel captures
-    // "reached calibration but didn't complete" via _exited/_resumed.
-    trackEvent("onboarding_calibration_exited", { position: calibrateIndex + 1, reason: "card_skip" });
+
+    playSwipeSound(direction);
+    const toValue = direction === "right" ? { x: 420, y: 30 } : { x: -420, y: 30 };
+
+    await new Promise<void>((resolve) => {
+      Animated.timing(pan, { toValue, duration: 200, useNativeDriver: false })
+        .start(() => resolve());
+    });
+
+    const positionAtSwipe = swipeCountRef.current + 1;
+    void recordSwipe(direction, card.id, inputMethod, positionAtSwipe);
     setCalibrateIndex((i) => i + 1);
-    // If we're about to run out of cards, gracefully advance to the DNA reveal
-    // even without hitting 20 — the reveal already handles low-signal state.
-    if (calibrateIndex + 1 >= candidates.length) {
+    setSwipeCount((c) => {
+      const next = c + 1;
+      if (next >= CALIBRATION_TARGET) {
+        trackEvent("onboarding_calibration_completed", { signals: next });
+        advance("dna");
+      }
+      return next;
+    });
+    pan.setValue({ x: 0, y: 0 });
+  }
+
+  // Ref that always points at the LATEST animateSwipe closure — same
+  // pattern the main Swipe tab uses (animateSwipeRef). Assigned on
+  // every render, read from PanResponder's release callback.
+  const animateSwipeRef = useRef<(dir: "left" | "right", input?: "gesture" | "button") => Promise<void>>(async () => {});
+  animateSwipeRef.current = animateSwipe;
+
+  function skipCard() {
+    const idx = calibrateIndexRef.current;
+    const card = candidatesRef.current[idx];
+    if (!card) return;
+    trackEvent("onboarding_calibration_exited", { position: idx + 1, reason: "card_skip" });
+    setCalibrateIndex((i) => i + 1);
+    if (idx + 1 >= candidatesRef.current.length) {
       advance("dna");
     }
-  }, [calibrateIndex, candidates]);
+  }
 
-  // Recreate the PanResponder whenever swipeCard identity changes so
-  // release-callback closures ALWAYS see fresh candidates + index +
-  // count. The ref-only pattern from main Swipe wasn't sufficient
-  // here (user reported drag still did nothing after that fix). This
-  // is defensive belt-and-suspenders: even a stale ref would be
-  // overwritten by a new PanResponder instance each state change.
-  const panResponder = useMemo(
-    () =>
-      PanResponder.create({
-        onStartShouldSetPanResponder: () => true,
-        onStartShouldSetPanResponderCapture: () => true,
-        onMoveShouldSetPanResponder: () => true,
-        onMoveShouldSetPanResponderCapture: (_, gesture) =>
-          Math.abs(gesture.dx) > 4 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
-        onPanResponderTerminationRequest: () => false,
-        onShouldBlockNativeResponder: () => true,
-        onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
-          useNativeDriver: false,
-        }),
-        onPanResponderRelease: (_, gesture) => {
-          if (gesture.dx > SWIPE_THRESHOLD) {
-            swipeCard("right", "gesture");
-          } else if (gesture.dx < -SWIPE_THRESHOLD) {
-            swipeCard("left", "gesture");
-          } else {
-            // JS driver here too — see above. useNativeDriver:true
-            // was leaving the card stuck at the dragged position on
-            // web because the spring never actually ran.
-            Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: false }).start();
-          }
-        },
-        // Terminate (e.g. browser interrupts the gesture, focus moves,
-        // pointercancel fires) — always snap the card back to origin
-        // so it's never left orbiting the screen with no way to reset.
-        onPanResponderTerminate: () => {
-          Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: false }).start();
-        },
+  // PanResponder created ONCE — same as main Swipe. The release
+  // callback dispatches through animateSwipeRef so the always-current
+  // animateSwipe closure runs. No useMemo recreation, no state deps.
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponderCapture: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: (_, gesture) =>
+        Math.abs(gesture.dx) > 4 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+      onPanResponderTerminationRequest: () => false,
+      onShouldBlockNativeResponder: () => true,
+      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
+        useNativeDriver: false,
       }),
-    [pan, swipeCard],
-  );
+      onPanResponderRelease: (_, gesture) => {
+        if (gesture.dx > SWIPE_THRESHOLD) {
+          void animateSwipeRef.current("right", "gesture");
+          return;
+        }
+        if (gesture.dx < -SWIPE_THRESHOLD) {
+          void animateSwipeRef.current("left", "gesture");
+          return;
+        }
+        Animated.spring(pan, {
+          toValue: { x: 0, y: 0 },
+          friction: 8,
+          tension: 100,
+          useNativeDriver: false,
+        }).start();
+      },
+      onPanResponderTerminate: () => {
+        Animated.spring(pan, {
+          toValue: { x: 0, y: 0 },
+          friction: 8,
+          tension: 100,
+          useNativeDriver: false,
+        }).start();
+      },
+    }),
+  ).current;
 
   async function saveBasicsAndContinue() {
     if (!sessionToken) {
@@ -901,7 +897,7 @@ export default function OnboardingScreen() {
                       styles.controlBtnNeutral,
                       pressed && { opacity: 0.7 },
                     ]}
-                    onPress={() => swipeCard("left", "button")}
+                    onPress={() => void animateSwipe("left", "button")}
                     accessibilityRole="button"
                     accessibilityLabel={`Pass on ${currentCard.title}`}
                   >
@@ -914,7 +910,7 @@ export default function OnboardingScreen() {
                       styles.controlBtnPrimary,
                       pressed && { opacity: 0.85 },
                     ]}
-                    onPress={() => swipeCard("right", "button")}
+                    onPress={() => void animateSwipe("right", "button")}
                     accessibilityRole="button"
                     accessibilityLabel={`More like ${currentCard.title}`}
                   >
