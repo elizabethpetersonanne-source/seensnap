@@ -15,7 +15,7 @@ import {
 } from "react-native";
 // Use safe-area-context (which honors `edges` prop) — the RN built-in SafeAreaView
 // always adds top padding regardless of edges, which pushed the logo down on this tab.
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
@@ -672,25 +672,66 @@ export default function SwipeTab() {
   // (>=900) the workspace becomes a two-column deck + details rail; on
   // narrow it's a vertical stack. Never let the card become a landscape
   // banner and never let it grow beyond ~420px on huge displays.
-  const { width: viewportWidth } = useWindowDimensions();
-  const isWide = viewportWidth >= 900;
+  // Responsive layout mode per Mobile Responsive Remediation spec §6.
+  // Modes are computed from BOTH width and height because a
+  // 1200×580 desktop window needs the compact treatment even though
+  // width alone would say "roomy". Bottom nav + safe areas are
+  // reserved before deriving the poster's height budget.
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  const safeInsets = useSafeAreaInsets();
+  type LayoutMode = "roomy_wide" | "compact_wide" | "narrow_tall" | "narrow_short" | "failsafe";
+  const layoutMode: LayoutMode = (() => {
+    if (viewportHeight < 560 || viewportWidth < 320) return "failsafe";
+    if (viewportWidth >= 900 && viewportHeight >= 760) return "roomy_wide";
+    if (viewportWidth >= 720 || viewportHeight >= 560) {
+      if (viewportWidth >= 720) return "compact_wide";
+    }
+    if (viewportHeight >= 700) return "narrow_tall";
+    return "narrow_short";
+  })();
+  const isNarrow = layoutMode === "narrow_tall" || layoutMode === "narrow_short" || layoutMode === "failsafe";
+  const isWide = !isNarrow;
+
   const workspacePadding = viewportWidth < 480 ? 12 : 20;
   const workspaceMaxWidth = 980;
   const availableWorkspaceWidth = Math.min(viewportWidth, workspaceMaxWidth);
-  // Side-by-side (poster left / details right) at EVERY viewport per
-  // user feedback: on mobile, the old vertical stack forced scrolling
-  // to see details. Poster share is ~45% on narrow / ~48% on wide so
-  // both columns are usable on a phone without wrapping. The inter-
-  // column gap is workspaceGap.
-  const workspaceGap = isWide ? 32 : 12;
-  const posterShare = isWide ? 0.48 : 0.45;
-  const posterColumnWidth = Math.min(
-    isWide ? 400 : 260,
-    (availableWorkspaceWidth - workspacePadding * 2 - workspaceGap) * posterShare,
-  );
-  const posterMaxWidth = isWide
-    ? Math.min(400, Math.max(320, posterColumnWidth))
-    : Math.max(120, posterColumnWidth);
+  const workspaceGap = isNarrow ? 12 : (layoutMode === "compact_wide" ? 20 : 32);
+
+  // Height-budgeted poster sizing per spec §9. Reserve persistent UI
+  // (safe areas, shared header, feature header, decision dock, bottom
+  // nav) then derive the poster from the SMALLER of width- and
+  // height-constrained bounds so a squat viewport shrinks the card
+  // rather than clipping the actions below it.
+  const RESERVED_SHARED_HEADER = 64;      // compact standard header baseline
+  const RESERVED_FEATURE_HEADER =
+    layoutMode === "narrow_short" ? 48 :
+    layoutMode === "narrow_tall" ? 64 : 92;
+  const RESERVED_DECISION_DOCK =
+    layoutMode === "narrow_short" ? 132 :
+    isNarrow ? 156 : 160;                 // control row + Watch Now + gap
+  const RESERVED_BOTTOM_NAV = 66;         // approx tab bar height incl padding
+  const reservedInterfaceHeight =
+    safeInsets.top + safeInsets.bottom +
+    RESERVED_SHARED_HEADER + RESERVED_FEATURE_HEADER +
+    RESERVED_DECISION_DOCK + RESERVED_BOTTOM_NAV +
+    // Extra breathing room for gaps / synopsis / genre chips in the
+    // details column; only applied when they SHARE vertical space with
+    // the poster (single-column narrow modes).
+    (isNarrow ? 220 : 32);
+
+  const availablePosterHeight = Math.max(240, viewportHeight - reservedInterfaceHeight);
+  const heightLimitedWidth = availablePosterHeight * (2 / 3);
+  const modeMaxWidth =
+    layoutMode === "roomy_wide" ? 400 :
+    layoutMode === "compact_wide" ? 340 :
+    layoutMode === "narrow_tall" ? 220 :
+    layoutMode === "narrow_short" ? 185 :
+    260;
+  const widthAvailableForPoster = isNarrow
+    ? availableWorkspaceWidth - workspacePadding * 2
+    : (availableWorkspaceWidth - workspacePadding * 2 - workspaceGap) * 0.48;
+  const posterMaxWidth = Math.min(modeMaxWidth, widthAvailableForPoster, heightLimitedWidth);
+  const posterColumnWidth = isNarrow ? posterMaxWidth : posterMaxWidth;
 
   animateSwipeRef.current = animateSwipe;
   openDetailsForActiveRef.current = () => {
@@ -723,7 +764,10 @@ export default function SwipeTab() {
           Clamped to ~3-4 lines; the full overview lives in title detail.
           No Wikipedia/Wikimedia fallback per §10 no-refresh contract. */}
       {activeSynopsis ? (
-        <Text style={styles.detailsSynopsis} numberOfLines={isWide ? 3 : 4}>
+        <Text
+          style={styles.detailsSynopsis}
+          numberOfLines={layoutMode === "narrow_short" ? 2 : isWide ? 3 : 3}
+        >
           {activeSynopsis}
         </Text>
       ) : null}
@@ -732,7 +776,10 @@ export default function SwipeTab() {
           <View style={styles.detailsReasonRule} />
           <View style={{ flex: 1 }}>
             <Text style={styles.detailsReasonLabel}>WHY IT'S HERE</Text>
-            <Text style={styles.detailsReasonText} numberOfLines={3}>
+            <Text
+              style={styles.detailsReasonText}
+              numberOfLines={layoutMode === "narrow_short" ? 2 : 3}
+            >
               {humanizeReason(activeCard.reason)}
             </Text>
           </View>
@@ -808,17 +855,29 @@ export default function SwipeTab() {
           variant="standard" and pass NO artworkSource so it collapses to
           the minimum shell height without a photographic banner —
           poster is the workspace's focal element, not the header. */}
+      {/* Shared header — on narrow / short modes we drop the
+          photographic artwork so the header collapses to its
+          compact utility shell (~64px) per spec §8. Roomy/compact
+          wide keep the artwork treatment. */}
       <SeenSnapHeader
         variant="standard"
         title=""
         subtitle=""
-        artworkSource={headerArtwork}
+        artworkSource={isNarrow ? null : headerArtwork}
         fallbackSeed={3}
       />
       <ScrollView
         contentContainerStyle={[
           styles.workspaceScroll,
-          { paddingHorizontal: workspacePadding },
+          {
+            paddingHorizontal: workspacePadding,
+            // Reserve enough bottom room so the decision controls +
+            // Watch Now never scroll beneath the fixed tab bar +
+            // safe-area inset. Spec §11: "Provide page/scroller
+            // bottom padding equal to the decision-dock height +
+            // bottom-navigation height + safe-area inset."
+            paddingBottom: 40 + RESERVED_BOTTOM_NAV + safeInsets.bottom,
+          },
         ]}
         showsVerticalScrollIndicator={false}
       >
@@ -829,7 +888,11 @@ export default function SwipeTab() {
             <View style={{ flex: 1, gap: 4 }}>
               <Text style={styles.featureEyebrow}>TODAY&apos;S PICKS</Text>
               <Text style={styles.featureTitle}>What&apos;s Next?</Text>
-              <Text style={styles.featureSubtitle}>Swipe to shape your SceneDNA.</Text>
+              {/* Hide the secondary SceneDNA sentence on the shortest
+                  narrow mode to reclaim vertical space (spec §8). */}
+              {layoutMode !== "narrow_short" ? (
+                <Text style={styles.featureSubtitle}>Swipe to shape your SceneDNA.</Text>
+              ) : null}
             </View>
             <Text style={styles.featureProgress}>
               {progress}/{SESSION_LENGTH}
@@ -986,17 +1049,28 @@ export default function SwipeTab() {
         </Animated.View>
       ) : null}
 
-      {/* Swipe workspace — always side-by-side (poster left, details
-          right) so a phone user doesn't have to scroll to see the
-          synopsis / streaming / reason. Column widths are computed
-          from the viewport so nothing overflows on 375px. */}
+      {/* Swipe workspace — layout composition per Mobile Responsive
+          Remediation spec §6/§10. Narrow modes (<720w) render a
+          TRUE single column: compact header → centered poster →
+          full-width title context → decision area. Wide modes keep
+          the approved two-column composition. Direction/alignItems
+          come from inline style so the same JSX handles both. */}
       {!loading && !revealVisible ? (
-        <View style={[styles.workspace, { gap: workspaceGap }]}>
+        <View
+          style={[
+            styles.workspace,
+            {
+              gap: workspaceGap,
+              flexDirection: isNarrow ? "column" : "row",
+              alignItems: isNarrow ? "center" : "flex-start",
+            },
+          ]}
+        >
           {/* Poster deck column */}
           <View
             style={[
               styles.deckColumn,
-              { width: posterColumnWidth },
+              { width: isNarrow ? "100%" : posterColumnWidth },
             ]}
           >
             <View
@@ -1091,10 +1165,14 @@ export default function SwipeTab() {
             </View>
           </View>
 
-          {/* Details + controls column — always flex:1 so it takes
-              the remaining workspace width, gap is applied by the
-              parent row instead of paddingLeft. */}
-          <View style={[styles.railColumn, { flex: 1 }]}>
+          {/* Details + controls column — full width on narrow, flex:1
+              on wide so it takes the remaining row space. */}
+          <View
+            style={[
+              styles.railColumn,
+              isNarrow ? { width: "100%" } : { flex: 1 },
+            ]}
+          >
             {detailsAndControls}
           </View>
         </View>
