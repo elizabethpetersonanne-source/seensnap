@@ -1,6 +1,6 @@
 import * as SessionStorage from "@/lib/session-storage";
 import { router } from "expo-router";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
   Image,
@@ -404,37 +404,37 @@ export default function OnboardingScreen() {
     }
   }, [calibrateIndex, candidates]);
 
-  const panResponder = useRef(
-    PanResponder.create({
-      // Same capture-phase + termination guards as the main Swipe tab
-      // so horizontal drags aren't stolen by the parent ScrollView on
-      // RN-Web / mobile Safari (fixes stuck-finger swipe on mobile).
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponderCapture: (_, gesture) =>
-        Math.abs(gesture.dx) > 4 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
-      onPanResponderTerminationRequest: () => false,
-      onShouldBlockNativeResponder: () => true,
-      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
-        useNativeDriver: false,
+  // Recreate the PanResponder whenever swipeCard identity changes so
+  // release-callback closures ALWAYS see fresh candidates + index +
+  // count. The ref-only pattern from main Swipe wasn't sufficient
+  // here (user reported drag still did nothing after that fix). This
+  // is defensive belt-and-suspenders: even a stale ref would be
+  // overwritten by a new PanResponder instance each state change.
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onStartShouldSetPanResponder: () => true,
+        onStartShouldSetPanResponderCapture: () => true,
+        onMoveShouldSetPanResponder: () => true,
+        onMoveShouldSetPanResponderCapture: (_, gesture) =>
+          Math.abs(gesture.dx) > 4 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+        onPanResponderTerminationRequest: () => false,
+        onShouldBlockNativeResponder: () => true,
+        onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
+          useNativeDriver: false,
+        }),
+        onPanResponderRelease: (_, gesture) => {
+          if (gesture.dx > SWIPE_THRESHOLD) {
+            swipeCard("right", "gesture");
+          } else if (gesture.dx < -SWIPE_THRESHOLD) {
+            swipeCard("left", "gesture");
+          } else {
+            Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: true }).start();
+          }
+        },
       }),
-      onPanResponderRelease: (_, gesture) => {
-        // Call through the ref so we always hit the LATEST swipeCard
-        // closure (with current candidates + calibrateIndex + swipeCount).
-        // Otherwise this fires the first-render swipeCard, which saw
-        // candidates=[] and early-returned — the reported "swipe doesn't
-        // actually work" symptom.
-        if (gesture.dx > SWIPE_THRESHOLD) {
-          swipeCardRef.current("right", "gesture");
-        } else if (gesture.dx < -SWIPE_THRESHOLD) {
-          swipeCardRef.current("left", "gesture");
-        } else {
-          Animated.spring(pan, { toValue: { x: 0, y: 0 }, useNativeDriver: true }).start();
-        }
-      },
-    })
-  ).current;
+    [pan, swipeCard],
+  );
 
   async function saveBasicsAndContinue() {
     if (!sessionToken) {
@@ -823,12 +823,18 @@ export default function OnboardingScreen() {
                   {...panResponder.panHandlers}
                 >
                   {currentCard.poster_url ? (
-                    <Image
-                      source={{ uri: currentCard.poster_url }}
-                      style={StyleSheet.absoluteFillObject}
-                      resizeMode="contain"
-                      accessibilityLabel={`${currentCard.title} poster`}
-                    />
+                    // Wrap in a View with pointerEvents="none" so
+                    // touches pass through to the parent Animated.View
+                    // — on RN-Web the <img> element otherwise absorbs
+                    // touches and PanResponder misses gesture starts.
+                    <View style={StyleSheet.absoluteFillObject} pointerEvents="none">
+                      <Image
+                        source={{ uri: currentCard.poster_url }}
+                        style={StyleSheet.absoluteFillObject}
+                        resizeMode="contain"
+                        accessibilityLabel={`${currentCard.title} poster`}
+                      />
+                    </View>
                   ) : (
                     <View style={styles.deckPosterFallback}>
                       <Text style={styles.deckPosterFallbackTitle} numberOfLines={4}>
