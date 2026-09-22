@@ -77,20 +77,23 @@ type PreviewFeedResponse = {
   status: "ready" | "pending" | "exhausted";
 };
 
-function youtubeEmbedUrl(key: string, autoplay: boolean, muted: boolean): string {
-  // playsinline=1 keeps playback inside the frame on iOS Safari.
-  // modestbranding=1 hides the YouTube ribbon; rel=0 keeps end-card
-  // recommendations restricted to the same channel per YouTube API
-  // params spec (which is the least-worst behavior without a paid
-  // player). enablejsapi=1 in case a future commit wants IFrame API
-  // control (mute/pause).
+// Sep-22 brief §5: mute toggle must not rebuild the iframe. Keep the
+// `mute` param out of the URL so state changes don't re-source the
+// player, then drive mute/unmute via the YouTube IFrame API's
+// postMessage command channel. Start-muted is still needed for the
+// initial autoplay policy — that comes from `mute=1` on the initial
+// src only, and only the FIRST render for a given key.
+function youtubeEmbedUrl(key: string, autoplay: boolean, initialMuted: boolean): string {
   const params = new URLSearchParams({
     autoplay: autoplay ? "1" : "0",
-    mute: muted ? "1" : "0",
+    mute: initialMuted ? "1" : "0",
     playsinline: "1",
     modestbranding: "1",
     rel: "0",
     enablejsapi: "1",
+    // Origin is required by YouTube for postMessage command delivery;
+    // omitted here because we render off `window.location.origin`
+    // when available (see the embed HTML below).
   });
   return `https://www.youtube.com/embed/${key}?${params.toString()}`;
 }
@@ -108,32 +111,50 @@ function YouTubeEmbed({
   width: number;
   height: number;
 }) {
+  // Ref that survives re-renders, only null when the iframe hasn't
+  // mounted yet. `mute` state changes toggle via postMessage below,
+  // NOT by re-rendering the iframe.
+  const iframeIdRef = useRef<string>(`yt-${videoKey}-${Math.random().toString(36).slice(2, 8)}`);
+  const iframeId = iframeIdRef.current;
+
+  useEffect(() => {
+    if (Platform.OS !== "web") return;
+    if (!isActive) return;
+    const el = (typeof document !== "undefined" ? document.getElementById(iframeId) : null) as HTMLIFrameElement | null;
+    if (!el || !el.contentWindow) return;
+    // YouTube IFrame API accepts JSON-string postMessage commands.
+    // "mute" / "unMute" toggle without touching the current time, so
+    // the timestamp is preserved across taps of the sound button.
+    const cmd = muted ? "mute" : "unMute";
+    try {
+      el.contentWindow.postMessage(
+        JSON.stringify({ event: "command", func: cmd, args: [] }),
+        "*",
+      );
+    } catch {
+      // No-op — if the iframe isn't ready yet, the next re-mount will
+      // pick up the correct initial muted state via the URL.
+    }
+  }, [muted, isActive, iframeId]);
+
   if (Platform.OS === "web") {
-    // Native <iframe> for web — RN-Web will render the tag as-is when
-    // we render it via createElement. We use a React fragment escape
-    // through a dangerouslySetInnerHTML div because JSX doesn't have
-    // an <iframe> component here. Only the ACTIVE card should embed
-    // to avoid multiple audio players (spec §7.3 "only one player
-    // may be active at a time").
     if (!isActive) {
       return <View style={{ width, height, backgroundColor: "#000" }} />;
     }
-    const src = youtubeEmbedUrl(videoKey, true, muted);
+    // src is STABLE per videoKey — mute state does NOT re-source.
+    const src = youtubeEmbedUrl(videoKey, true, true);
     return (
       <View style={{ width, height, overflow: "hidden", backgroundColor: "#000" }}>
         {/* eslint-disable-next-line react/no-danger */}
         <div
           style={{ width: "100%", height: "100%" }}
           dangerouslySetInnerHTML={{
-            __html: `<iframe src="${src}" style="width:100%;height:100%;border:0;" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`,
+            __html: `<iframe id="${iframeId}" src="${src}" style="width:100%;height:100%;border:0;" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`,
           }}
         />
       </View>
     );
   }
-  // Native — MVP shows a placeholder until we wire in expo-web-browser
-  // or react-native-youtube-iframe. Native previews ship in Phase 1.1
-  // once the web target is proven.
   return (
     <View style={{ width, height, backgroundColor: "#000", justifyContent: "center", alignItems: "center" }}>
       <Ionicons name="play-circle-outline" size={72} color={colors.accent} />

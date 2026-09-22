@@ -22,6 +22,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
+import { RatingBadge, RatingEditor, subscribeRatingChanges, type RatingSnapshot } from "@/components/rating-editor";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { TasteSignal } from "@/components/taste-signal";
 import { shareTitle } from "@/lib/share";
@@ -126,6 +127,12 @@ export function UniversalTitleModal({
   const [internalLoading, setInternalLoading] = useState(false);
   const [savedState, setSavedState] = useState(isSaved);
   const [savedTitleIds, setSavedTitleIds] = useState<Set<string>>(new Set());
+  // Sep-22 brief §7: sticky personal rating displayed on every
+  // title-bearing surface. The RatingEditor + RatingBadge components
+  // handle the UI; here we hydrate the current viewer's snapshot when
+  // the modal opens so the badge state is right on first paint.
+  const [ratingSnapshot, setRatingSnapshot] = useState<RatingSnapshot | null>(null);
+  const [showRatingEditor, setShowRatingEditor] = useState(false);
   const [toast, setToast] = useState<string | null>(null);
   const [selectedPerson, setSelectedPerson] = useState<{
     name: string;
@@ -182,6 +189,37 @@ export function UniversalTitleModal({
     }, 1800);
     return () => clearTimeout(timeout);
   }, [toast, toastOpacity, toastTranslateY]);
+
+  // Sep-22 brief §7: hydrate the viewer's rating snapshot when the
+  // modal opens on a title. Also subscribe to the rating pub-sub so an
+  // edit in ANY other mounted editor / badge updates this modal's
+  // badge in real time.
+  useEffect(() => {
+    let isMounted = true;
+    async function loadRating() {
+      if (!sessionToken || !visible || !activeTitle?.id) {
+        if (isMounted) setRatingSnapshot(null);
+        return;
+      }
+      try {
+        const snap = await apiRequest<RatingSnapshot>(
+          `/me/ratings/${activeTitle.id}`,
+          { token: sessionToken },
+        );
+        if (isMounted) setRatingSnapshot(snap);
+      } catch {
+        if (isMounted) setRatingSnapshot(null);
+      }
+    }
+    void loadRating();
+    return () => { isMounted = false; };
+  }, [sessionToken, visible, activeTitle?.id]);
+
+  useEffect(() => {
+    return subscribeRatingChanges((tid, next) => {
+      if (tid === activeTitle?.id) setRatingSnapshot(next);
+    });
+  }, [activeTitle?.id]);
 
   useEffect(() => {
     let isMounted = true;
@@ -610,6 +648,17 @@ export function UniversalTitleModal({
                   </Pressable>
                 </View>
 
+                {/* Sep-22 brief §7: sticky personal rating. Uses the
+                    shared RatingBadge so the visual identity matches
+                    every other title-bearing surface. Tapping opens
+                    the editor without leaving the modal. */}
+                <View style={styles.ratingRow}>
+                  <RatingBadge
+                    snapshot={ratingSnapshot}
+                    onPress={() => setShowRatingEditor(true)}
+                  />
+                </View>
+
                 {/* Overview */}
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Overview</Text>
@@ -707,6 +756,15 @@ export function UniversalTitleModal({
           </Animated.View>
 
           {/* Secondary sheets — nested inside main modal so iOS stacks them correctly */}
+          <RatingEditor
+            visible={showRatingEditor}
+            token={sessionToken}
+            titleId={currentTitle?.id ?? null}
+            titleName={currentTitle?.title ?? null}
+            initial={ratingSnapshot}
+            onClose={() => setShowRatingEditor(false)}
+            onChanged={setRatingSnapshot}
+          />
           <SaveToListSheet
             visible={showSaveSheet}
             token={sessionToken}
@@ -1366,6 +1424,13 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accentMuted,
     borderWidth: 1,
     borderColor: colors.ink,
+  },
+  ratingRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    marginTop: 4,
+    marginBottom: 8,
+    paddingHorizontal: 12,
   },
   toolbarBtnLabel: {
     fontFamily: fonts.monoSemiBold,

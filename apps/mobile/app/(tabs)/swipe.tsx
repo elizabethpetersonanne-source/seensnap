@@ -156,12 +156,18 @@ export default function SwipeTab() {
       Animated.timing(dnaOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
       Animated.timing(dnaTranslateY, { toValue: 0, duration: 260, useNativeDriver: true }),
     ]).start();
+    // Sep-22 brief §6: no blocking dialog. This overlay was already
+    // pointerEvents="none" so it never captured input — but 4.2s was
+    // long enough to feel like an interruption. Shortened to 1600ms
+    // so it registers as a brief acknowledgement without stopping the
+    // rhythm of swipes. The next swipe cancels it via the clearTimeout
+    // above so consecutive right-swipes never stack banners.
     dnaTimerRef.current = setTimeout(() => {
       Animated.parallel([
-        Animated.timing(dnaOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
-        Animated.timing(dnaTranslateY, { toValue: -12, duration: 220, useNativeDriver: true }),
+        Animated.timing(dnaOpacity, { toValue: 0, duration: 180, useNativeDriver: true }),
+        Animated.timing(dnaTranslateY, { toValue: -12, duration: 180, useNativeDriver: true }),
       ]).start(() => setDnaFeedback(null));
-    }, 4200);
+    }, 1600);
   }
 
   useEffect(() => {

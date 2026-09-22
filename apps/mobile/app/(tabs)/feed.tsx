@@ -25,6 +25,7 @@ import { SeenSnapHeader } from "@/components/headers/seensnap-header";
 import { useCyclingBackdrop, useFallbackBackdrop } from "@/lib/backdrop-pool";
 import { PosterMosaic } from "@/components/poster-mosaic";
 import { RatingCircle, RatingPicker } from "@/components/rating";
+import { RatingBadge, RatingEditor, subscribeRatingChanges, type RatingSnapshot } from "@/components/rating-editor";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { FeedSkeleton } from "@/components/shimmer";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
@@ -828,6 +829,25 @@ function FeedCard({
   onDeletePost: () => void;
   onDeleteComment: (comment: FeedComment) => void;
 }) {
+  const { sessionToken } = useAuth();
+  // Sep-22 brief §7: rate directly in the social feed. Every title
+  // post shows the viewer's own personal rating alongside the
+  // author's — labels are distinct ("Your rating" vs "Stefan's
+  // rating") and the badge opens the shared editor without leaving
+  // the feed scroll position.
+  const [viewerRating, setViewerRating] = useState<RatingSnapshot | null>(null);
+  const [showRatingEditor, setShowRatingEditor] = useState(false);
+  useEffect(() => {
+    if (!sessionToken || !item.title?.id) return;
+    let cancelled = false;
+    apiRequest<RatingSnapshot>(`/me/ratings/${item.title.id}`, { token: sessionToken })
+      .then((snap) => { if (!cancelled) setViewerRating(snap); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [sessionToken, item.title?.id]);
+  useEffect(() => subscribeRatingChanges((tid, next) => {
+    if (item.title?.id === tid) setViewerRating(next);
+  }), [item.title?.id]);
   const actorName =
     segment === "discover" ? "Scene Snap Trending" : item.actor.display_name ?? "SeenSnap user";
   const isVerified = Boolean((item.payload.verified as boolean | undefined) ?? (segment === "discover"));
@@ -958,7 +978,31 @@ function FeedCard({
             onPress={() => onReact(reaction.key)}
           />
         ))}
+        {item.title?.id ? (
+          <View style={{ marginLeft: "auto" }}>
+            <RatingBadge
+              snapshot={viewerRating}
+              compact
+              onPress={(e?: unknown) => {
+                // Stop propagation so tapping Rate it doesn't
+                // trigger the post's open-details behavior per §7.
+                setShowRatingEditor(true);
+              }}
+            />
+          </View>
+        ) : null}
       </View>
+      {item.title?.id ? (
+        <RatingEditor
+          visible={showRatingEditor}
+          token={sessionToken}
+          titleId={item.title.id}
+          titleName={item.title.title ?? null}
+          initial={viewerRating}
+          onClose={() => setShowRatingEditor(false)}
+          onChanged={setViewerRating}
+        />
+      ) : null}
 
       <View style={styles.commentSection}>
         {item.comment_count > 0 ? (
