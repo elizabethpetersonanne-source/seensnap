@@ -194,11 +194,16 @@ def _collect_interactions(
             continue
         interactions.append((title, SIGNAL_WEIGHTS["saved"], item.created_at))
 
-    # Swipes — direction picks the weight.
+    # Swipes — direction picks the weight. Sep-22 brief §8: skip
+    # signals the user explicitly excluded from their SceneDNA via
+    # the correction UI.
     swipes = db.execute(
         select(SwipeRecord, ContentTitle)
         .join(ContentTitle, ContentTitle.id == SwipeRecord.content_title_id)
-        .where(SwipeRecord.user_id == user_id)
+        .where(
+            SwipeRecord.user_id == user_id,
+            SwipeRecord.influence_disabled_at.is_(None),
+        )
         .order_by(SwipeRecord.created_at.desc())
         .limit(500)
     ).all()

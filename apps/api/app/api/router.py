@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import analytics, auth, collections, devices, discover, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, search, shares, snips, social, teams, titles, watch_options, watchlist
+from app.api.routes import analytics, auth, collections, devices, discover, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, scene_dna, search, shares, snips, social, teams, titles, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
@@ -39,3 +39,6 @@ api_router.include_router(previews.router, prefix="/previews", tags=["previews"]
 # Sep-22 execution brief §7. Canonical personal score service — every
 # title-bearing surface reads through this so a rating updates everywhere.
 api_router.include_router(ratings.router, prefix="/me/ratings", tags=["ratings"])
+# SceneDNA correction UI per Sep-22 execution brief §8 — recent
+# signals list + disable/enable-influence controls.
+api_router.include_router(scene_dna.router, prefix="/me/scene-dna", tags=["scene-dna"])

@@ -93,6 +93,11 @@ class SwipeRecord(Base):
     # (user_id, idempotency_key). Nullable for backfill compat —
     # historical rows have no key, new writes should always supply one.
     idempotency_key: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    # Sep-22 brief §8: nullable "remove influence" timestamp. NULL means
+    # the signal is active in taste computation; a set value means the
+    # user disabled it via the SceneDNA correction UI. Taste recompute
+    # filters WHERE influence_disabled_at IS NULL.
+    influence_disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

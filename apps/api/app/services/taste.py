@@ -1757,7 +1757,11 @@ def _build_scene_dna_feedback(
         t for _, t in db.execute(
             select(SwipeRecord, ContentTitle)
             .join(ContentTitle, ContentTitle.id == SwipeRecord.content_title_id)
-            .where(SwipeRecord.user_id == user_id, SwipeRecord.direction.in_(("right", "up")))
+            .where(
+                SwipeRecord.user_id == user_id,
+                SwipeRecord.direction.in_(("right", "up")),
+                SwipeRecord.influence_disabled_at.is_(None),
+            )
             .order_by(SwipeRecord.created_at.desc())
             .limit(40)
         ).all() if t is not None
