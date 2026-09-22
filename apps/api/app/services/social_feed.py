@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentTitle
@@ -548,9 +548,17 @@ def hydrate_feed_event(
     watchlist = None
     list_items_preview: list[dict] = []
     list_share_token: str | None = None
+    # Sep-22 brief §12: derive the displayed title count from the
+    # actual authorized list total, INDEPENDENT of the five-poster
+    # preview limit. Previously `item_count` was `len(preview_rows)`
+    # capped at 5, so a 23-title list rendered "5 picks" in the feed.
+    list_actual_total = 0
     if event.list_id is not None:
         watchlist = db.scalar(select(Watchlist).where(Watchlist.id == event.list_id))
         if watchlist is not None:
+            list_actual_total = int(db.scalar(
+                select(func.count(WatchlistItem.id)).where(WatchlistItem.watchlist_id == watchlist.id)
+            ) or 0)
             preview_rows = db.execute(
                 select(WatchlistItem, ContentTitle)
                 .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
@@ -670,7 +678,7 @@ def hydrate_feed_event(
             "id": str(watchlist.id),
             "name": watchlist.name,
             "description": watchlist.description,
-            "item_count": len(list_items_preview),
+            "item_count": list_actual_total,
             "preview": list_items_preview,
             "share_token": list_share_token,
         } if watchlist else None,

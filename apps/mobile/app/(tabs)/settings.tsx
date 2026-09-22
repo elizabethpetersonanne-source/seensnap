@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { appendImageToFormData, pickImageFromLibrary } from "@/lib/image-picker";
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -486,6 +487,26 @@ export default function ProfileScreen() {
             ))}
           </View>
         )}
+
+        {/* Sep-22 brief §9: SceneDNA lives inside Profile. Overview
+             is free; Deep Dive and Evolution are Premium analysis but
+             the correction UI (Recent Signals) is always free. */}
+        <View style={styles.accountSection}>
+          <Text style={styles.sectionKicker}>SCENEDNA</Text>
+          <View style={styles.accountRule} />
+          <Pressable
+            style={({ pressed }) => [styles.accountBtn, pressed && styles.accountBtnPressed]}
+            onPress={() => router.push("/for-you")}
+          >
+            <Text style={styles.accountBtnLabel}>YOUR SCENEDNA</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.accountBtn, pressed && styles.accountBtnPressed]}
+            onPress={() => router.push("/scene-dna/signals")}
+          >
+            <Text style={styles.accountBtnLabel}>RECENT SIGNALS · REMOVE INFLUENCE</Text>
+          </Pressable>
+        </View>
 
         {/* Account actions */}
         <View style={styles.accountSection}>

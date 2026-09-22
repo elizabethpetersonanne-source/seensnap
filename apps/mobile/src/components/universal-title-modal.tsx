@@ -22,7 +22,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
-import { RatingBadge, RatingEditor, subscribeRatingChanges, type RatingSnapshot } from "@/components/rating-editor";
+import { RatingBadge, RatingEditor, WatchStatusToggle, subscribeRatingChanges, type RatingSnapshot } from "@/components/rating-editor";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { TasteSignal } from "@/components/taste-signal";
 import { shareTitle } from "@/lib/share";
@@ -657,6 +657,16 @@ export function UniversalTitleModal({
                     snapshot={ratingSnapshot}
                     onPress={() => setShowRatingEditor(true)}
                   />
+                  {currentTitle?.id ? (
+                    <View style={{ marginLeft: 8 }}>
+                      <WatchStatusToggle
+                        token={sessionToken}
+                        titleId={currentTitle.id}
+                        snapshot={ratingSnapshot}
+                        onChanged={setRatingSnapshot}
+                      />
+                    </View>
+                  ) : null}
                 </View>
 
                 {/* Overview */}

@@ -212,6 +212,125 @@ function ScoreCell({ n, pending, setPending }: { n: number; pending: number | nu
 }
 
 /**
+ * Sep-22 brief §7 watch status control. Small pill with Want to Watch
+ * / Watched. Kept alongside the RatingBadge so title cards can show
+ * both at once. Uses the same shared /me/ratings endpoints for
+ * persistence and the same pub-sub for cross-mount reconciliation.
+ */
+export function WatchStatusToggle({
+  token,
+  titleId,
+  snapshot,
+  onChanged,
+  compact = false,
+}: {
+  token: string | null;
+  titleId: string | null;
+  snapshot: RatingSnapshot | null;
+  onChanged?: (next: RatingSnapshot) => void;
+  compact?: boolean;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [confirmWantOpen, setConfirmWantOpen] = useState(false);
+
+  async function setWatched() {
+    if (!token || !titleId || busy) return;
+    setBusy(true);
+    try {
+      const next = await apiRequest<RatingSnapshot>(
+        `/me/ratings/${titleId}/status`,
+        {
+          method: "PATCH",
+          token,
+          body: JSON.stringify({ watched_state: "watched" }),
+        },
+      );
+      broadcast(next);
+      onChanged?.(next);
+    } catch {
+      // silent — status change is best-effort at the pill level
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function setWantToWatch(confirmClear = false) {
+    if (!token || !titleId || busy) return;
+    setBusy(true);
+    try {
+      const next = await apiRequest<RatingSnapshot>(
+        `/me/ratings/${titleId}/status`,
+        {
+          method: "PATCH",
+          token,
+          body: JSON.stringify({
+            watched_state: "want_to_watch",
+            confirm_clear_rating: confirmClear,
+          }),
+        },
+      );
+      broadcast(next);
+      onChanged?.(next);
+      setConfirmWantOpen(false);
+    } catch (e) {
+      // Server returns 409 with confirm_required if a rating exists.
+      if (e instanceof Error && e.message.toLowerCase().includes("confirm")) {
+        setConfirmWantOpen(true);
+      }
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const isWatched = snapshot?.watched_state === "watched" || snapshot?.score != null;
+  const label = isWatched ? "Watched" : "Want to Watch";
+  return (
+    <>
+      <Pressable
+        onPress={() => (isWatched ? void setWantToWatch(false) : void setWatched())}
+        disabled={busy}
+        style={[
+          styles.badge,
+          isWatched ? styles.badgeRated : styles.badgeUnrated,
+          compact && styles.badgeCompact,
+          busy && { opacity: 0.5 },
+        ]}
+      >
+        <Ionicons
+          name={isWatched ? "checkmark-circle" : "eye-outline"}
+          size={compact ? 11 : 13}
+          color={isWatched ? colors.accent : colors.ink}
+        />
+        <Text style={[styles.badgeText, isWatched && styles.badgeTextRated, compact && { fontSize: 10 }]}>
+          {label}
+        </Text>
+      </Pressable>
+      <Modal visible={confirmWantOpen} transparent animationType="fade" onRequestClose={() => setConfirmWantOpen(false)}>
+        <Pressable style={styles.backdrop} onPress={() => setConfirmWantOpen(false)}>
+          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.title}>Remove rating?</Text>
+            <Text style={styles.titleName}>
+              Moving to Want to Watch will clear your existing rating.
+            </Text>
+            <View style={styles.actions}>
+              <Pressable style={styles.actionSecondary} onPress={() => setConfirmWantOpen(false)}>
+                <Text style={styles.actionSecondaryText}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                style={styles.actionPrimary}
+                onPress={() => void setWantToWatch(true)}
+              >
+                <Text style={styles.actionPrimaryText}>Clear + move</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+    </>
+  );
+}
+
+/**
  * Compact score badge for use inside title cards / rows.
  * Renders `You · 8/10` when scored, `Rate it` when unrated.
  */
