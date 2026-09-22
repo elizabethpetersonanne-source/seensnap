@@ -1411,6 +1411,7 @@ def get_social_recommendations(
     *,
     limit: int = 24,
     preferred_type: str | None = None,
+    genre_filter: str | None = None,
     session_id: str | None = None,
 ) -> list[RecommendationResponse]:
     """Blended Swipe recommendation engine. Evidence-first per spec §20:
@@ -1521,6 +1522,18 @@ def get_social_recommendations(
         want = "movie" if preferred_type == "movie" else "series"
         for key in list(buckets.keys()):
             buckets[key] = [x for x in buckets[key] if x["title"].content_type == want]
+
+    # --- Genre filter (Sep-22 brief §2 category chips). Applied before
+    # blending so quota math stays accurate. Genre is stored on
+    # ContentTitle.genres as a lowercase list; we do a case-insensitive
+    # membership check so "Comedy" chip matches "comedy" in the row.
+    if genre_filter:
+        wanted_genre = genre_filter.strip().lower()
+        for key in list(buckets.keys()):
+            buckets[key] = [
+                x for x in buckets[key]
+                if wanted_genre in [str(g).lower() for g in (x["title"].genres or [])]
+            ]
 
     # --- Session adaptation (spec §15) — bump candidates matching the traits
     # the user has been swiping right on this session. SceneDNA remains durable;

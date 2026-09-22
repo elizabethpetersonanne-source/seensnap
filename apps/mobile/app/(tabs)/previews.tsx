@@ -17,6 +17,7 @@
  *     the main recommendation engine for now).
  */
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -35,6 +36,7 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { CategoryChips, type CategoryFilter } from "@/components/category-chips";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
@@ -70,6 +72,9 @@ type PreviewFeedItem = {
 type PreviewFeedResponse = {
   session_id: string;
   items: PreviewFeedItem[];
+  next_cursor: string | null;
+  has_more: boolean;
+  status: "ready" | "pending" | "exhausted";
 };
 
 function youtubeEmbedUrl(key: string, autoplay: boolean, muted: boolean): string {
@@ -156,6 +161,13 @@ export default function PreviewsScreen() {
   const [showDetails, setShowDetails] = useState(false);
   const seenImpressionsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<FlatList<PreviewFeedItem>>(null);
+  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>({ media_type: null, genre: null });
+  // Cursor for the next page. null means the feed hasn't been fetched
+  // yet OR the pool is exhausted (see hasMore below).
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [feedStatus, setFeedStatus] = useState<"ready" | "pending" | "exhausted">("ready");
 
   const RESERVED_BOTTOM_NAV = 66;
   const cardHeight = viewportHeight - insets.top - insets.bottom - RESERVED_BOTTOM_NAV;
@@ -167,27 +179,83 @@ export default function PreviewsScreen() {
     setLoading(true);
     setError(null);
     try {
-      // Ask for 25 — the backend over-fetches candidates 3x on top of
-      // this because many recs don't have TMDB videos, but 25 keeps
-      // the feed feeling deep even if only a fraction resolve.
-      const resp = await apiRequest<PreviewFeedResponse>("/previews/feed?limit=25", {
+      const p = new URLSearchParams({ limit: "25" });
+      if (categoryFilter.media_type) p.set("preferred_type", categoryFilter.media_type);
+      if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
+      const resp = await apiRequest<PreviewFeedResponse>(`/previews/feed?${p.toString()}`, {
         token: sessionToken,
       });
       setItems(resp.items);
       setActiveIndex(0);
+      setCursor(resp.next_cursor);
+      setHasMore(resp.has_more);
+      setFeedStatus(resp.status);
       trackEvent("previews_feed_loaded", { count: resp.items.length });
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load previews.");
     } finally {
       setLoading(false);
     }
-  }, [sessionToken]);
+  }, [sessionToken, categoryFilter.media_type, categoryFilter.genre]);
+
+  // Continuation fetch — appends to the end of the current list.
+  // Called when the user is ~5 items away from the tail per §4.
+  const loadMore = useCallback(async () => {
+    if (!sessionToken || !hasMore || loadingMore || !cursor) return;
+    setLoadingMore(true);
+    try {
+      const p = new URLSearchParams({ limit: "25", cursor });
+      if (categoryFilter.media_type) p.set("preferred_type", categoryFilter.media_type);
+      if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
+      const resp = await apiRequest<PreviewFeedResponse>(`/previews/feed?${p.toString()}`, {
+        token: sessionToken,
+      });
+      setItems((prev) => {
+        // Append + dedupe by feed_item_id so a late duplicate can't
+        // jump the viewport per §4 "append without jumping".
+        const seen = new Set(prev.map((it) => it.feed_item_id));
+        const merged = [...prev];
+        for (const it of resp.items) {
+          if (!seen.has(it.feed_item_id)) merged.push(it);
+        }
+        return merged;
+      });
+      setCursor(resp.next_cursor);
+      setHasMore(resp.has_more);
+      setFeedStatus(resp.status);
+      trackEvent("previews_feed_more", { added: resp.items.length, has_more: resp.has_more });
+    } catch (e) {
+      trackEvent("previews_feed_more_error", {});
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [sessionToken, cursor, hasMore, loadingMore, categoryFilter.media_type, categoryFilter.genre]);
+
+  // Prefetch when ~5 items remain per spec §4.
+  useEffect(() => {
+    if (items.length === 0) return;
+    if (activeIndex >= items.length - 5 && hasMore && !loadingMore) {
+      void loadMore();
+    }
+  }, [activeIndex, items.length, hasMore, loadingMore, loadMore]);
 
   useFocusEffect(
     useCallback(() => {
       if (items.length === 0) void loadFeed();
     }, [items.length, loadFeed]),
   );
+
+  // Reload when the filter changes (independent of first-mount focus).
+  useEffect(() => {
+    setItems([]);
+    setActiveIndex(0);
+    seenImpressionsRef.current = new Set();
+    void loadFeed();
+    // loadFeed is stable per (sessionToken, filter); intentionally
+    // not putting loadFeed itself in the deps to keep this a filter
+    // watcher, not a general-purpose reloader.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [categoryFilter.media_type, categoryFilter.genre]);
 
   // Impression event when a card becomes active — spec §12 events.
   useEffect(() => {
@@ -233,6 +301,31 @@ export default function PreviewsScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
+      {/* Mirror-image Swipe|Previews mode toggle per Sep-22 brief §1.
+          Tapping Swipe returns to the /swipe route without unmounting
+          Previews' queue (both screens live in the same tabs stack). */}
+      <View style={styles.modeToggleRow}>
+        <Pressable
+          style={styles.modeChip}
+          onPress={() => router.push("/swipe")}
+          accessibilityRole="button"
+          accessibilityLabel="Switch to Swipe"
+        >
+          <Ionicons name="layers-outline" size={14} color={colors.ink} />
+          <Text style={styles.modeChipText}>Swipe</Text>
+        </Pressable>
+        <View style={[styles.modeChip, styles.modeChipActive]}>
+          <Ionicons name="play-circle" size={14} color={colors.background} />
+          <Text style={styles.modeChipTextActive}>Previews</Text>
+        </View>
+      </View>
+      {/* Category chips row — same component the Swipe screen uses so
+          filter semantics are identical across the two discovery modes.
+          Positioned as a floating overlay so it doesn't shrink the
+          paging viewport. */}
+      <View style={[styles.categoryOverlay, { top: insets.top + 12 + 40 + 36 }]}>
+        <CategoryChips value={categoryFilter} onChange={setCategoryFilter} />
+      </View>
       {loading ? (
         <View style={styles.centerFill}>
           <ActivityIndicator color={colors.accent} />
@@ -350,7 +443,7 @@ export default function PreviewsScreen() {
           Hidden when loading / empty / error. */}
       {!loading && !error && items.length > 0 ? (
         <>
-          <View style={[styles.positionBadge, { top: insets.top + 12 }]}>
+          <View style={[styles.positionBadge, { top: insets.top + 12 + 40 }]}>
             <Text style={styles.positionBadgeText}>
               {activeIndex + 1} / {items.length}
             </Text>
@@ -423,6 +516,49 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
     backgroundColor: "#000",
+  },
+  modeToggleRow: {
+    position: "absolute",
+    top: 12,
+    left: 12,
+    flexDirection: "row",
+    gap: 8,
+    zIndex: 10,
+  },
+  categoryOverlay: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    zIndex: 9,
+  },
+  modeChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.35)",
+    backgroundColor: "rgba(0,0,0,0.6)",
+  },
+  modeChipActive: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accent,
+  },
+  modeChipText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 0.8,
+    color: colors.ink,
+    textTransform: "uppercase",
+  },
+  modeChipTextActive: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 0.8,
+    color: colors.background,
+    textTransform: "uppercase",
   },
   centerFill: {
     flex: 1,

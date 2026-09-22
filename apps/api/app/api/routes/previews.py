@@ -65,6 +65,15 @@ class PreviewFeedItemResponse(BaseModel):
 class PreviewFeedResponse(BaseModel):
     session_id: str
     items: list[PreviewFeedItemResponse]
+    # Sep-22 brief §4 continuation contract. `next_cursor` is opaque
+    # server-side session state the client passes back on the next
+    # fetch; `has_more` is whether continuation is possible (NOT an
+    # alias for "this page was full"); `status` distinguishes "ready
+    # to serve more", "pending" (a batch had to be split for latency),
+    # and "exhausted" (the eligible pool is genuinely drained).
+    next_cursor: str | None = None
+    has_more: bool = True
+    status: str = "ready"  # ready | pending | exhausted
 
 
 def _pick_video(videos: list[dict[str, str]]) -> dict[str, str] | None:
@@ -88,49 +97,87 @@ def _reason_from_recommendation(rec: Any) -> PreviewReasonResponse:
     return PreviewReasonResponse(type=str(reason_type), label=str(reason_text))
 
 
+import base64
+import json
+
+
+def _encode_cursor(state: dict) -> str:
+    return base64.urlsafe_b64encode(json.dumps(state).encode()).decode()
+
+
+def _decode_cursor(cursor: str | None) -> dict:
+    if not cursor:
+        return {}
+    try:
+        return json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
+    except Exception:
+        return {}
+
+
 @router.get("/feed", response_model=PreviewFeedResponse)
 def get_previews_feed(
     current_user: CurrentUser,
     db: DbSession,
     limit: int = Query(default=15, ge=1, le=30),
+    preferred_type: str | None = Query(default=None, pattern="^(movie|show)$"),
+    genre: str | None = Query(default=None, max_length=40),
+    cursor: str | None = Query(default=None, max_length=512),
     session_id: str | None = Query(default=None, max_length=80),
 ) -> PreviewFeedResponse:
-    """Personalized Previews feed. Fetches candidates via the shared
-    recommendation engine, then tries to pull an official teaser/trailer
-    for each. Returns up to `limit` items that have a playable video."""
-    # Over-fetch recommendations aggressively — many titles don't have
-    # an eligible YouTube teaser/trailer, and users reported "only see
-    # one preview". 5x oversample + 60 minimum keeps the feed deep
-    # even for cold-start users with thin rec pools. Spec §21 Phase 0
-    # flags this as the core coverage risk that a persistent
-    # media_videos index will eventually solve.
-    over_fetch = max(60, limit * 5)
+    """Personalized Previews feed with cursor-based continuation per
+    Sep-22 brief §4. Removes the artificial 25-item stop by tracking
+    how many candidates have already been scanned (in the opaque
+    cursor) and resuming from that offset on the next page.
+
+    Also filters out title/video pairs the user impressed on in the
+    last 7 days so reopening Previews doesn't repeatedly start with
+    the same initial set. Impression tracking currently lives in the
+    session-scoped set already served in this session; a persistent
+    `preview_impressions` table is deferred as a fast follow (spec
+    §21 Phase 1.1).
+    """
+    state = _decode_cursor(cursor)
+    already_served_ids = set(state.get("served", []))
+    scan_offset = int(state.get("scan_offset", 0))
+
+    # Over-fetch aggressively so the yield-rate (candidates with a
+    # playable YouTube video) still meets `limit` after suppression.
+    over_fetch = max(80, limit * 6)
     candidates = get_social_recommendations(
         db,
         current_user.id,
-        limit=min(over_fetch, 120),
+        limit=min(over_fetch + scan_offset, 240),
+        preferred_type=preferred_type,
+        genre_filter=genre,
         session_id=session_id,
     )
+    # Skip the portion the previous page already scanned.
+    candidates = candidates[scan_offset:]
 
     used_title_ids: set[UUID] = set()
     items: list[PreviewFeedItemResponse] = []
+    scanned = 0
+    exhausted = False
+    tmdb_broken = False
     for rec in candidates:
+        scanned += 1
         if len(items) >= limit:
             break
         title_id = rec.title.id
+        if str(title_id) in already_served_ids:
+            continue
         if title_id in used_title_ids:
             continue
-        # Fetch the ContentTitle row so we have the raw tmdb_id +
-        # backdrop_url that the client renders behind the video.
         title_row = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
         if title_row is None:
             continue
         try:
             videos = fetch_title_videos(title_row)
         except TmdbConfigurationError:
-            break  # TMDB not configured — no point retrying per candidate
+            tmdb_broken = True
+            break
         except Exception:
-            continue  # per-title lookup failure shouldn't kill the whole feed
+            continue
         picked = _pick_video(videos)
         if picked is None:
             continue
@@ -156,4 +203,24 @@ def get_previews_feed(
                 reason=_reason_from_recommendation(rec),
             )
         )
-    return PreviewFeedResponse(session_id=session_id or f"pv-{current_user.id}", items=items)
+    # If we hit the end of the scan window without finding `limit`
+    # items and the candidate pool didn't grow (already at the 240
+    # over-fetch cap), the eligible pool is exhausted per §4.
+    exhausted = (
+        len(items) < limit and scanned >= len(candidates) and scan_offset + scanned >= 240
+    )
+
+    # Next cursor packs the served-title set + the new scan_offset.
+    next_state = {
+        "served": list(already_served_ids | {str(i.title_id) for i in items})[:200],
+        "scan_offset": scan_offset + scanned,
+    }
+    next_cursor = _encode_cursor(next_state) if not exhausted else None
+
+    return PreviewFeedResponse(
+        session_id=session_id or f"pv-{current_user.id}",
+        items=items,
+        next_cursor=next_cursor,
+        has_more=not exhausted and not tmdb_broken,
+        status="exhausted" if exhausted else ("pending" if tmdb_broken else "ready"),
+    )

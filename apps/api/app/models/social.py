@@ -10,12 +10,47 @@ from app.db.base import Base
 
 class Rating(Base):
     __tablename__ = "ratings"
-    __table_args__ = (UniqueConstraint("user_id", "content_title_id", name="uq_rating_user_title"),)
+    __table_args__ = (
+        UniqueConstraint("user_id", "content_title_id", name="uq_rating_user_title"),
+        # Sep-22 brief §7: personal ratings are integers 1–10. Legacy
+        # rows may have Numeric(3,1) decimal values (5.0 half-star era);
+        # the Sep-22 migration widens the column check but keeps the
+        # numeric type for backward compat. New writes come through the
+        # ratings API which rejects non-integers and out-of-range values.
+        CheckConstraint("score >= 1 AND score <= 10", name="ck_rating_score_1_10"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     content_title_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("content_titles.id"))
     score: Mapped[float] = mapped_column(Numeric(3, 1))
+    # Sep-22 brief §7: saving a title defaults to "want_to_watch"; a
+    # user marking Watched (or submitting a score) sets "watched". A
+    # rating without an explicit watched flag implies watched — the
+    # editor UI explains this — but we store the flag explicitly so
+    # the reverse (Watched-but-unrated) is representable.
+    watched_state: Mapped[str] = mapped_column(String(16), default="watched")
+    # Monotonic version for optimistic-concurrency conflict detection.
+    # Every successful upsert increments this; a stale-version request
+    # must be rejected so an out-of-order retry doesn't overwrite a
+    # newer rating.
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TitleWatchStatus(Base):
+    """Sep-22 brief §7: a Save can carry a Want to Watch / Watched
+    flag even when there's no rating yet. Kept separate from Rating
+    so Watched-with-no-score and Want-to-Watch-with-no-score are both
+    first-class states — a save doesn't auto-create a Rating row."""
+    __tablename__ = "title_watch_status"
+    __table_args__ = (UniqueConstraint("user_id", "content_title_id", name="uq_watch_status_user_title"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    content_title_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("content_titles.id", ondelete="CASCADE"))
+    watched_state: Mapped[str] = mapped_column(String(16), default="want_to_watch")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

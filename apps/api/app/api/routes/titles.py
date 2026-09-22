@@ -270,6 +270,12 @@ def get_my_recommendations(
     db: DbSession,
     limit: int = Query(default=24, ge=6, le=60),
     preferred_type: str | None = Query(default=None, pattern="^(movie|show)$"),
+    # Sep-22 brief §2 category chips: single genre filter layered on
+    # top of the (independent) media-type filter. Case-insensitive
+    # membership check against ContentTitle.genres. Unknown genres
+    # fall through to no filter rather than 400ing so the client can
+    # ship new chips without a backend release.
+    genre: str | None = Query(default=None, max_length=40),
     session_id: str | None = Query(default=None, max_length=80),
 ) -> list[RecommendationResponse]:
     try:
@@ -278,6 +284,7 @@ def get_my_recommendations(
             current_user.id,
             limit=limit,
             preferred_type=preferred_type,
+            genre_filter=genre,
             session_id=session_id,
         )
     except TmdbConfigurationError as exc:

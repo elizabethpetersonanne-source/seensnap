@@ -29,6 +29,7 @@ from app.models.social import (
     TeamMember,
     TeamRanking,
     TeamTitle,
+    TitleWatchStatus,
     UserFollow,
     Watchlist,
     WatchlistItem,
@@ -104,6 +105,7 @@ def delete_account(current_user: CurrentUser, db: DbSession) -> None:
     db.execute(delete(Share).where(Share.user_id == uid))
     db.execute(delete(Review).where(Review.user_id == uid))
     db.execute(delete(Rating).where(Rating.user_id == uid))
+    db.execute(delete(TitleWatchStatus).where(TitleWatchStatus.user_id == uid))
     db.execute(delete(FeedEvent).where(FeedEvent.actor_user_id == uid))
     db.execute(delete(TeamActivity).where(TeamActivity.actor_user_id == uid))
     db.execute(delete(TeamTitle).where(TeamTitle.added_by_user_id == uid))

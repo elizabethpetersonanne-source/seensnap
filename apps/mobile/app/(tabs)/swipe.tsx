@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
@@ -30,6 +31,7 @@ import { apiRequest, resolveMediaUrl, resolvedApiBaseUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { type StreamingAvailability, getStreamingServiceMeta } from "@/lib/streaming";
 import { playSwipeSound } from "@/lib/swipe-sfx";
+import { CategoryChips } from "@/components/category-chips";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
 type RecommendationItem = {
@@ -104,6 +106,12 @@ export default function SwipeTab() {
   const [addToTeamTitle, setAddToTeamTitle] = useState<{ id: string; title: string } | null>(null);
   const [showAddToTeam, setShowAddToTeam] = useState(false);
   const [sessionId, setSessionId] = useState(() => `swipe-tab-${Date.now()}`);
+  // Sep-22 brief §2 category chips — media type + genre filters that
+  // reset the deck when changed. Kept in local state so the queue can
+  // start fresh cleanly.
+  const [categoryFilter, setCategoryFilter] = useState<{ media_type: "movie" | "show" | null; genre: string | null }>(
+    { media_type: null, genre: null },
+  );
   const pan = useRef(new Animated.ValueXY()).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const nextCardEntry = useRef(new Animated.Value(1)).current;
@@ -210,7 +218,10 @@ export default function SwipeTab() {
       setLoading(true);
       setError(null);
       try {
-        const recsUrl = `/titles/recommendations/for-me?limit=40&session_id=${encodeURIComponent(sessionId)}`;
+        const p = new URLSearchParams({ limit: "40", session_id: sessionId });
+        if (categoryFilter.media_type) p.set("preferred_type", categoryFilter.media_type);
+        if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
+        const recsUrl = `/titles/recommendations/for-me?${p.toString()}`;
         if (__DEV__) console.log("[swipe] fetching", recsUrl);
         const [items, preferences] = await Promise.all([
           apiRequest<RecommendationItem[]>(recsUrl, { token: sessionToken }),
@@ -249,7 +260,7 @@ export default function SwipeTab() {
       clearTimeout(hardTimeout);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sessionToken]);
+  }, [sessionToken, categoryFilter.media_type, categoryFilter.genre]);
 
   // Explicit reloader used by the "restart" flow and the reveal screen.
   const loadDeck = useCallback(async () => {
@@ -257,7 +268,13 @@ export default function SwipeTab() {
     setLoading(true);
     setError(null);
     try {
-      const recsUrl = `/titles/recommendations/for-me?limit=40&session_id=${encodeURIComponent(sessionId)}`;
+      const params = new URLSearchParams({
+        limit: "40",
+        session_id: sessionId,
+      });
+      if (categoryFilter.media_type) params.set("preferred_type", categoryFilter.media_type);
+      if (categoryFilter.genre) params.set("genre", categoryFilter.genre);
+      const recsUrl = `/titles/recommendations/for-me?${params.toString()}`;
       const [items, preferences] = await Promise.all([
         apiRequest<RecommendationItem[]>(recsUrl, { token: sessionToken }),
         apiRequest<PreferencesResponse>("/me/preferences", { token: sessionToken })
@@ -629,7 +646,10 @@ export default function SwipeTab() {
       // Fresh restart → new session id so the session-boost layer starts clean.
       const freshSession = `swipe-tab-${Date.now()}`;
       setSessionId(freshSession);
-      const recsUrl = `/titles/recommendations/for-me?limit=40&session_id=${encodeURIComponent(freshSession)}`;
+      const p = new URLSearchParams({ limit: "40", session_id: freshSession });
+      if (categoryFilter.media_type) p.set("preferred_type", categoryFilter.media_type);
+      if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
+      const recsUrl = `/titles/recommendations/for-me?${p.toString()}`;
       const items = await apiRequest<RecommendationItem[]>(recsUrl, { token: sessionToken });
       const deduped = dedupeRecommendations(items);
       const suppressed = applySuppression(deduped);
@@ -889,6 +909,39 @@ export default function SwipeTab() {
         {/* Compact feature header per spec §6.2 — replaces the full-viewport
             backdrop hero. Sits inside the max-width workspace container. */}
         <View style={[styles.workspaceContainer, { maxWidth: workspaceMaxWidth }]}>
+          {/* Sep-22 brief §1: shared Swipe|Previews mode toggle at the
+              top of the discovery experience. Tapping Previews pushes
+              the router to /previews; that screen has the mirror-image
+              toggle back. Independent queues + positions per mode are
+              preserved by leaving each screen mounted through the tabs
+              layout — switching modes never resets the other's queue. */}
+          <View style={styles.modeToggleRow}>
+            <View style={[styles.modeChip, styles.modeChipActive]}>
+              <Ionicons name="layers" size={14} color={colors.background} />
+              <Text style={styles.modeChipTextActive}>Swipe</Text>
+            </View>
+            <Pressable
+              style={styles.modeChip}
+              onPress={() => router.push("/previews")}
+              accessibilityRole="button"
+              accessibilityLabel="Switch to Previews"
+            >
+              <Ionicons name="play-circle-outline" size={14} color={colors.ink} />
+              <Text style={styles.modeChipText}>Previews</Text>
+            </Pressable>
+          </View>
+          <CategoryChips
+            value={categoryFilter}
+            onChange={(next) => {
+              setCategoryFilter(next);
+              // Reset queue on filter change so the visible deck stops
+              // being from the previous filter — the useEffect above
+              // fires a fresh load with the new URL params.
+              setCurrentIndex(0);
+              setSwipes([]);
+              setDetailCache({});
+            }}
+          />
           <View style={styles.featureHeader}>
             <View style={{ flex: 1, gap: 4 }}>
               <Text style={styles.featureEyebrow}>TODAY&apos;S PICKS</Text>
@@ -1905,6 +1958,40 @@ const styles = StyleSheet.create({
     width: "100%",
     alignSelf: "center",
     gap: spacing.md,
+  },
+  modeToggleRow: {
+    flexDirection: "row",
+    gap: 8,
+    paddingTop: spacing.md,
+  },
+  modeChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: rules.default,
+    backgroundColor: "transparent",
+  },
+  modeChipActive: {
+    borderColor: colors.accent,
+    backgroundColor: colors.accent,
+  },
+  modeChipText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 0.8,
+    color: colors.ink,
+    textTransform: "uppercase",
+  },
+  modeChipTextActive: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 0.8,
+    color: colors.background,
+    textTransform: "uppercase",
   },
   featureHeader: {
     flexDirection: "row",

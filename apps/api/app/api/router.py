@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import analytics, auth, collections, devices, discover, feed, list_shares, me, messages, notifications, previews, profiles, recommendations, search, shares, snips, social, teams, titles, watch_options, watchlist
+from app.api.routes import analytics, auth, collections, devices, discover, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, search, shares, snips, social, teams, titles, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
@@ -35,3 +35,7 @@ api_router.include_router(messages.router, prefix="/messages", tags=["messages"]
 # feed of official teasers/trailers. Ingestion + admin console + analytics
 # events schema deferred to later phases.
 api_router.include_router(previews.router, prefix="/previews", tags=["previews"])
+# Personal 1-10 ratings + watch status (want_to_watch | watched) per
+# Sep-22 execution brief §7. Canonical personal score service — every
+# title-bearing surface reads through this so a rating updates everywhere.
+api_router.include_router(ratings.router, prefix="/me/ratings", tags=["ratings"])

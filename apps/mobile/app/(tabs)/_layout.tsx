@@ -19,16 +19,15 @@ type TabRouteName =
   | "index"
   | "social"
   | "swipe"
-  | "previews"
-  | "for-you"
   | "my-picks"
-  | "teams"
   | "settings";
 
-// Search moved out of the tab bar — accessed via magnifying-glass icon on the
-// Discover header. Route file (search.tsx) still exists and is navigable.
-// Social brief §2 promotes Social to a primary nav destination — it lives
-// between Discover and Swipe so the social loop is one tap from home.
+// Sep-22 consolidation brief §1: exactly 5 primary destinations —
+// Discover · Social · Swipe · My Picks · Profile. Previews moves
+// into Swipe as a persistent mode toggle at the top of the page.
+// Scene DNA content moves under Profile. Watch Teams stays as a
+// section INSIDE Social. Routes for the removed tabs still exist so
+// existing deep links (notifications, share URLs, invites) resolve.
 const TAB_CONFIG: Record<
   TabRouteName,
   { label: string; icon: keyof typeof Ionicons.glyphMap; iconFocused: keyof typeof Ionicons.glyphMap }
@@ -36,11 +35,7 @@ const TAB_CONFIG: Record<
   index: { label: "Discover", icon: "compass-outline", iconFocused: "compass" },
   social: { label: "Social", icon: "people-circle-outline", iconFocused: "people-circle" },
   swipe: { label: "Swipe", icon: "layers-outline", iconFocused: "layers" },
-  // Previews spec §6 — dedicated top-level destination. Play-in-frame icon.
-  previews: { label: "Previews", icon: "play-circle-outline", iconFocused: "play-circle" },
-  "for-you": { label: "Scene DNA", icon: "map-outline", iconFocused: "map" },
   "my-picks": { label: "My Picks", icon: "bookmark-outline", iconFocused: "bookmark" },
-  teams: { label: "Teams", icon: "people-outline", iconFocused: "people" },
   settings: { label: "Profile", icon: "person-outline", iconFocused: "person" },
 };
 
@@ -155,16 +150,20 @@ export default function TabsLayout() {
       screenOptions={{ headerShown: false }}
     >
       <Tabs.Screen name="index" />
-      {/* Search intentionally omitted from the tab bar — reached via the
-          magnifying-glass icon on the Discover header. Route file still exists. */}
-      <Tabs.Screen name="search" options={{ href: null }} />
       <Tabs.Screen name="social" />
       <Tabs.Screen name="swipe" />
-      <Tabs.Screen name="previews" />
-      <Tabs.Screen name="for-you" />
       <Tabs.Screen name="my-picks" />
-      <Tabs.Screen name="teams" />
       <Tabs.Screen name="settings" />
+      {/* Non-tab-bar routes retained so deep links / old URLs still
+          resolve. Setting href: null keeps them in the router but
+          hides them from the bottom bar. Previews is now reachable
+          from the Swipe|Previews mode toggle; Scene DNA is reachable
+          from Profile; Teams is reachable from Social; Search is
+          reachable from the Discover magnifying glass. */}
+      <Tabs.Screen name="search" options={{ href: null }} />
+      <Tabs.Screen name="previews" options={{ href: null }} />
+      <Tabs.Screen name="for-you" options={{ href: null }} />
+      <Tabs.Screen name="teams" options={{ href: null }} />
     </Tabs>
   );
 }
