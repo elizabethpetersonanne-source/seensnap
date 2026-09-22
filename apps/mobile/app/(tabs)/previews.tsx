@@ -17,7 +17,7 @@
  *     the main recommendation engine for now).
  */
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useFocusEffect } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -169,6 +169,12 @@ export default function PreviewsScreen() {
   const { sessionToken } = useAuth();
   const insets = useSafeAreaInsets();
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  // Sep-22 brief §14 "Watch previews": when launched from a ranked
+  // list, the feed follows the OWNER'S order (not the viewer's
+  // personalization). ranked_source="me" pulls from /me/favorites,
+  // ranked_source=<user_id> pulls from /profiles/{id}/favorites/ranked.
+  const params = useLocalSearchParams<{ ranked_source?: string }>();
+  const rankedSource = params.ranked_source ?? null;
 
   const [items, setItems] = useState<PreviewFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -200,6 +206,43 @@ export default function PreviewsScreen() {
     setLoading(true);
     setError(null);
     try {
+      // Sep-22 brief §14 list-order mode: fetch the ranked list first,
+      // then resolve videos for each title in order. Category chips +
+      // personalization are intentionally ignored — this is the
+      // OWNER'S order, not a personalized re-rank.
+      if (rankedSource) {
+        const listUrl =
+          rankedSource === "me"
+            ? "/me/favorites/ranked?limit=100"
+            : `/profiles/${rankedSource}/favorites/ranked?limit=100`;
+        const listData = await apiRequest<{ items: { title_id: string }[] }>(listUrl, {
+          token: sessionToken,
+        });
+        const orderedIds = listData.items.map((r) => r.title_id).join(",");
+        if (!orderedIds) {
+          setItems([]);
+          setActiveIndex(0);
+          setCursor(null);
+          setHasMore(false);
+          setFeedStatus("exhausted");
+          return;
+        }
+        const listResp = await apiRequest<{ items: PreviewFeedItem[]; skipped_title_ids: string[] }>(
+          `/previews/for-titles?ids=${encodeURIComponent(orderedIds)}`,
+          { token: sessionToken },
+        );
+        setItems(listResp.items);
+        setActiveIndex(0);
+        setCursor(null);
+        setHasMore(false);
+        setFeedStatus(listResp.items.length > 0 ? "ready" : "exhausted");
+        trackEvent("previews_feed_ranked_loaded", {
+          source: rankedSource,
+          count: listResp.items.length,
+          skipped: listResp.skipped_title_ids.length,
+        });
+        return;
+      }
       const p = new URLSearchParams({ limit: "25" });
       if (categoryFilter.media_type) p.set("preferred_type", categoryFilter.media_type);
       if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
@@ -217,7 +260,7 @@ export default function PreviewsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [sessionToken, categoryFilter.media_type, categoryFilter.genre]);
+  }, [sessionToken, rankedSource, categoryFilter.media_type, categoryFilter.genre]);
 
   // Continuation fetch — appends to the end of the current list.
   // Called when the user is ~5 items away from the tail per §4.

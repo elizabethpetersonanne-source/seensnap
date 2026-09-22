@@ -101,6 +101,80 @@ import base64
 import json
 
 
+class PreviewsForTitlesResponse(BaseModel):
+    session_id: str
+    items: list[PreviewFeedItemResponse]
+    skipped_title_ids: list[UUID]  # titles with no eligible video
+
+
+@router.get("/for-titles", response_model=PreviewsForTitlesResponse)
+def get_previews_for_titles(
+    current_user: CurrentUser,
+    db: DbSession,
+    ids: str = Query(..., description="Comma-separated ordered title UUIDs, up to 100"),
+) -> PreviewsForTitlesResponse:
+    """Sep-22 brief §14 "Watch previews for a ranked list". Resolves a
+    playable Preview item per title in the SUPPLIED ORDER — no
+    personalization / re-ranking / diversity pass. Titles with no
+    eligible video are skipped and returned in `skipped_title_ids`
+    so the client can annotate them ("this title had no preview")."""
+    raw_ids = [x.strip() for x in ids.split(",") if x.strip()][:100]
+    title_uuids: list[UUID] = []
+    for raw in raw_ids:
+        try:
+            title_uuids.append(UUID(raw))
+        except ValueError:
+            continue
+    title_rows = {t.id: t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(title_uuids))).all()}
+    items: list[PreviewFeedItemResponse] = []
+    skipped: list[UUID] = []
+    for tid in title_uuids:
+        row = title_rows.get(tid)
+        if row is None:
+            skipped.append(tid)
+            continue
+        try:
+            videos = fetch_title_videos(row)
+        except TmdbConfigurationError:
+            break
+        except Exception:
+            skipped.append(tid)
+            continue
+        picked = _pick_video(videos)
+        if picked is None:
+            skipped.append(tid)
+            continue
+        items.append(
+            PreviewFeedItemResponse(
+                feed_item_id=f"pfi-list-{tid}",
+                title_id=tid,
+                tmdb_id=row.tmdb_id,
+                media_type=row.content_type,
+                title=row.title,
+                year=row.release_date.year if row.release_date else None,
+                poster_url=row.poster_url,
+                backdrop_url=row.backdrop_url,
+                overview=row.overview,
+                video=PreviewVideoResponse(
+                    provider=picked.get("site", "YouTube"),
+                    external_key=picked["key"],
+                    type=picked.get("type", "Trailer"),
+                    name=picked.get("name", ""),
+                    official=str(picked.get("official")) == "True",
+                ),
+                reason=PreviewReasonResponse(
+                    type="ranked_list_order",
+                    label="From this ranked list",
+                ),
+            )
+        )
+    return PreviewsForTitlesResponse(
+        session_id=f"pvlist-{current_user.id}",
+        items=items,
+        skipped_title_ids=skipped,
+    )
+
+
 def _encode_cursor(state: dict) -> str:
     return base64.urlsafe_b64encode(json.dumps(state).encode()).decode()
 

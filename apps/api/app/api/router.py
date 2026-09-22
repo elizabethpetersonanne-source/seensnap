@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import analytics, auth, collections, devices, discover, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, scene_dna, search, shares, snips, social, teams, titles, watch_options, watchlist
+from app.api.routes import analytics, auth, collections, devices, discover, favorites, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, scene_dna, search, shares, snips, social, teams, titles, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
@@ -42,3 +42,5 @@ api_router.include_router(ratings.router, prefix="/me/ratings", tags=["ratings"]
 # SceneDNA correction UI per Sep-22 execution brief §8 — recent
 # signals list + disable/enable-influence controls.
 api_router.include_router(scene_dna.router, prefix="/me/scene-dna", tags=["scene-dna"])
+# Ranked favorites (Top 20 / Top 100) — Sep-22 execution brief §14.
+api_router.include_router(favorites.router, prefix="/me/favorites", tags=["favorites"])

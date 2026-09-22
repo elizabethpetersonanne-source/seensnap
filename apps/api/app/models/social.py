@@ -39,6 +39,27 @@ class Rating(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class RankedFavorite(Base):
+    """Sep-22 brief §14: one ordered collection of up to 100 unique
+    titles per user; Top 20 is its first 20. Position is 1-based
+    contiguous. Deferrable uniqueness on (user_id, position) allows
+    a transaction to temporarily swap two rows before committing."""
+    __tablename__ = "ranked_favorites"
+    __table_args__ = (
+        UniqueConstraint("user_id", "content_title_id", name="uq_ranked_favorite_user_title"),
+        UniqueConstraint("user_id", "position", name="uq_ranked_favorite_user_position", deferrable=True, initially="DEFERRED"),
+        CheckConstraint("position >= 1 AND position <= 100", name="ck_ranked_favorite_position_range"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    content_title_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("content_titles.id", ondelete="CASCADE"))
+    position: Mapped[int] = mapped_column(Integer)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class TitleWatchStatus(Base):
     """Sep-22 brief §7: a Save can carry a Want to Watch / Watched
     flag even when there's no rating yet. Kept separate from Rating

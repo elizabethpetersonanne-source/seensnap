@@ -191,6 +191,70 @@ def get_public_profile_lists(
     return out
 
 
+class PublicRankedFavoriteRow(BaseModel):
+    position: int
+    title_id: UUID
+    tmdb_id: int
+    title: str
+    poster_url: str | None
+    year: int | None
+    media_type: str
+
+
+class PublicRankedFavoritesResponse(BaseModel):
+    owner_display_name: str | None
+    owner_user_id: UUID
+    items: list[PublicRankedFavoriteRow]
+    total: int
+
+
+@router.get("/{user_id}/favorites/ranked", response_model=PublicRankedFavoritesResponse)
+def get_public_ranked_favorites(
+    user_id: UUID,
+    _current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(default=100, ge=1, le=100),
+) -> PublicRankedFavoritesResponse:
+    """Public view of a user's ranked favorites list. Personal scores
+    are intentionally NOT included on this endpoint — the viewer sees
+    the owner's ordering + titles + collection rank, not the owner's
+    private 1-10 score (Sep-22 brief §7 privacy rule)."""
+    from app.models.social import RankedFavorite
+
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+
+    favorites = db.scalars(
+        select(RankedFavorite)
+        .where(RankedFavorite.user_id == user_id)
+        .order_by(RankedFavorite.position.asc())
+        .limit(limit)
+    ).all()
+    title_ids = [f.content_title_id for f in favorites]
+    titles = {t.id: t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(title_ids))).all()} if title_ids else {}
+    items: list[PublicRankedFavoriteRow] = []
+    for f in favorites:
+        t = titles.get(f.content_title_id)
+        if t is None:
+            continue
+        items.append(PublicRankedFavoriteRow(
+            position=f.position,
+            title_id=t.id,
+            tmdb_id=t.tmdb_id,
+            title=t.title,
+            poster_url=t.poster_url,
+            year=t.release_date.year if t.release_date else None,
+            media_type=t.content_type,
+        ))
+    return PublicRankedFavoritesResponse(
+        owner_display_name=profile.display_name,
+        owner_user_id=user_id,
+        items=items,
+        total=len(items),
+    )
+
+
 @router.post("/{user_id}/follow", status_code=status.HTTP_204_NO_CONTENT)
 def follow_profile(user_id: UUID, current_user: CurrentUser, db: DbSession) -> None:
     follow_user(db, follower_user_id=current_user.id, following_user_id=user_id)

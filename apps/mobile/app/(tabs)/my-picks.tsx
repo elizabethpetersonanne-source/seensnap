@@ -1,4 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
+import { router } from "expo-router";
 import { useCallback, useMemo, useState } from "react";
 import {
   ActivityIndicator,
@@ -366,6 +367,24 @@ export default function MyPicksScreen() {
         }
       />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+
+        {/* Sep-22 brief §14: Ranked favorites entry point above the
+             shelves. One ordered Top 20 / Top 100 collection. */}
+        <Pressable
+          style={styles.rankedFavoritesEntry}
+          onPress={() => router.push("/favorites/ranked")}
+          accessibilityRole="button"
+          accessibilityLabel="Open ranked favorites"
+        >
+          <View style={styles.rankedFavoritesIcon}>
+            <Ionicons name="trophy" size={22} color={colors.background} />
+          </View>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.rankedFavoritesTitle}>Ranked favorites</Text>
+            <Text style={styles.rankedFavoritesSubtitle}>Top 20 · Top 100 · Rate-based draft available</Text>
+          </View>
+          <Ionicons name="chevron-forward" size={18} color={colors.muted} />
+        </Pressable>
 
         {/* Lists section header */}
         <View style={styles.sectionHeaderRow}>
@@ -755,6 +774,38 @@ function formatSavedDate(isoDate: string): string {
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.background },
   content: { paddingHorizontal: spacing.xl, paddingTop: spacing.lg, paddingBottom: 120 },
+
+  rankedFavoritesEntry: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 12,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: rules.gold,
+    backgroundColor: "rgba(244,196,48,0.06)",
+    marginBottom: spacing.lg,
+  },
+  rankedFavoritesIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  rankedFavoritesTitle: {
+    fontFamily: fonts.serifBold,
+    fontSize: 15,
+    color: colors.ink,
+  },
+  rankedFavoritesSubtitle: {
+    fontFamily: fonts.mono,
+    fontSize: 10,
+    letterSpacing: 0.4,
+    color: colors.muted,
+    marginTop: 2,
+  },
 
   // Editorial header
   pageHeader: { gap: 5, paddingBottom: spacing.lg },

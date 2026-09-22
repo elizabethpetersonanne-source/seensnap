@@ -20,6 +20,7 @@ from app.models.social import (
     NotificationOutbox,
     NotificationPreference,
     PeopleDismissal,
+    RankedFavorite,
     Rating,
     Report,
     Review,
@@ -106,6 +107,7 @@ def delete_account(current_user: CurrentUser, db: DbSession) -> None:
     db.execute(delete(Review).where(Review.user_id == uid))
     db.execute(delete(Rating).where(Rating.user_id == uid))
     db.execute(delete(TitleWatchStatus).where(TitleWatchStatus.user_id == uid))
+    db.execute(delete(RankedFavorite).where(RankedFavorite.user_id == uid))
     db.execute(delete(FeedEvent).where(FeedEvent.actor_user_id == uid))
     db.execute(delete(TeamActivity).where(TeamActivity.actor_user_id == uid))
     db.execute(delete(TeamTitle).where(TeamTitle.added_by_user_id == uid))
