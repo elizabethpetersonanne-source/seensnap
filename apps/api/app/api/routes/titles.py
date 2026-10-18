@@ -166,7 +166,16 @@ def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession) -> TitleR
     else:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="media_type must be movie|series|tv")
 
-    title = db.scalar(select(ContentTitle).where(ContentTitle.tmdb_id == tmdb_id))
+    # Oct-18 brief §3 fix 6: lookup by (content_type, tmdb_id). The
+    # media_type the client supplied is the authoritative dimension —
+    # if the DB only has a different-type row for the same tmdb_id,
+    # we must create a new row for THIS type.
+    title = db.scalar(
+        select(ContentTitle).where(
+            ContentTitle.tmdb_id == tmdb_id,
+            ContentTitle.content_type == content_type,
+        )
+    )
     if title is None:
         title = ContentTitle(
             tmdb_id=tmdb_id,

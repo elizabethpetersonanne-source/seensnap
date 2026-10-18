@@ -495,7 +495,16 @@ def _upsert_title(db: Session, title_name: str) -> ContentTitle:
         return existing
 
     tmdb_id = _stable_tmdb_id(title_name)
-    while db.scalar(select(ContentTitle).where(ContentTitle.tmdb_id == tmdb_id)) is not None:
+    # Oct-18 brief §3 fix 6: identity is now (content_type, tmdb_id).
+    # Collision check must respect that composite — otherwise we'd
+    # shift to the next tmdb_id for a tv/movie pair that is fine to
+    # coexist.
+    while db.scalar(
+        select(ContentTitle).where(
+            ContentTitle.tmdb_id == tmdb_id,
+            ContentTitle.content_type == content_type,
+        )
+    ) is not None:
         tmdb_id += 1
     title = ContentTitle(
         tmdb_id=tmdb_id,

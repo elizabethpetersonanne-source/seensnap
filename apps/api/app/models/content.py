@@ -1,7 +1,7 @@
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, func
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -32,10 +32,18 @@ class Collection(Base):
 
 
 class ContentTitle(Base):
+    """Oct-18 brief §3 fix 6: identity is (content_type, tmdb_id)
+    because TMDB movie ids and TV series ids are independent integer
+    sequences and can legitimately collide. tmdb_id alone is NOT
+    unique; the composite column pair is. Callers that lookup by
+    tmdb_id MUST also pass content_type."""
     __tablename__ = "content_titles"
+    __table_args__ = (
+        UniqueConstraint("content_type", "tmdb_id", name="uq_content_titles_type_tmdb"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    tmdb_id: Mapped[int] = mapped_column(Integer, unique=True)
+    tmdb_id: Mapped[int] = mapped_column(Integer, index=True)
     content_type: Mapped[str] = mapped_column(String(16))
     title: Mapped[str] = mapped_column(String(255))
     original_title: Mapped[str | None] = mapped_column(String(255))

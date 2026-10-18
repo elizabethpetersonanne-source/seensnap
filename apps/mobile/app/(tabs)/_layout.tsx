@@ -20,14 +20,14 @@ type TabRouteName =
   | "social"
   | "swipe"
   | "my-picks"
-  | "settings";
+  | "teams";
 
-// Sep-22 consolidation brief §1: exactly 5 primary destinations —
-// Discover · Social · Swipe · My Picks · Profile. Previews moves
-// into Swipe as a persistent mode toggle at the top of the page.
-// Scene DNA content moves under Profile. Watch Teams stays as a
-// section INSIDE Social. Routes for the removed tabs still exist so
-// existing deep links (notifications, share URLs, invites) resolve.
+// Oct-18 build brief §3 explicit resolution: the bottom nav is
+// Discover · Social · Swipe · My Picks · Teams. Profile is reached
+// through the Discover avatar (top-right) and contextual identity
+// links elsewhere — there is no sixth tab for Profile / SceneDNA /
+// Settings. The `settings` route stays in the router so deep links
+// resolve; it's rendered from the avatar menu rather than the bar.
 const TAB_CONFIG: Record<
   TabRouteName,
   { label: string; icon: keyof typeof Ionicons.glyphMap; iconFocused: keyof typeof Ionicons.glyphMap }
@@ -36,7 +36,7 @@ const TAB_CONFIG: Record<
   social: { label: "Social", icon: "people-circle-outline", iconFocused: "people-circle" },
   swipe: { label: "Swipe", icon: "layers-outline", iconFocused: "layers" },
   "my-picks": { label: "My Picks", icon: "bookmark-outline", iconFocused: "bookmark" },
-  settings: { label: "Profile", icon: "person-outline", iconFocused: "person" },
+  teams: { label: "Teams", icon: "people-outline", iconFocused: "people" },
 };
 
 function TabItem({
@@ -153,7 +153,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="social" />
       <Tabs.Screen name="swipe" />
       <Tabs.Screen name="my-picks" />
-      <Tabs.Screen name="settings" />
+      <Tabs.Screen name="teams" />
       {/* Non-tab-bar routes retained so deep links / old URLs still
           resolve. Setting href: null keeps them in the router but
           hides them from the bottom bar. Previews is now reachable
@@ -163,7 +163,7 @@ export default function TabsLayout() {
       <Tabs.Screen name="search" options={{ href: null }} />
       <Tabs.Screen name="previews" options={{ href: null }} />
       <Tabs.Screen name="for-you" options={{ href: null }} />
-      <Tabs.Screen name="teams" options={{ href: null }} />
+      <Tabs.Screen name="settings" options={{ href: null }} />
     </Tabs>
   );
 }

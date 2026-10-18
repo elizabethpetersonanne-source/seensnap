@@ -108,6 +108,10 @@ def delete_account(current_user: CurrentUser, db: DbSession) -> None:
     db.execute(delete(Rating).where(Rating.user_id == uid))
     db.execute(delete(TitleWatchStatus).where(TitleWatchStatus.user_id == uid))
     db.execute(delete(RankedFavorite).where(RankedFavorite.user_id == uid))
+    # Oct-18 brief §9: entitlement + Concierge allowance cleanup.
+    from app.models.entitlements import ConciergeAllowanceEntry, EntitlementGrant
+    db.execute(delete(ConciergeAllowanceEntry).where(ConciergeAllowanceEntry.user_id == uid))
+    db.execute(delete(EntitlementGrant).where(EntitlementGrant.user_id == uid))
     db.execute(delete(FeedEvent).where(FeedEvent.actor_user_id == uid))
     db.execute(delete(TeamActivity).where(TeamActivity.actor_user_id == uid))
     db.execute(delete(TeamTitle).where(TeamTitle.added_by_user_id == uid))

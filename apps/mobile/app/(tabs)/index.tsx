@@ -25,6 +25,7 @@ import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { Avatar } from "@/components/avatar";
 import { trackEvent } from "@/lib/analytics";
 import {
   addRecentSearch,
@@ -280,7 +281,7 @@ function CollectionCard({
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function DiscoverScreen() {
-  const { sessionToken } = useAuth();
+  const { sessionToken, user } = useAuth();
 
   // Search state
   const [query, setQuery] = useState("");
@@ -570,6 +571,23 @@ export default function DiscoverScreen() {
         artworkSource={trendingBackdrop}
         scrollY={scrollY}
         fallbackSeed={1}
+        contextualAction={
+          <Pressable
+            onPress={() => router.push("/(tabs)/settings")}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Open your profile"
+          >
+            {/* Oct-18 build brief §4: Profile is reached from the
+                Discover avatar (top right) + contextual identity
+                links. No Profile tab in the bottom bar. */}
+            <Avatar
+              uri={user?.avatar_url ?? null}
+              label={user?.display_name ?? user?.email ?? ""}
+              size={28}
+            />
+          </Pressable>
+        }
       />
 
       {/* ── Search bar ────────────────────────────────────────────────────── */}

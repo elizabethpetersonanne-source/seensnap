@@ -28,6 +28,7 @@ from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
+from app.models.preview_session import PreviewSession
 from app.services.taste import get_social_recommendations
 from app.services.tmdb import TmdbConfigurationError, fetch_title_videos
 
@@ -95,10 +96,6 @@ def _reason_from_recommendation(rec: Any) -> PreviewReasonResponse:
     reason_text = getattr(rec, "reason", None) or "A fresh pick for you"
     reason_type = getattr(rec, "reason_type", None) or "personalized"
     return PreviewReasonResponse(type=str(reason_type), label=str(reason_text))
-
-
-import base64
-import json
 
 
 class PreviewsForTitlesResponse(BaseModel):
@@ -175,17 +172,22 @@ def get_previews_for_titles(
     )
 
 
-def _encode_cursor(state: dict) -> str:
-    return base64.urlsafe_b64encode(json.dumps(state).encode()).decode()
+import hashlib
+from datetime import datetime, timedelta, timezone
+from uuid import uuid4
 
 
-def _decode_cursor(cursor: str | None) -> dict:
-    if not cursor:
-        return {}
-    try:
-        return json.loads(base64.urlsafe_b64decode(cursor.encode()).decode())
-    except Exception:
-        return {}
+def _filter_fingerprint(preferred_type: str | None, genre: str | None) -> str:
+    """Stable hash of the filter dimensions so filter changes
+    invalidate the cursor. Short-but-collision-safe."""
+    key = f"mt={preferred_type or ''}|g={(genre or '').lower()}"
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+# Previews candidates expand in waves to find enough with eligible
+# TMDB videos. The maximum scan ceiling guards against unbounded TMDB
+# fanout for a cold-start user whose rec pool is thin.
+_MAX_CANDIDATE_SCAN = 400
 
 
 @router.get("/feed", response_model=PreviewFeedResponse)
@@ -195,52 +197,77 @@ def get_previews_feed(
     limit: int = Query(default=15, ge=1, le=30),
     preferred_type: str | None = Query(default=None, pattern="^(movie|show)$"),
     genre: str | None = Query(default=None, max_length=40),
-    cursor: str | None = Query(default=None, max_length=512),
+    cursor: str | None = Query(default=None, max_length=128),
     session_id: str | None = Query(default=None, max_length=80),
 ) -> PreviewFeedResponse:
-    """Personalized Previews feed with cursor-based continuation per
-    Sep-22 brief §4. Removes the artificial 25-item stop by tracking
-    how many candidates have already been scanned (in the opaque
-    cursor) and resuming from that offset on the next page.
+    """Oct-18 build brief §3 fix 2: bounded opaque cursor backed by a
+    stable server-side session snapshot. The client sees `cursor` as
+    an opaque `<session_uuid>:<offset>` string that never grows with
+    served-item count. Served IDs + scan offset live in preview_sessions.
 
-    Also filters out title/video pairs the user impressed on in the
-    last 7 days so reopening Previews doesn't repeatedly start with
-    the same initial set. Impression tracking currently lives in the
-    session-scoped set already served in this session; a persistent
-    `preview_impressions` table is deferred as a fast follow (spec
-    §21 Phase 1.1).
+    Filter changes invalidate the cursor via filter_fingerprint, so
+    rapidly flipping Comedy → Horror can't surface late Comedy results
+    inside the Horror queue.
     """
-    state = _decode_cursor(cursor)
-    already_served_ids = set(state.get("served", []))
-    scan_offset = int(state.get("scan_offset", 0))
+    fingerprint = _filter_fingerprint(preferred_type, genre)
 
-    # Over-fetch aggressively so the yield-rate (candidates with a
-    # playable YouTube video) still meets `limit` after suppression.
+    # Load session state (if any) and verify it matches the current filter.
+    pv_session: PreviewSession | None = None
+    if cursor:
+        try:
+            sid, _, offset_str = cursor.partition(":")
+            sid_uuid = UUID(sid)
+            pv_session = db.scalar(
+                select(PreviewSession).where(
+                    PreviewSession.id == sid_uuid,
+                    PreviewSession.user_id == current_user.id,
+                    PreviewSession.filter_fingerprint == fingerprint,
+                )
+            )
+        except (ValueError, TypeError):
+            pv_session = None
+    if pv_session is None:
+        # Fresh session (or filter changed / stale cursor).
+        pv_session = PreviewSession(
+            id=uuid4(),
+            user_id=current_user.id,
+            filter_fingerprint=fingerprint,
+            served_title_ids=[],
+            scan_offset=0,
+            exhausted=False,
+        )
+        db.add(pv_session)
+        db.flush()
+
+    already_served_ids: set[UUID] = set(pv_session.served_title_ids or [])
+    scan_offset = pv_session.scan_offset or 0
+
+    # Progressive candidate retrieval. Request `scan_offset + over_fetch`
+    # so the engine can skip past the previously-scanned portion
+    # without us re-executing TMDB calls on titles we already decided
+    # had no video.
     over_fetch = max(80, limit * 6)
+    requested = min(scan_offset + over_fetch, _MAX_CANDIDATE_SCAN)
     candidates = get_social_recommendations(
         db,
         current_user.id,
-        limit=min(over_fetch + scan_offset, 240),
+        limit=requested,
         preferred_type=preferred_type,
         genre_filter=genre,
         session_id=session_id,
     )
-    # Skip the portion the previous page already scanned.
     candidates = candidates[scan_offset:]
 
     used_title_ids: set[UUID] = set()
     items: list[PreviewFeedItemResponse] = []
     scanned = 0
-    exhausted = False
     tmdb_broken = False
     for rec in candidates:
         scanned += 1
         if len(items) >= limit:
             break
         title_id = rec.title.id
-        if str(title_id) in already_served_ids:
-            continue
-        if title_id in used_title_ids:
+        if title_id in already_served_ids or title_id in used_title_ids:
             continue
         title_row = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
         if title_row is None:
@@ -277,22 +304,33 @@ def get_previews_feed(
                 reason=_reason_from_recommendation(rec),
             )
         )
-    # If we hit the end of the scan window without finding `limit`
-    # items and the candidate pool didn't grow (already at the 240
-    # over-fetch cap), the eligible pool is exhausted per §4.
-    exhausted = (
-        len(items) < limit and scanned >= len(candidates) and scan_offset + scanned >= 240
-    )
 
-    # Next cursor packs the served-title set + the new scan_offset.
-    next_state = {
-        "served": list(already_served_ids | {str(i.title_id) for i in items})[:200],
-        "scan_offset": scan_offset + scanned,
-    }
-    next_cursor = _encode_cursor(next_state) if not exhausted else None
+    # Session state: scan_offset advances by what we actually scanned.
+    # served_title_ids grows but stays bounded because it's server-side
+    # and the client never sees it.
+    new_offset = scan_offset + scanned
+    new_served_ids = list(already_served_ids | {i.title_id for i in items})
+    # Truthful exhaustion: we requested the max candidate scan ceiling
+    # and either consumed every candidate without finding `limit` or
+    # we found fewer than requested and have no room to grow.
+    exhausted = (
+        len(items) < limit
+        and scanned >= len(candidates)
+        and new_offset >= _MAX_CANDIDATE_SCAN
+    )
+    pv_session.scan_offset = new_offset
+    # Bound stored served IDs to the most recent 500 to protect
+    # row width in extreme sessions. The service will never remind
+    # the client of titles it saw before this truncation window.
+    pv_session.served_title_ids = new_served_ids[-500:]
+    pv_session.exhausted = exhausted
+    pv_session.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    next_cursor = None if exhausted else f"{pv_session.id}:{new_offset}"
 
     return PreviewFeedResponse(
-        session_id=session_id or f"pv-{current_user.id}",
+        session_id=session_id or str(pv_session.id),
         items=items,
         next_cursor=next_cursor,
         has_more=not exhausted and not tmdb_broken,

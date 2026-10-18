@@ -74,19 +74,12 @@ def ensure_default_watchlists(db: Session, user_id: UUID) -> list[Watchlist]:
     lists = db.scalars(
         select(Watchlist).where(Watchlist.owner_user_id == user_id).order_by(Watchlist.is_default.desc(), Watchlist.created_at.asc())
     ).all()
-    # Every list (system defaults included) gets a public share token so
-    # it's shareable-by-default. Cheap idempotent no-op when already present.
-    made_share = False
-    for wl in lists:
-        before = db.query(ListShare).filter(
-            ListShare.watchlist_id == wl.id,
-            ListShare.revoked_at.is_(None),
-        ).count()
-        _ensure_public_share(db, wl)
-        if before == 0:
-            made_share = True
-    if made_share:
-        db.commit()
+    # Oct-18 brief §3 fix 8: lists are PRIVATE by default. No implicit
+    # public share creation. The earlier "share-by-default" behavior
+    # has been removed — a list only has a public ListShare when the
+    # user explicitly publishes it via POST /me/watchlist/lists/{id}/share.
+    # Legacy intentionally-public shares already in the database are
+    # preserved; nothing is retroactively privatized here.
     return lists
 
 
@@ -134,8 +127,9 @@ def create_watchlist(db: Session, user_id: UUID, *, name: str, description: str 
         is_system_list=False,
     )
     db.add(watchlist)
-    db.flush()  # need watchlist.id before minting the share
-    _ensure_public_share(db, watchlist)
+    db.flush()
+    # Oct-18 brief §3 fix 8: new lists are private by default. The
+    # user explicitly publishes via POST /me/watchlist/lists/{id}/share.
     db.commit()
     db.refresh(watchlist)
     return watchlist

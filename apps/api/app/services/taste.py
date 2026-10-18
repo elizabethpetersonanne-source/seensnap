@@ -1567,13 +1567,26 @@ def get_social_recommendations(
     # empty state on a fresh account destroys the alpha demo.
     if len(chosen) < limit and trending_recs:
         chosen_ids = {item["title"].id for item in chosen}
+        # Oct-18 brief §4 Swipe genre repair: the trending top-up must
+        # re-check the active media type + genre filter. Previously
+        # this path appended trending candidates blindly, so a
+        # filtered deck (e.g. Series + Documentary) ended up with
+        # unrelated trending titles. Hard filter = eligibility, not a
+        # soft preference.
+        want_type = "movie" if preferred_type == "movie" else ("series" if preferred_type == "show" else None)
+        wanted_genre = genre_filter.strip().lower() if genre_filter else None
         for item in trending_recs:
             if len(chosen) >= limit:
                 break
-            if item["title"].id in chosen_ids:
+            cand = item["title"]
+            if cand.id in chosen_ids:
+                continue
+            if want_type and cand.content_type != want_type:
+                continue
+            if wanted_genre and wanted_genre not in [str(g).lower() for g in (cand.genres or [])]:
                 continue
             chosen.append(item)
-            chosen_ids.add(item["title"].id)
+            chosen_ids.add(cand.id)
 
     # Deep cold-start pool. Trending alone is ~60 titles; after ~2-3 swipe
     # sessions a fresh account exhausts it and hits the "you've seen
@@ -1603,12 +1616,27 @@ def get_social_recommendations(
                 start_page=start_page,
                 exclude_title_ids=exclude | chosen_ids,
                 max_pages=pages_per_call,
+                # Oct-18 brief §4: filter at the TMDB fetch layer so
+                # the popular-pool top-up never silently fills a
+                # filtered deck with unrelated media type / genre.
+                media_type_filter=preferred_type,
+                genre_filter=genre_filter,
             )
         except TmdbConfigurationError:
             extra_titles = []
+        want_type = "movie" if preferred_type == "movie" else ("series" if preferred_type == "show" else None)
+        wanted_genre = genre_filter.strip().lower() if genre_filter else None
         for title in extra_titles:
             if len(chosen) >= limit:
                 break
+            # Defensive re-check: fetch_popular_titles enforces the
+            # filter already, but we re-verify here so a future
+            # regression in that function can't leak unrelated titles
+            # into a filtered deck.
+            if want_type and title.content_type != want_type:
+                continue
+            if wanted_genre and wanted_genre not in [str(g).lower() for g in (title.genres or [])]:
+                continue
             chosen.append({
                 "title": title,
                 "reason_type": REASON_TYPE_TRENDING_PERSONALIZED,
@@ -1981,7 +2009,18 @@ def _collect_title_signals(db: Session, user_id: UUID) -> tuple[defaultdict[str,
         .where(Rating.user_id == user_id)
     ).all()
     for rating, title in ratings:
-        apply_title(title, max(float(rating.score) - 4.5, 0.5) * 6)
+        # Oct-18 brief §3 fix 3: unify signal semantics across the
+        # recommendation stack. The old `max(score - 4.5, 0.5) * 6`
+        # formula floored every rating to a positive contribution, so
+        # a 1/10 rating still added +3 affinity for that title's
+        # traits — contradicting user_signals.py which (correctly)
+        # treats score <= 4 as negative evidence. Switch to a
+        # symmetric mapping centered at 5.5:
+        #   10 →  +27   7 →  +9    5 →  -3
+        #    1 →  -27   4 →  -9    6 →  +3
+        # so low ratings REDUCE affinity in this consumer the same way
+        # they do in user_signals.py's weight table.
+        apply_title(title, (float(rating.score) - 5.5) * 6)
 
     reviews = db.execute(
         select(Review, ContentTitle)

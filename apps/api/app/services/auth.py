@@ -142,6 +142,12 @@ def _ensure_post_auth_state(db: Session, user: User) -> None:
     if prefs is None:
         db.add(UserPreferences(user_id=user.id))
     ensure_default_watchlists(db, user.id)
+    # Oct-18 build brief §9: every beta user (new and existing) gets a
+    # server-authoritative Premium grant. Idempotent — only creates
+    # the grant row if an active one doesn't exist.
+    if not user.is_demo:
+        from app.services.entitlements import grant_beta_premium
+        grant_beta_premium(db, user.id)
 
 
 def authenticate_with_apple(db: Session, token: str, *, display_name: str | None = None) -> SessionResponse:

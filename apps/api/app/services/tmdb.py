@@ -132,7 +132,15 @@ def _upsert_title_from_tmdb_result(db: Session, item: dict[str, Any]) -> Content
         return None
 
     tmdb_id = item["id"]
-    title = db.scalar(select(ContentTitle).where(ContentTitle.tmdb_id == tmdb_id))
+    # Oct-18 brief §3 fix 6: identity is (content_type, tmdb_id).
+    # Looking up by tmdb_id alone is ambiguous — a movie id can
+    # overlap a TV series id.
+    title = db.scalar(
+        select(ContentTitle).where(
+            ContentTitle.tmdb_id == tmdb_id,
+            ContentTitle.content_type == media_type,
+        )
+    )
     if title is None:
         title = ContentTitle(
             tmdb_id=tmdb_id,
@@ -459,6 +467,8 @@ def fetch_popular_titles(
     start_page: int = 1,
     exclude_title_ids: set | None = None,
     max_pages: int = 8,
+    media_type_filter: str | None = None,
+    genre_filter: str | None = None,
 ) -> list[ContentTitle]:
     """Fetch popular movies + TV shows across multiple TMDB pages. Used
     as the deep cold-start pool so a brand-new user with no personalized
@@ -482,10 +492,19 @@ def fetch_popular_titles(
     hydrated: list[ContentTitle] = []
     seen_tmdb_ids: set[int] = set()
     exclude_set = exclude_title_ids or set()
+    wanted_genre_lower = genre_filter.strip().lower() if genre_filter else None
+    # Oct-18 brief §4: respect media type at the TMDB endpoint level.
+    # If a type filter is set we only hit the corresponding /popular
+    # endpoint rather than fetching both and silently mixing.
+    if media_type_filter == "movie" or media_type_filter == "show":
+        want_server_type = "movie" if media_type_filter == "movie" else "tv"
+        endpoints = (("movie", "/movie/popular"),) if want_server_type == "movie" else (("tv", "/tv/popular"),)
+    else:
+        endpoints = (("movie", "/movie/popular"), ("tv", "/tv/popular"))
     with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
         for offset in range(max_pages):
             page = ((start_page - 1 + offset) % 500) + 1  # wrap at TMDB's max
-            for media_type, path in (("movie", "/movie/popular"), ("tv", "/tv/popular")):
+            for media_type, path in endpoints:
                 if len(hydrated) >= limit:
                     break
                 try:
@@ -508,6 +527,12 @@ def fetch_popular_titles(
                     # keep hunting for fresh items across more pages.
                     if row.id in exclude_set:
                         continue
+                    # Oct-18 brief §4: enforce genre filter here too so
+                    # the deep popular pool can't bypass it. Case-
+                    # insensitive membership against ContentTitle.genres.
+                    if wanted_genre_lower is not None:
+                        if wanted_genre_lower not in [str(g).lower() for g in (row.genres or [])]:
+                            continue
                     hydrated.append(row)
                     if len(hydrated) >= limit:
                         break
