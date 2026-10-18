@@ -331,6 +331,143 @@ export function WatchStatusToggle({
 }
 
 /**
+ * Oct-18 build brief §4 shared visual primitive: InlineRatingRail.
+ *
+ * Horizontal 1-10 rail that expands LEFTWARD from a star icon. Commits
+ * once (tap-to-rate), collapses back to the star + score display.
+ * No bottom sheet, no five-star control, no modal.
+ *
+ * Replaces the modal-based RatingEditor at every surface that already
+ * owns a title context (Swipe card, Preview card, title modal, social
+ * feed title card). Modal-based rating is still available via
+ * RatingEditor for surfaces that don't have horizontal rail room
+ * (e.g. a cramped list row) — the two share the same /me/ratings API
+ * and broadcast state via subscribeRatingChanges.
+ */
+export function InlineRatingRail({
+  token,
+  titleId,
+  snapshot,
+  onChanged,
+  size = "md",
+  alignRight = true,
+}: {
+  token: string | null;
+  titleId: string | null;
+  snapshot: RatingSnapshot | null;
+  onChanged?: (next: RatingSnapshot) => void;
+  size?: "sm" | "md" | "lg";
+  // When true (default) the rail anchors at the right and expands
+  // left so the star stays at the trailing edge of the row.
+  alignRight?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [pending, setPending] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+  const score = snapshot?.score ?? null;
+
+  const starSize = size === "sm" ? 16 : size === "lg" ? 24 : 20;
+  const cellSize = size === "sm" ? 24 : size === "lg" ? 34 : 28;
+
+  async function commit(n: number) {
+    if (!token || !titleId || saving) return;
+    setSaving(true);
+    setPending(n);
+    try {
+      const next = await apiRequest<RatingSnapshot>(`/me/ratings/${titleId}`, {
+        method: "PUT",
+        token,
+        body: JSON.stringify({
+          score: n,
+          expected_version: snapshot?.version ?? undefined,
+        }),
+      });
+      broadcast(next);
+      onChanged?.(next);
+      setExpanded(false);
+    } catch {
+      // keep expanded so the user can retry
+    } finally {
+      setSaving(false);
+      setPending(null);
+    }
+  }
+
+  if (!expanded) {
+    return (
+      <Pressable
+        onPress={() => setExpanded(true)}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel={score != null ? `Your rating ${score} out of 10 — tap to change` : "Tap to rate 1 to 10"}
+        style={styles.railStarContainer}
+      >
+        <Ionicons
+          name={score != null ? "star" : "star-outline"}
+          size={starSize}
+          color={score != null ? colors.accent : colors.ink}
+        />
+        {score != null ? (
+          <Text style={[styles.railScore, size === "sm" && { fontSize: 11 }]}>
+            {score}/10
+          </Text>
+        ) : null}
+      </Pressable>
+    );
+  }
+
+  // Expanded: 10 cells to the left of the star (unless alignRight=false).
+  return (
+    <View
+      style={[
+        styles.railExpanded,
+        alignRight ? { flexDirection: "row-reverse" } : { flexDirection: "row" },
+      ]}
+    >
+      <Pressable
+        onPress={() => setExpanded(false)}
+        hitSlop={6}
+        accessibilityRole="button"
+        accessibilityLabel="Close rating rail"
+        style={styles.railStarContainer}
+      >
+        <Ionicons
+          name={score != null ? "star" : "star-outline"}
+          size={starSize}
+          color={colors.accent}
+        />
+      </Pressable>
+      <View style={[styles.railCells, { marginRight: alignRight ? 6 : 0, marginLeft: alignRight ? 0 : 6 }]}>
+        {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => {
+          const active = (pending ?? score) === n;
+          return (
+            <Pressable
+              key={n}
+              onPress={() => void commit(n)}
+              disabled={saving}
+              style={[
+                styles.railCell,
+                { width: cellSize, height: cellSize },
+                active && styles.railCellActive,
+              ]}
+              accessibilityRole="button"
+              accessibilityState={{ selected: active }}
+              accessibilityLabel={`Rate ${n}`}
+            >
+              {saving && pending === n ? (
+                <ActivityIndicator size="small" color={colors.background} />
+              ) : (
+                <Text style={[styles.railCellText, active && styles.railCellTextActive]}>{n}</Text>
+              )}
+            </Pressable>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+/**
  * Compact score badge for use inside title cards / rows.
  * Renders `You · 8/10` when scored, `Rate it` when unrated.
  */
@@ -514,5 +651,44 @@ const styles = StyleSheet.create({
   badgeTextRated: {
     color: colors.ink,
     fontFamily: fonts.monoSemiBold,
+  },
+  railStarContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+  },
+  railScore: {
+    fontFamily: fonts.mono,
+    fontSize: 12,
+    color: colors.ink,
+    letterSpacing: 0.4,
+  },
+  railExpanded: {
+    alignItems: "center",
+    gap: 6,
+  },
+  railCells: {
+    flexDirection: "row",
+    gap: 3,
+  },
+  railCell: {
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: rules.default,
+    justifyContent: "center",
+    alignItems: "center",
+    backgroundColor: "transparent",
+  },
+  railCellActive: {
+    backgroundColor: colors.accent,
+    borderColor: colors.accent,
+  },
+  railCellText: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    color: colors.ink,
+  },
+  railCellTextActive: {
+    color: colors.background,
   },
 });

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import analytics, auth, collections, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, scene_dna, search, shares, snips, social, teams, titles, watch_options, watchlist
+from app.api.routes import activity, analytics, auth, collections, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, scene_dna, search, shares, snips, social, teams, title_state, titles, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
@@ -49,3 +49,12 @@ api_router.include_router(favorites.router, prefix="/me/favorites", tags=["favor
 # server-side source='beta' EntitlementGrant row. Client NEVER sets
 # isPremium directly; every protected boundary resolves this.
 api_router.include_router(entitlement.router, prefix="/me/entitlement", tags=["entitlement"])
+# Canonical title state — Oct-18 build brief §5. One transactional
+# service for save / watched / rate / unrate; every surface writes
+# through this and reads back the full snapshot to reconcile.
+api_router.include_router(title_state.router, prefix="/me/title-state", tags=["title-state"])
+# Explicit publication — Oct-18 build brief §6. Private save/rate/rank
+# never auto-publishes; the user explicitly posts via this endpoint
+# with an optional ≤300-char Take. Historical rating/rank is snapshot
+# at publish time so later private edits don't silently rewrite posts.
+api_router.include_router(activity.router, prefix="/me/activity", tags=["activity"])
