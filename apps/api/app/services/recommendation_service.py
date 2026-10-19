@@ -534,16 +534,62 @@ def recommend_for_user(
         candidate_ids = [f.content_title_id for f in features]
         feature_by_id = {f.content_title_id: f for f in features}
     else:
-        # Perfect mode: pull the user's UserSignal top-scored candidates by
-        # fetching titles matching their positive_evidence + newly-encountered
-        # popular titles. Cap at 400 for cost.
-        popular = db.scalars(
-            select(ContentTitle)
-            .where(ContentTitle.tmdb_vote_average.is_not(None), ContentTitle.tmdb_vote_average >= 6.5)
-            .order_by(ContentTitle.tmdb_vote_average.desc())
-            .limit(400)
-        ).all()
-        candidate_ids = [t.id for t in popular if t.id not in exclude]
+        # Perfect mode: candidate pool prioritizes titles that actually
+        # match the user's signal profile. If the user has any positive
+        # signals, we pull titles whose signal_names intersect the user's
+        # strongest signals FIRST; only when that pool is thin do we fall
+        # back to the TMDB-popular pool. This makes For You visibly
+        # personalized instead of returning the same popular titles for
+        # everyone.
+        top_user_signals = [
+            (stype, name) for (stype, name), score in signal_index.items() if score > 0
+        ]
+        candidate_ids: list[UUID] = []
+        if top_user_signals:
+            from app.services.user_signals import _signal_names_for_title as _title_sigs
+            # Pull a larger pool and filter in Python — we need per-title
+            # signal lookups to overlap-check.
+            broad = db.scalars(
+                select(ContentTitle)
+                .where(ContentTitle.tmdb_vote_average.is_not(None), ContentTitle.tmdb_vote_average >= 6.0)
+                .order_by(ContentTitle.tmdb_vote_average.desc())
+                .limit(1200)
+            ).all()
+            user_sig_set = set(top_user_signals)
+            matching = []
+            for t in broad:
+                if t.id in exclude:
+                    continue
+                t_sigs = _title_sigs(t)
+                has_match = False
+                for stype, names in t_sigs.items():
+                    for name in names:
+                        if (stype, name) in user_sig_set:
+                            has_match = True
+                            break
+                    if has_match:
+                        break
+                if has_match:
+                    matching.append(t.id)
+                if len(matching) >= 400:
+                    break
+            candidate_ids = matching
+        # Fallback: if the user has no signals yet, OR too few signal-
+        # matching titles exist, pull the popular pool so For You still
+        # has something to show (ranked by quality floor).
+        if len(candidate_ids) < limit * 3:
+            popular = db.scalars(
+                select(ContentTitle)
+                .where(ContentTitle.tmdb_vote_average.is_not(None), ContentTitle.tmdb_vote_average >= 6.5)
+                .order_by(ContentTitle.tmdb_vote_average.desc())
+                .limit(400)
+            ).all()
+            seen_cand = set(candidate_ids)
+            for t in popular:
+                if t.id in exclude or t.id in seen_cand:
+                    continue
+                candidate_ids.append(t.id)
+                seen_cand.add(t.id)
         feature_by_id = {}
 
     if not candidate_ids:
