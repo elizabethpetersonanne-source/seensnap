@@ -119,15 +119,42 @@ export default function MyPicksScreen() {
     return (data[activeCategory] as PickTitle[]) ?? [];
   }, [data, activeCategory]);
 
-  const sections = useMemo(() => {
-    if (activeCategory !== "my_lists") return groupBySections(items);
-    // For my_lists, group one section PER list rather than slicing by 5.
+  type Section = {
+    key: string;
+    hero: PickTitle;
+    four: PickTitle[];
+    kicker: string | null;
+    listMeta: PickList | null;
+  };
+
+  const sections = useMemo<Section[]>(() => {
+    if (activeCategory !== "my_lists") {
+      // One section per category. The hero is the top item; the
+      // continuation strip gets the full remainder — the strip is
+      // horizontally scrollable so the user sees everything they've
+      // ranked / saved, not just the top 5.
+      if (items.length === 0) return [];
+      return [
+        {
+          key: `${activeCategory}-${items[0].id}`,
+          hero: items[0],
+          four: items.slice(1),
+          kicker: null,
+          listMeta: null,
+        },
+      ];
+    }
+    // For my_lists, group one section PER list so each list has its own
+    // dominant hero and the user can tell them apart. The list name
+    // becomes a prominent section kicker at the top of each page.
     if (!data) return [];
     return data.my_lists
       .filter((l) => l.titles.length > 0)
       .map((l) => ({
-        hero: { ...l.titles[0], context_label: l.name.toUpperCase() },
-        four: l.titles.slice(1, 5),
+        key: `list-${l.id}`,
+        hero: l.titles[0],
+        four: l.titles.slice(1),
+        kicker: `${l.name.toUpperCase()} · ${l.titles.length} TITLE${l.titles.length === 1 ? "" : "S"}`,
         listMeta: l,
       }));
   }, [data, activeCategory, items]);
@@ -243,7 +270,7 @@ export default function MyPicksScreen() {
       ) : (
         <FlatList
           data={sections}
-          keyExtractor={(section, i) => `${activeCategory}-${section.hero.id}-${i}`}
+          keyExtractor={(section) => section.key}
           snapToInterval={sectionHeight}
           decelerationRate="fast"
           showsVerticalScrollIndicator={false}
@@ -251,6 +278,7 @@ export default function MyPicksScreen() {
             <View style={{ height: sectionHeight }}>
               <FullBleedPosterSection
                 heroHeight={sectionHeight}
+                sectionKicker={item.kicker}
                 hero={pickToFullBleed(item.hero)}
                 four={item.four.map(pickToFullBleed)}
                 onPressHero={() => void openTitle(item.hero.id)}

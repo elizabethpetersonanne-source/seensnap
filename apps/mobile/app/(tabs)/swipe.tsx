@@ -1154,20 +1154,183 @@ export default function SwipeTab() {
         </Animated.View>
       ) : null}
 
-      {/* Swipe workspace — layout composition per Mobile Responsive
-          Remediation spec §6/§10. Narrow modes (<720w) render a
-          TRUE single column: compact header → centered poster →
-          full-width title context → decision area. Wide modes keep
-          the approved two-column composition. Direction/alignItems
-          come from inline style so the same JSX handles both. */}
-      {!loading && !revealVisible ? (
+      {/* Narrow mode (mobile): one unified bordered card containing
+          hero backdrop + title identity + metadata + Why It's Here +
+          provider strip. Pan responder wraps the hero area so swipes
+          still work. Decision circles sit below the card. */}
+      {!loading && !revealVisible && isNarrow && activeCard ? (
+        <View style={styles.narrowStack}>
+          <Animated.View
+            style={[
+              styles.unifiedCard,
+              {
+                transform: [
+                  ...pan.getTranslateTransform(),
+                  { rotate: rotation },
+                  { scale: nextCardEntry },
+                ],
+              },
+            ]}
+            {...panResponder.panHandlers}
+          >
+            {/* Hero area with backdrop + title artwork + Play Trailer */}
+            <View style={styles.unifiedHero}>
+              {(() => {
+                const heroSource = resolveMediaUrl(
+                  activeCard.title.backdrop_url || activeCard.title.poster_url || null,
+                );
+                return heroSource ? (
+                  <Image source={{ uri: heroSource }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+                ) : (
+                  <View style={[StyleSheet.absoluteFillObject, { backgroundColor: colors.surfaceMuted }]} />
+                );
+              })()}
+              <View style={styles.unifiedHeroShade} />
+              <View style={styles.unifiedBadge}>
+                <Text style={styles.unifiedBadgeLabel}>
+                  {activeCard.title.content_type === "movie" ? "MOVIE" : "SERIES"}
+                </Text>
+              </View>
+              <Pressable
+                onPress={() => void openDetails(activeCard)}
+                hitSlop={8}
+                style={styles.unifiedPlayTrailer}
+                accessibilityLabel="Play trailer"
+              >
+                <View style={styles.unifiedPlayCircle}>
+                  <Ionicons name="play" size={16} color={colors.ink} />
+                </View>
+                <Text style={styles.unifiedPlayLabel}>Play{"\n"}Trailer</Text>
+              </Pressable>
+            </View>
+
+            {/* Content body */}
+            <View style={styles.unifiedBody}>
+              <Text style={styles.unifiedTitle} numberOfLines={2}>{activeCard.title.title}</Text>
+              <Text style={styles.unifiedMeta}>{buildCardMeta(activeCard, currentDetail)}</Text>
+
+              {activeGenres ? (
+                <View style={styles.unifiedGenreRow}>
+                  {activeGenres.split(",").map((g) => g.trim()).filter(Boolean).slice(0, 4).map((g) => (
+                    <View key={g} style={styles.unifiedGenreChip}>
+                      <Text style={styles.unifiedGenreChipText}>{g}</Text>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+
+              {activeSynopsis ? (
+                <Text style={styles.unifiedSynopsis} numberOfLines={2}>{activeSynopsis}</Text>
+              ) : null}
+
+              <View style={styles.unifiedDivider} />
+
+              {activeCard.reason ? (
+                <View style={styles.unifiedWhyBlock}>
+                  <View style={styles.unifiedWhyRule} />
+                  <View style={{ flex: 1 }}>
+                    <View style={styles.unifiedWhyLabelRow}>
+                      <Ionicons name="albums" size={11} color={colors.accent} />
+                      <Text style={styles.unifiedWhyLabel}>WHY IT'S HERE</Text>
+                    </View>
+                    <Text style={styles.unifiedWhyText} numberOfLines={2}>{humanizeReason(activeCard.reason)}</Text>
+                  </View>
+                </View>
+              ) : null}
+
+              {activeStreaming.length > 0 ? (
+                <View style={styles.unifiedProviderStrip}>
+                  {activeStreaming.slice(0, 3).map((s) => {
+                    const meta = getStreamingServiceMeta(s.service);
+                    return (
+                      <View
+                        key={s.service}
+                        style={[styles.unifiedProviderPill, meta ? { backgroundColor: meta.color } : null]}
+                      >
+                        <Text
+                          style={[styles.unifiedProviderPillLabel, meta ? { color: meta.textColor } : null]}
+                          numberOfLines={1}
+                        >
+                          {(meta?.shortName || s.serviceName || "").toUpperCase()}
+                        </Text>
+                      </View>
+                    );
+                  })}
+                  {activeStreaming.length > 3 ? (
+                    <View style={styles.unifiedProviderMore}>
+                      <Text style={styles.unifiedProviderMoreLabel}>+{activeStreaming.length - 3} more</Text>
+                      <Ionicons name="chevron-forward" size={11} color={colors.muted} />
+                    </View>
+                  ) : null}
+                </View>
+              ) : null}
+            </View>
+
+            {/* Directional feedback edges — same as before. */}
+            <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipLeft, { opacity: leftLabelOpacity }]}>
+              <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
+            </Animated.View>
+            <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}>
+              <Text style={styles.deckEdgeChipTextRight}>MORE LIKE THIS</Text>
+            </Animated.View>
+            <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipTop, { opacity: upLabelOpacity }]}>
+              <Text style={styles.deckEdgeChipTextTop}>WATCH NOW</Text>
+            </Animated.View>
+          </Animated.View>
+
+          {/* Decision circles (same primitives, outside the card) */}
+          <View style={styles.decisionDock}>
+            <View style={styles.decisionCell}>
+              <Pressable
+                onPress={() => void animateSwipe("left")}
+                accessibilityRole="button"
+                accessibilityLabel={`Pass on ${activeCard.title.title}`}
+                style={({ pressed }) => [styles.decisionCircle, styles.decisionCircleNeutral, pressed && { opacity: 0.72 }]}
+              >
+                <Ionicons name="close" size={28} color={colors.ink} />
+              </Pressable>
+              <Text style={styles.decisionLabel}>PASS</Text>
+            </View>
+            <View style={styles.decisionCell}>
+              <Pressable
+                onPress={() => void animateSwipe("right")}
+                accessibilityRole="button"
+                accessibilityLabel={`More like ${activeCard.title.title}`}
+                style={({ pressed }) => [styles.decisionCircle, styles.decisionCirclePrimary, pressed && { opacity: 0.88 }]}
+              >
+                <Ionicons name="heart" size={28} color={colors.background} />
+              </Pressable>
+              <Text style={[styles.decisionLabel, styles.decisionLabelPrimary]}>MORE LIKE THIS</Text>
+            </View>
+            <View style={styles.decisionCell}>
+              <Pressable
+                onPress={() => {
+                  if (!activeCard) return;
+                  setSaveTitleId(activeCard.title.id);
+                  setShowSaveSheet(true);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`Save ${activeCard.title.title}`}
+                style={({ pressed }) => [styles.decisionCircle, styles.decisionCircleNeutral, pressed && { opacity: 0.72 }]}
+              >
+                <Ionicons name="bookmark-outline" size={26} color={colors.ink} />
+              </Pressable>
+              <Text style={styles.decisionLabel}>SAVE</Text>
+            </View>
+          </View>
+        </View>
+      ) : null}
+
+      {/* Wide mode (desktop/tablet): existing two-column layout.
+          Narrow mode is handled by the unified card above. */}
+      {!loading && !revealVisible && !isNarrow ? (
         <View
           style={[
             styles.workspace,
             {
               gap: workspaceGap,
-              flexDirection: isNarrow ? "column" : "row",
-              alignItems: isNarrow ? "center" : "flex-start",
+              flexDirection: "row",
+              alignItems: "flex-start",
             },
           ]}
         >
@@ -1175,7 +1338,7 @@ export default function SwipeTab() {
           <View
             style={[
               styles.deckColumn,
-              { width: isNarrow ? "100%" : posterColumnWidth },
+              { width: posterColumnWidth },
             ]}
           >
             <View
@@ -1270,14 +1433,10 @@ export default function SwipeTab() {
             </View>
           </View>
 
-          {/* Details + controls column — full width on narrow, flex:1
-              on wide so it takes the remaining row space. */}
-          <View
-            style={[
-              styles.railColumn,
-              isNarrow ? { width: "100%" } : { flex: 1 },
-            ]}
-          >
+          {/* Details + controls column — flex:1 on wide so it takes
+              the remaining row space. Narrow mode uses the unified
+              card rendered above instead. */}
+          <View style={[styles.railColumn, { flex: 1 }]}>
             {detailsAndControls}
           </View>
         </View>
@@ -2479,5 +2638,190 @@ const styles = StyleSheet.create({
   },
   decisionLabelPrimary: {
     color: colors.ink,
+  },
+
+  // Narrow-mode unified card. Hero backdrop + content body + provider
+  // strip in one bordered rounded container. Pan responder wraps it
+  // so a drag anywhere on the card registers as a swipe.
+  narrowStack: {
+    width: "100%",
+    alignItems: "stretch",
+    gap: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  unifiedCard: {
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: "#0a0f18",
+    overflow: "hidden",
+    shadowColor: "#000",
+    shadowOpacity: 0.5,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+    elevation: 10,
+    touchAction: "none",
+  },
+  unifiedHero: {
+    width: "100%",
+    aspectRatio: 16 / 11,
+    position: "relative",
+  },
+  unifiedHeroShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.18)",
+  },
+  unifiedBadge: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 4,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.18)",
+  },
+  unifiedBadgeLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.2,
+    color: colors.ink,
+  },
+  unifiedPlayTrailer: {
+    position: "absolute",
+    right: 14,
+    bottom: 14,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+  },
+  unifiedPlayCircle: {
+    width: 42,
+    height: 42,
+    borderRadius: 21,
+    borderWidth: 1.5,
+    borderColor: colors.ink,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "rgba(0,0,0,0.35)",
+  },
+  unifiedPlayLabel: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 11,
+    lineHeight: 13,
+    color: colors.ink,
+    letterSpacing: 0.3,
+  },
+  unifiedBody: {
+    paddingHorizontal: spacing.md,
+    paddingTop: spacing.md,
+    paddingBottom: spacing.md,
+    gap: 10,
+  },
+  unifiedTitle: {
+    fontFamily: fonts.sansBold,
+    color: colors.ink,
+    fontSize: 24,
+    lineHeight: 28,
+    letterSpacing: -0.3,
+  },
+  unifiedMeta: {
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 13,
+    marginTop: -4,
+  },
+  unifiedGenreRow: {
+    flexDirection: "row",
+    gap: 6,
+    flexWrap: "wrap",
+  },
+  unifiedGenreChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.22)",
+  },
+  unifiedGenreChipText: {
+    fontFamily: fonts.sansMedium,
+    fontSize: 11,
+    color: colors.ink,
+    letterSpacing: 0.2,
+  },
+  unifiedSynopsis: {
+    fontFamily: fonts.sans,
+    color: colors.ink,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  unifiedDivider: {
+    height: StyleSheet.hairlineWidth,
+    backgroundColor: "rgba(255,255,255,0.12)",
+    marginVertical: 2,
+  },
+  unifiedWhyBlock: {
+    flexDirection: "row",
+    gap: 10,
+  },
+  unifiedWhyRule: {
+    width: 2,
+    backgroundColor: colors.accent,
+    opacity: 0.75,
+  },
+  unifiedWhyLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
+  unifiedWhyLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    color: colors.accent,
+  },
+  unifiedWhyText: {
+    fontFamily: fonts.sans,
+    fontSize: 12,
+    lineHeight: 17,
+    color: colors.ink,
+  },
+  unifiedProviderStrip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 6,
+    padding: 6,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  unifiedProviderPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: "rgba(255,255,255,0.1)",
+  },
+  unifiedProviderPillLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 0.8,
+    color: colors.ink,
+  },
+  unifiedProviderMore: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginLeft: "auto",
+    paddingRight: 6,
+  },
+  unifiedProviderMoreLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    color: colors.muted,
   },
 });

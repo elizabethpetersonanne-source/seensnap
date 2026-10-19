@@ -305,7 +305,7 @@ export default function PublicProfileScreen() {
                           <Pressable
                             key={l.list_id}
                             style={styles.listTile}
-                            onPress={() => router.push(`/collections/${l.list_id}`)}
+                            onPress={() => router.push(`/lists/${l.share_token}`)}
                           >
                             {l.preview_posters[0] ? (
                               <Image source={{ uri: l.preview_posters[0] }} style={styles.listTilePoster} />

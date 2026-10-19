@@ -17,6 +17,7 @@ import { useMemo } from "react";
 import {
   Image,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -76,13 +77,16 @@ export function FullBleedPosterSection({
   const { width, height } = useWindowDimensions();
   const resolvedHeroHeight = heroHeight ?? Math.min(height * 0.78, 820);
 
+  // Full continuation list: the strip no longer caps at 4 — the brief
+  // §5 says "Horizontal movement continues the smaller-poster sequence,"
+  // so the strip scrolls horizontally when there are more than 4.
   const smallList = useMemo(
-    () => (hero ? four.filter((t) => t.id !== hero.id).slice(0, 4) : four.slice(0, 4)),
+    () => (hero ? four.filter((t) => t.id !== hero.id) : four),
     [hero, four],
   );
-
   const smallWidth = (width - spacing.lg * 2 - 24) / 4;
   const smallHeight = smallWidth * (3 / 2);
+  const scrolls = smallList.length > 4;
 
   const posterSource = hero?.backdrop_url || hero?.poster_url;
 
@@ -163,31 +167,64 @@ export function FullBleedPosterSection({
         </View>
       ) : null}
 
-      {/* 4-poster continuation strip pinned to the bottom of the hero. */}
+      {/* Continuation strip pinned to the bottom. Horizontally
+          scrollable when more than 4 — brief §5 "Horizontal movement
+          continues the smaller-poster sequence." */}
       {smallList.length > 0 ? (
-        <View style={[styles.continuationRow, { bottom: spacing.sm }]}>
-          {smallList.map((t, idx) => (
-            <Pressable
-              key={t.id}
-              onPress={() => onPressContinuation?.(t, idx)}
-              style={[styles.continuationCard, { width: smallWidth, height: smallHeight }]}
-            >
-              {t.poster_url ? (
-                <Image source={{ uri: t.poster_url }} style={styles.continuationPoster} resizeMode="cover" />
-              ) : (
-                <View style={[styles.continuationPoster, styles.continuationFallback]}>
-                  <Ionicons name="film-outline" size={16} color={colors.muted2} />
-                </View>
-              )}
-              {t.rank_label ? (
-                <View style={styles.continuationRankBadge}>
-                  <Text style={styles.continuationRankText}>{t.rank_label}</Text>
-                </View>
-              ) : null}
-              <Text style={styles.continuationCaption} numberOfLines={1}>{t.title}</Text>
-            </Pressable>
-          ))}
-        </View>
+        scrolls ? (
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            style={[styles.continuationScroll, { bottom: spacing.sm }]}
+            contentContainerStyle={styles.continuationScrollContent}
+          >
+            {smallList.map((t, idx) => (
+              <Pressable
+                key={t.id}
+                onPress={() => onPressContinuation?.(t, idx)}
+                style={[styles.continuationCard, { width: smallWidth, height: smallHeight }]}
+              >
+                {t.poster_url ? (
+                  <Image source={{ uri: t.poster_url }} style={styles.continuationPoster} resizeMode="cover" />
+                ) : (
+                  <View style={[styles.continuationPoster, styles.continuationFallback]}>
+                    <Ionicons name="film-outline" size={16} color={colors.muted2} />
+                  </View>
+                )}
+                {t.rank_label ? (
+                  <View style={styles.continuationRankBadge}>
+                    <Text style={styles.continuationRankText}>{t.rank_label}</Text>
+                  </View>
+                ) : null}
+                <Text style={styles.continuationCaption} numberOfLines={1}>{t.title}</Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+        ) : (
+          <View style={[styles.continuationRow, { bottom: spacing.sm }]}>
+            {smallList.map((t, idx) => (
+              <Pressable
+                key={t.id}
+                onPress={() => onPressContinuation?.(t, idx)}
+                style={[styles.continuationCard, { width: smallWidth, height: smallHeight }]}
+              >
+                {t.poster_url ? (
+                  <Image source={{ uri: t.poster_url }} style={styles.continuationPoster} resizeMode="cover" />
+                ) : (
+                  <View style={[styles.continuationPoster, styles.continuationFallback]}>
+                    <Ionicons name="film-outline" size={16} color={colors.muted2} />
+                  </View>
+                )}
+                {t.rank_label ? (
+                  <View style={styles.continuationRankBadge}>
+                    <Text style={styles.continuationRankText}>{t.rank_label}</Text>
+                  </View>
+                ) : null}
+                <Text style={styles.continuationCaption} numberOfLines={1}>{t.title}</Text>
+              </Pressable>
+            ))}
+          </View>
+        )
       ) : null}
     </View>
   );
@@ -310,6 +347,17 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     justifyContent: "space-between",
     zIndex: 2,
+  },
+  continuationScroll: {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    zIndex: 2,
+  },
+  continuationScrollContent: {
+    paddingHorizontal: spacing.lg,
+    gap: 8,
+    flexDirection: "row",
   },
   continuationCard: {
     position: "relative",
