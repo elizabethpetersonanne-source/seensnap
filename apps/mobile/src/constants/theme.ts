@@ -1,35 +1,42 @@
+// Oct-18 Visual Design brief §3. Base canvas near-black; accent is
+// pure SeenSnap yellow (not muted gold). Palette tokens are semantic
+// — do not add raw hex values at component sites.
 export const colors = {
   // Canvas
-  background: "#070b12",
-  backgroundElevated: "#0b111a",
-  surface: "#101722",
-  surfaceMuted: "#0d1320",
-  surfaceSoft: "#141d2a",
+  background: "#080B0E",
+  backgroundElevated: "#0E1317",
+  surface: "#141B20",
+  surfaceMuted: "#10161B",
+  surfaceSoft: "#1A222A",
   // Text
-  ink: "#f3efe5",
-  muted: "#aeb7c3",
-  muted2: "#788596",
-  // Accent — punctuation only, not atmosphere
-  accent: "#f4c430",
-  accentMuted: "#b78b2f",
+  ink: "#F6F6F2",
+  muted: "#B8BEC3",
+  muted2: "#7F8891",
+  // Accent — brand yellow, used as deliberate signal only
+  accent: "#FFE600",
+  accentMuted: "#C9B100",
+  // Concierge aura — brief §3, soft peripheral violet→indigo→magenta
+  conciergeAuraA: "#7161EF",
+  conciergeAuraB: "#4349B7",
+  conciergeAuraC: "#B65B89",
   // Editorial insert
-  paper: "#f1eadb",
-  paperInk: "#111724",
+  paper: "#F2EDE0",
+  paperInk: "#121820",
   // States
-  success: "#4ade80",
-  danger: "#e07070",
+  success: "#4ADE80",
+  danger: "#E07070",
   shadow: "#010204",
   // Legacy aliases — preserved for screens not yet redesigned
-  border: "rgba(255,255,255,0.10)",
+  border: "rgba(255,255,255,0.12)",
   accentSoft: "#7a5f18",
-  deepNavy: "#03050a",
-  velvet: "#070b12",
+  deepNavy: "#030508",
+  velvet: "#080B0E",
 };
 
 export const rules = {
-  default: "rgba(255,255,255,0.10)",
-  gold: "rgba(244,196,48,0.28)",
-  strong: "rgba(255,255,255,0.18)",
+  default: "rgba(255,255,255,0.12)",
+  gold: "rgba(255,230,0,0.32)",
+  strong: "rgba(255,255,255,0.20)",
 };
 
 export const fonts = {
@@ -130,10 +137,10 @@ export const header = {
   // Cinematic imagery pipeline — dark overlay + bottom gradient
   OVERLAY: "rgba(4,8,14,0.55)",
   BOTTOM_GRADIENT_STOPS: [
-    "rgba(7,11,18,0)",
-    "rgba(7,11,18,0.30)",
-    "rgba(7,11,18,0.75)",
-    "#070b12",
+    "rgba(8,11,14,0)",
+    "rgba(8,11,14,0.30)",
+    "rgba(8,11,14,0.75)",
+    "#080B0E",
   ] as const,
   BOTTOM_GRADIENT_LOCATIONS: [0, 0.45, 0.82, 1] as const,
 

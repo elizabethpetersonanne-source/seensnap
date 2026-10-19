@@ -1198,7 +1198,7 @@ const styles = StyleSheet.create({
     borderColor: rules.default,
   },
   subNavPillActive: {
-    backgroundColor: "rgba(244,196,48,0.14)",
+    backgroundColor: "rgba(255,230,0,0.14)",
     borderColor: rules.gold,
   },
   subNavPillText: {
@@ -1256,9 +1256,9 @@ const styles = StyleSheet.create({
     borderRadius: 38,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(244,196,48,0.10)",
+    backgroundColor: "rgba(255,230,0,0.10)",
     borderWidth: 1,
-    borderColor: "rgba(244,196,48,0.30)",
+    borderColor: "rgba(255,230,0,0.30)",
     marginBottom: spacing.sm,
   },
   emptyTitle: {
@@ -1643,7 +1643,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
     borderWidth: 1,
     borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.06)",
+    backgroundColor: "rgba(255,230,0,0.06)",
   },
   attachedChipPoster: {
     width: 36,

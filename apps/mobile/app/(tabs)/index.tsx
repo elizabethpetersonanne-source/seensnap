@@ -22,6 +22,7 @@ import { SeenSnapHeader } from "@/components/headers/seensnap-header";
 import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 
 import { UniversalTitleModal } from "@/components/universal-title-modal";
+import { ConciergeAura } from "@/components/concierge-aura";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
@@ -747,44 +748,57 @@ export default function DiscoverScreen() {
           )}
           scrollEventThrottle={16}
         >
-          {/* Oct-18 §4 Concierge entry. Beta: every user has Premium
-              server-side, but the composer still respects the typed
-              allowance strip so Free behavior is testable. */}
+          {/* Oct-18 Visual Design brief §7: Premium Discover opens
+              at Concierge; regular discovery scrolls below. Free
+              tier gets the same composer with the monthly allowance
+              strip. The composer itself is identical — placement
+              above every other module is the Premium signal. */}
           {entitlement ? (
-            <ConciergeComposer
-              token={sessionToken}
-              tier={entitlement.tier}
-              allowanceRemaining={null}
-              allowanceCap={entitlement.concierge_monthly_cap}
-              resetsAt={null}
-              onDecision={(decision) => {
-                setConciergeDecision(decision);
-                if (decision.allowance_remaining != null) {
-                  // No-op: the strip reads from the next decision; the
-                  // server tracks state. We don't fabricate client-side
-                  // allowance math.
-                }
-                trackEvent("concierge_decision", {
-                  status: decision.status,
-                  title_count: decision.titles.length,
-                });
-              }}
-            />
+            <View style={entitlement.tier === "premium" ? styles.conciergeLandingPremium : null}>
+              {entitlement.tier === "premium" ? (
+                <Text style={styles.conciergeLandingKicker}>CONCIERGE</Text>
+              ) : null}
+              <ConciergeComposer
+                token={sessionToken}
+                tier={entitlement.tier}
+                allowanceRemaining={null}
+                allowanceCap={entitlement.concierge_monthly_cap}
+                resetsAt={null}
+                onDecision={(decision) => {
+                  setConciergeDecision(decision);
+                  if (decision.allowance_remaining != null) {
+                    // No-op: the strip reads from the next decision;
+                    // the server tracks state. We don't fabricate
+                    // client-side allowance math.
+                  }
+                  trackEvent("concierge_decision", {
+                    status: decision.status,
+                    title_count: decision.titles.length,
+                  });
+                }}
+              />
+            </View>
           ) : null}
 
-          {/* Concierge result as hero-plus-four. */}
+          {/* Concierge result as hero-plus-four. Visual Design brief
+              §7 — soft peripheral aura around the leading result,
+              low-opacity and slow. Breathes under normal motion,
+              static under reduced motion. */}
           {conciergeDecision && conciergeDecision.status === "ready" && conciergeDecision.titles.length > 0 ? (
-            <HeroFourSection
-              sectionLabel="CONCIERGE"
-              sectionTitle={conciergeDecision.rationale ? "Based on your ask" : "Suggestions"}
-              hero={conciergeTitleToHero(conciergeDecision.titles[0])}
-              four={conciergeDecision.titles.slice(1, 5).map(conciergeTitleToHero)}
-              onPressTitle={(t) => {
-                trackEvent("concierge_title_opened", { title_id: t.id, decision_id: conciergeDecision.decision_id });
-                void openTitleModal(t.id);
-              }}
-              emptyMessage={null}
-            />
+            <View style={styles.conciergeResultWrap}>
+              <ConciergeAura width={360} height={420} intensity={1} />
+              <HeroFourSection
+                sectionLabel="CONCIERGE PICK"
+                sectionTitle={conciergeDecision.rationale ? "Based on your ask" : "Suggestions"}
+                hero={conciergeTitleToHero(conciergeDecision.titles[0])}
+                four={conciergeDecision.titles.slice(1, 5).map(conciergeTitleToHero)}
+                onPressTitle={(t) => {
+                  trackEvent("concierge_title_opened", { title_id: t.id, decision_id: conciergeDecision.decision_id });
+                  void openTitleModal(t.id);
+                }}
+                emptyMessage={null}
+              />
+            </View>
           ) : null}
 
           {/* Primary nav row — quick jumps to the three most-used destinations. */}
@@ -1034,7 +1048,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   searchBarActive: {
-    borderColor: "rgba(244,196,48,0.4)",
+    borderColor: "rgba(255,230,0,0.4)",
     backgroundColor: "rgba(255,255,255,0.06)",
   },
   searchIcon: { flexShrink: 0 },
@@ -1074,8 +1088,8 @@ const styles = StyleSheet.create({
     borderColor: rules.default,
   },
   tabActive: {
-    borderColor: "rgba(244,196,48,0.5)",
-    backgroundColor: "rgba(244,196,48,0.06)",
+    borderColor: "rgba(255,230,0,0.5)",
+    backgroundColor: "rgba(255,230,0,0.06)",
   },
   tabText: {
     fontFamily: fonts.mono,
@@ -1180,6 +1194,22 @@ const styles = StyleSheet.create({
   },
 
   // Primary nav row (Swipe / My Picks / Watch Teams)
+  conciergeResultWrap: {
+    position: "relative",
+    overflow: "hidden",
+  },
+  conciergeLandingPremium: {
+    paddingTop: 8,
+  },
+  conciergeLandingKicker: {
+    paddingHorizontal: spacing.lg,
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 11,
+    letterSpacing: 1.4,
+    textTransform: "uppercase",
+    marginBottom: 4,
+  },
   quickNavRow: {
     flexDirection: "row",
     gap: 10,
@@ -1202,7 +1232,7 @@ const styles = StyleSheet.create({
   },
   quickNavTilePressed: {
     borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.04)",
+    backgroundColor: "rgba(255,230,0,0.04)",
   },
   quickNavIconWrap: {
     width: 34,
@@ -1210,9 +1240,9 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
     alignItems: "center",
     justifyContent: "center",
-    backgroundColor: "rgba(244,196,48,0.08)",
+    backgroundColor: "rgba(255,230,0,0.08)",
     borderWidth: 1,
-    borderColor: "rgba(244,196,48,0.18)",
+    borderColor: "rgba(255,230,0,0.18)",
   },
   quickNavGoldRule: {
     width: 20,
@@ -1235,8 +1265,8 @@ const styles = StyleSheet.create({
     marginTop: spacing.sm,
     marginBottom: spacing.lg,
     borderWidth: 1,
-    borderColor: "rgba(244,196,48,0.18)",
-    backgroundColor: "rgba(244,196,48,0.035)",
+    borderColor: "rgba(255,230,0,0.18)",
+    backgroundColor: "rgba(255,230,0,0.035)",
     overflow: "hidden",
   },
   swipeCtaInner: {
@@ -1280,7 +1310,7 @@ const styles = StyleSheet.create({
   },
   swipeCtaGoldBar: {
     height: 2,
-    backgroundColor: "rgba(244,196,48,0.45)",
+    backgroundColor: "rgba(255,230,0,0.45)",
   },
 
   // Module structure
@@ -1305,7 +1335,7 @@ const styles = StyleSheet.create({
   moduleGoldRule: {
     height: 1,
     width: 24,
-    backgroundColor: "rgba(244,196,48,0.4)",
+    backgroundColor: "rgba(255,230,0,0.4)",
     marginBottom: 4,
   },
   moduleTitle: {

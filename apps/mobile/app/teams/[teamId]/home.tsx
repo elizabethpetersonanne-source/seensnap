@@ -297,7 +297,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 18,
     marginTop: 8,

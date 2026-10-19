@@ -1164,7 +1164,7 @@ const styles = StyleSheet.create({
   },
   listItemSelected: {
     borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.04)",
+    backgroundColor: "rgba(255,230,0,0.04)",
   },
   listItemText: {
     fontFamily: fonts.sansMedium,
@@ -1197,7 +1197,7 @@ const styles = StyleSheet.create({
   },
   serviceChipSelected: {
     borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.06)",
+    backgroundColor: "rgba(255,230,0,0.06)",
   },
   serviceCheck: {
     fontFamily: fonts.monoSemiBold,

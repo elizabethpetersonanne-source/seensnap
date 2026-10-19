@@ -521,7 +521,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radii.md,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(244,196,48,0.4)",
+    borderColor: "rgba(255,230,0,0.4)",
   },
   unlockTitle: {
     fontFamily: fonts.serifBold,
@@ -601,7 +601,7 @@ const styles = StyleSheet.create({
     borderRadius: 32,
     backgroundColor: colors.surface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(244,196,48,0.4)",
+    borderColor: "rgba(255,230,0,0.4)",
     alignItems: "center",
     justifyContent: "center",
   },

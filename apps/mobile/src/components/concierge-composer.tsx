@@ -195,7 +195,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.md,
     backgroundColor: colors.surface,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(244,196,48,0.28)",
+    borderColor: "rgba(255,230,0,0.28)",
   },
   input: {
     flex: 1,

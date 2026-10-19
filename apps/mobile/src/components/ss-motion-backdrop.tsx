@@ -86,7 +86,7 @@ export function SSMotionBackdrop({
     return (
       <View
         pointerEvents="none"
-        style={[styles.container, { backgroundColor: "#070b12" }, style]}
+        style={[styles.container, { backgroundColor: "#080B0E" }, style]}
       />
     );
   }

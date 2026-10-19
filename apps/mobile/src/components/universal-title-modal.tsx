@@ -1218,7 +1218,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(244, 196, 48, 0.9)",
     paddingHorizontal: 13,
     paddingVertical: 8,
-    shadowColor: "#f4c430",
+    shadowColor: "#FFE600",
     shadowOpacity: 0.45,
     shadowRadius: 8,
     shadowOffset: { width: 0, height: 0 },
@@ -1319,7 +1319,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.pill, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)",
     backgroundColor: "rgba(255,255,255,0.08)", paddingHorizontal: 10, paddingVertical: 7,
   },
-  watchActionPrimary: { borderColor: colors.accent, backgroundColor: "rgba(244,196,48,0.14)" },
+  watchActionPrimary: { borderColor: colors.accent, backgroundColor: "rgba(255,230,0,0.14)" },
   watchActionLabel: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 12 },
   watchActionLabelPrimary: { color: colors.accent },
   justWatchAttrib: {
@@ -1350,8 +1350,8 @@ const styles = StyleSheet.create({
     shadowColor: "#000", shadowOpacity: 0.18, shadowRadius: 8, shadowOffset: { width: 0, height: 3 },
   },
   actionCardHighlighted: {
-    borderColor: "rgba(244,196,48,0.22)",
-    backgroundColor: "rgba(244,196,48,0.06)",
+    borderColor: "rgba(255,230,0,0.22)",
+    backgroundColor: "rgba(255,230,0,0.06)",
   },
   actionIconWrap: { width: 40, height: 40, borderRadius: radii.xl, alignItems: "center", justifyContent: "center" },
   actionCopy: { flex: 1, gap: 2 },

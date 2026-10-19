@@ -1406,7 +1406,7 @@ function humanizeReason(reason: string) {
 }
 
 // ─── Frame marks ────────────────────────────────────────────────────────────
-const MARK_COLOR = "rgba(244,196,48,0.50)";
+const MARK_COLOR = "rgba(255,230,0,0.50)";
 const MARK_SIZE = 14;
 
 // ─── Styles ─────────────────────────────────────────────────────────────────
@@ -1543,7 +1543,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderWidth: 1,
     borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.06)",
+    backgroundColor: "rgba(255,230,0,0.06)",
   },
   deckEmptyCtaText: {
     fontFamily: fonts.monoSemiBold,
@@ -1758,7 +1758,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderWidth: 1,
     borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.06)",
+    backgroundColor: "rgba(255,230,0,0.06)",
   },
   watchNowText: {
     fontFamily: fonts.monoSemiBold,
@@ -2162,7 +2162,7 @@ const styles = StyleSheet.create({
   deckEdgeChipRight: {
     right: 16,
     borderColor: colors.accent,
-    backgroundColor: "rgba(244,196,48,0.14)",
+    backgroundColor: "rgba(255,230,0,0.14)",
   },
   deckEdgeChipTop: {
     top: 16,
@@ -2171,7 +2171,7 @@ const styles = StyleSheet.create({
     width: 100,
     alignItems: "center",
     borderColor: colors.accent,
-    backgroundColor: "rgba(244,196,48,0.14)",
+    backgroundColor: "rgba(255,230,0,0.14)",
   },
   deckEdgeChipTextLeft: {
     fontFamily: fonts.monoSemiBold,

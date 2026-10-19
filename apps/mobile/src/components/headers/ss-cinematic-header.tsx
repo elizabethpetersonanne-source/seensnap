@@ -263,14 +263,14 @@ const styles = StyleSheet.create({
     width: 260,
     height: 260,
     borderRadius: 260,
-    backgroundColor: "rgba(244,196,48,0.08)",
+    backgroundColor: "rgba(255,230,0,0.08)",
   },
   brandFallbackAccentB: {
     position: "absolute",
     width: 320,
     height: 320,
     borderRadius: 320,
-    backgroundColor: "rgba(244,196,48,0.05)",
+    backgroundColor: "rgba(255,230,0,0.05)",
   },
   gradientTop: {
     // A subtle top-fade for status bar readability.

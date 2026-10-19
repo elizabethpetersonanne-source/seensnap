@@ -63,7 +63,7 @@ const styles = StyleSheet.create({
   cta: {
     paddingVertical: 10,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(244,196,48,0.40)",
+    borderBottomColor: "rgba(255,230,0,0.40)",
     alignSelf: "flex-start",
   },
   ctaText: {

@@ -354,7 +354,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
   },
   recipientRowSelected: {
-    backgroundColor: "rgba(244,196,48,0.08)",
+    backgroundColor: "rgba(255,230,0,0.08)",
   },
   avatarBubble: {
     width: 36,

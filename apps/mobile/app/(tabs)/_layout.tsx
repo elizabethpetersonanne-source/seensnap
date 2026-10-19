@@ -81,41 +81,36 @@ function TabItem({
     outputRange: [0, 1],
   });
 
-  if (isPrimary) {
-    return (
-      <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.primaryTab}>
-        <View style={[styles.primaryDisc, isFocused && styles.primaryDiscFocused]}>
-          <Ionicons
-            name={isFocused ? config.iconFocused : config.icon}
-            size={30}
-            color={colors.background}
-          />
-        </View>
-        <Animated.Text
-          style={[styles.primaryLabel, { color: labelColor }]}
-          numberOfLines={1}
-        >
-          {config.label}
-        </Animated.Text>
-      </Pressable>
-    );
-  }
-
+  // Swipe is marked as the primary action per spec §6, but it does NOT
+  // become a FAB. Same tab height; distinction via a filled yellow disc
+  // the size of the icon slot and a slightly heavier underline — not
+  // scale. Keeps optical icon scale consistent across tabs.
   return (
     <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.tab}>
-      {/* Gold active rule at top */}
-      <Animated.View style={[styles.activeRule, { opacity: ruleOpacity }]} />
+      <Animated.View style={[styles.activeRule, { opacity: ruleOpacity }, isPrimary && styles.activeRulePrimary]} />
 
       <View style={styles.tabInner}>
-        <Ionicons
-          name={isFocused ? config.iconFocused : config.icon}
-          size={20}
-          color={isFocused ? colors.accent : colors.muted2}
-        />
-        {/* Force single-line + shrink-to-fit so "Scene DNA" and "Watch Teams"
-            stay centered under the icon on 7-tab layouts. */}
+        {isPrimary ? (
+          <View style={[styles.primaryIconWrap, isFocused && styles.primaryIconWrapFocused]}>
+            <Ionicons
+              name={isFocused ? config.iconFocused : config.icon}
+              size={20}
+              color={isFocused ? colors.background : colors.accent}
+            />
+          </View>
+        ) : (
+          <Ionicons
+            name={isFocused ? config.iconFocused : config.icon}
+            size={20}
+            color={isFocused ? colors.accent : colors.muted2}
+          />
+        )}
         <Animated.Text
-          style={[styles.tabLabel, { color: labelColor }]}
+          style={[
+            styles.tabLabel,
+            { color: labelColor },
+            isPrimary && isFocused && { color: colors.accent },
+          ]}
           numberOfLines={1}
           adjustsFontSizeToFit
           minimumFontScale={0.7}
@@ -198,10 +193,7 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: rules.default,
     flexDirection: "row",
-    alignItems: "flex-end",
     paddingTop: 0,
-    // Give the primary disc headroom to lift above the top border.
-    overflow: "visible",
     ...Platform.select({
       ios: {
         shadowColor: colors.shadow,
@@ -217,45 +209,27 @@ const styles = StyleSheet.create({
     alignItems: "center",
     paddingTop: 0,
   },
-  primaryTab: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "flex-end",
-    marginTop: -20,
-  },
-  primaryDisc: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    backgroundColor: colors.accent,
+  primaryIconWrap: {
+    width: 32,
+    height: 32,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
-    borderWidth: 4,
-    borderColor: colors.backgroundElevated,
-    ...Platform.select({
-      ios: {
-        shadowColor: "#000",
-        shadowOpacity: 0.35,
-        shadowRadius: 10,
-        shadowOffset: { width: 0, height: 4 },
-      },
-      android: { elevation: 10 },
-    }),
+    borderWidth: 1.5,
+    borderColor: colors.accent,
+    backgroundColor: "transparent",
   },
-  primaryDiscFocused: {
+  primaryIconWrapFocused: {
     backgroundColor: colors.accent,
-  },
-  primaryLabel: {
-    marginTop: 4,
-    fontFamily: fonts.monoSemiBold,
-    fontSize: 8,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
+    borderColor: colors.accent,
   },
   activeRule: {
     height: 2,
     width: "100%",
     backgroundColor: colors.accent,
+  },
+  activeRulePrimary: {
+    height: 3,
   },
   tabInner: {
     alignItems: "center",

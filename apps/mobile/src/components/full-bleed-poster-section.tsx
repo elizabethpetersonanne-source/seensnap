@@ -246,11 +246,11 @@ const styles = StyleSheet.create({
     zIndex: 2,
   },
   heroTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
-    fontSize: 44,
-    lineHeight: 46,
-    letterSpacing: -0.5,
+    fontSize: 32,
+    lineHeight: 36,
+    letterSpacing: -0.3,
   },
   heroYear: {
     marginTop: 6,

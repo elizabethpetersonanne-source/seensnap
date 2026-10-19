@@ -187,7 +187,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: radii.lg,
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(244,196,48,0.28)",
+    borderColor: "rgba(255,230,0,0.28)",
     padding: spacing.sm,
     alignItems: "center",
   },

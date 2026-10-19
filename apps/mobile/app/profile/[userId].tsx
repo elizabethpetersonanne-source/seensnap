@@ -581,7 +581,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   emptyTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 18,
   },
@@ -614,7 +614,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   identityName: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 26,
     letterSpacing: -0.3,
@@ -641,7 +641,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   counterValue: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 18,
   },
@@ -745,7 +745,7 @@ const styles = StyleSheet.create({
   },
   listHeroName: {
     marginTop: 10,
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 42,
     lineHeight: 44,
@@ -826,7 +826,7 @@ const styles = StyleSheet.create({
     marginBottom: spacing.sm,
   },
   activityRating: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 54,
     lineHeight: 54,

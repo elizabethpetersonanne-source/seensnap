@@ -5,7 +5,7 @@ import { colors, radii } from "@/constants/theme";
 
 export function ratingColor(score: number): string {
   if (score >= 9) return "#2ec4b6";
-  if (score >= 7) return "#f4c430";
+  if (score >= 7) return "#FFE600";
   if (score >= 5) return "#74c0fc";
   return "#e03131";
 }

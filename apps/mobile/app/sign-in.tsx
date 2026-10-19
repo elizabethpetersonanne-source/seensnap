@@ -270,7 +270,7 @@ const styles = StyleSheet.create({
     borderRadius: radii.sm,
     borderWidth: 1,
     borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.04)",
+    backgroundColor: "rgba(255,230,0,0.04)",
     gap: spacing.sm,
   },
   devLabel: {

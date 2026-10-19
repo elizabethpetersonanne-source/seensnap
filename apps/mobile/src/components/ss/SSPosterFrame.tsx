@@ -51,7 +51,7 @@ export function SSPosterFrame({
 
 const MARK_SIZE = 16;
 const MARK_THICKNESS = 1;
-const MARK_COLOR = "rgba(244,196,48,0.55)";
+const MARK_COLOR = "rgba(255,230,0,0.55)";
 
 const styles = StyleSheet.create({
   container: {

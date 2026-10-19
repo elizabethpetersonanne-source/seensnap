@@ -183,7 +183,7 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   title: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     fontSize: 20,
     color: colors.ink,
     marginTop: 2,
@@ -255,7 +255,7 @@ const styles = StyleSheet.create({
     right: 12,
   },
   heroTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     fontSize: 20,
     color: colors.ink,
     textShadowColor: "rgba(0,0,0,0.7)",

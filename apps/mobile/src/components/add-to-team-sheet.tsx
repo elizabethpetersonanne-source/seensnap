@@ -142,7 +142,7 @@ const styles = StyleSheet.create({
   },
   teamRowSelected: {
     borderColor: rules.gold,
-    backgroundColor: "rgba(244,196,48,0.06)",
+    backgroundColor: "rgba(255,230,0,0.06)",
   },
   teamText: {
     color: colors.muted,

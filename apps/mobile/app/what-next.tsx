@@ -1067,7 +1067,7 @@ const styles = StyleSheet.create({
   choiceBadgeUp: {
     alignSelf: "center",
     top: 28,
-    borderColor: "#f4c430",
+    borderColor: "#FFE600",
     backgroundColor: "rgba(244, 196, 48, 0.18)",
   },
   choiceText: {
@@ -1311,7 +1311,7 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "rgba(11, 20, 36, 0.92)",
     borderWidth: 1,
-    borderColor: "rgba(244,196,48,0.3)",
+    borderColor: "rgba(255,230,0,0.3)",
   },
   toastText: {
     color: colors.ink,

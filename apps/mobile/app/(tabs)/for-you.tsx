@@ -1445,7 +1445,7 @@ function computeAchievements(taste: TasteProfile | null): Achievement[] {
       name: "Prestige Drama Elite",
       description: "Your taste gravitates toward the prestigious, the awarded, and the emotionally annihilating.",
       icon: "🏆",
-      color: "#f4c430",
+      color: "#FFE600",
       unlocked: all.includes("drama") && (all.includes("prestige") || (taste.taste_labels[0]?.confidence ?? 0) >= 70),
     },
     {
@@ -1882,8 +1882,8 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(74,222,128,0.10)",
   },
   identityConfidencePillEmerging: {
-    borderColor: "rgba(244,196,48,0.45)",
-    backgroundColor: "rgba(244,196,48,0.10)",
+    borderColor: "rgba(255,230,0,0.45)",
+    backgroundColor: "rgba(255,230,0,0.10)",
   },
   identityConfidencePillEarly: {
     borderColor: colors.border,
@@ -1966,8 +1966,8 @@ const styles = StyleSheet.create({
   },
   signalTierEmerging: {
     color: colors.accent,
-    borderColor: "rgba(244,196,48,0.45)",
-    backgroundColor: "rgba(244,196,48,0.10)",
+    borderColor: "rgba(255,230,0,0.45)",
+    backgroundColor: "rgba(255,230,0,0.10)",
   },
   signalTierEarly: {
     color: colors.muted,

@@ -206,7 +206,7 @@ const styles = StyleSheet.create({
   },
   planCardActive: {
     borderColor: colors.accent,
-    backgroundColor: "rgba(244,196,48,0.08)",
+    backgroundColor: "rgba(255,230,0,0.08)",
   },
   planDot: {
     width: 14,
@@ -263,7 +263,7 @@ const styles = StyleSheet.create({
     gap: 8,
     padding: spacing.sm,
     borderRadius: radii.sm,
-    backgroundColor: "rgba(244,196,48,0.08)",
+    backgroundColor: "rgba(255,230,0,0.08)",
   },
   noticeBody: {
     flex: 1,

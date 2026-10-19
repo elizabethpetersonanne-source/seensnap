@@ -312,7 +312,7 @@ const styles = StyleSheet.create({
   },
   kindChipActive: {
     borderColor: colors.accent,
-    backgroundColor: "rgba(244,196,48,0.1)",
+    backgroundColor: "rgba(255,230,0,0.1)",
   },
   kindChipLabel: {
     fontFamily: fonts.sansMedium,
@@ -363,7 +363,7 @@ const styles = StyleSheet.create({
   },
   visibilityOptionActive: {
     borderColor: colors.accent,
-    backgroundColor: "rgba(244,196,48,0.1)",
+    backgroundColor: "rgba(255,230,0,0.1)",
   },
   visibilityLabel: {
     fontFamily: fonts.sansMedium,
