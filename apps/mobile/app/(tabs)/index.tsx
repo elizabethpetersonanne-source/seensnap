@@ -806,111 +806,144 @@ export default function DiscoverScreen() {
             </View>
           ) : null}
 
-          {/* Primary nav row — quick jumps to the three most-used destinations. */}
-          <View style={styles.quickNavRow}>
+          {/* Oct-19 Discover rebrief: THREE substantial shortcuts.
+              Each tile is a full-width action card with a clear
+              icon, label, and short descriptor. They supplement the
+              bottom navigation; a quick tap routes straight to the
+              existing destination. */}
+          <View style={styles.shortcutStack}>
             {[
-              { key: "swipe", label: "Swipe", icon: "layers" as const, route: "/(tabs)/swipe" as const },
-              { key: "my-picks", label: "My Picks", icon: "bookmark" as const, route: "/(tabs)/my-picks" as const },
-              { key: "teams", label: "Watch Teams", icon: "people" as const, route: "/(tabs)/teams" as const },
+              {
+                key: "swipe",
+                label: "Swipe",
+                desc: "Rate titles to shape your SceneDNA.",
+                icon: "layers" as const,
+                route: "/(tabs)/swipe" as const,
+              },
+              {
+                key: "my-picks",
+                label: "My Picks",
+                desc: "Your Ranked Favorites, lists and watched.",
+                icon: "bookmark" as const,
+                route: "/(tabs)/my-picks" as const,
+              },
+              {
+                key: "teams",
+                label: "Watch Teams",
+                desc: "Find something everyone wants to watch.",
+                icon: "people" as const,
+                route: "/(tabs)/teams" as const,
+              },
             ].map((tile) => (
               <Pressable
                 key={tile.key}
-                style={({ pressed }) => [styles.quickNavTile, pressed && styles.quickNavTilePressed]}
+                style={({ pressed }) => [styles.shortcutCard, pressed && { opacity: 0.78 }]}
                 onPress={() => {
                   trackEvent("discover_quick_nav", { destination: tile.key });
                   router.push(tile.route);
                 }}
               >
-                <View style={styles.quickNavIconWrap}>
+                <View style={styles.shortcutIcon}>
                   <Ionicons name={tile.icon} size={22} color={colors.accent} />
                 </View>
-                {/* Single-line label with aggressive auto-shrink so "Watch Teams"
-                    or any future long label never wraps/clips. */}
-                <Text
-                  style={styles.quickNavLabel}
-                  numberOfLines={1}
-                  adjustsFontSizeToFit
-                  minimumFontScale={0.5}
-                >
-                  {tile.label}
-                </Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.shortcutLabel}>{tile.label}</Text>
+                  <Text style={styles.shortcutDesc}>{tile.desc}</Text>
+                </View>
+                <Ionicons name="chevron-forward" size={16} color={colors.muted2} />
               </Pressable>
             ))}
           </View>
 
           {/* Oct-19 Discover rebrief: ONLY three sections —
               For You, Trending (TMDB weekly), Now in Theaters
-              (TMDB now_playing, movies). Time-of-day modules
-              intentionally removed. */}
+              (TMDB now_playing, movies). Each section always
+              renders (loading or cold-start fallback). */}
+
+          {/* 1 · For You — personalized_rail from /discover/feed. */}
           {(() => {
-            // Pull the personalized_rail / trending from the existing
-            // /discover/feed response so no additional endpoints are
-            // called on first paint. Now-in-theaters is a separate
-            // dedicated fetch.
             const forYouModule = discoverFeed?.modules.find(
               (m) => m.type === "personalized_rail" || m.type === "because_you",
             );
-            const trendingModule = discoverFeed?.modules.find((m) => m.type === "trending");
+            if (forYouModule && "items" in forYouModule && forYouModule.items.length > 0) {
+              return (
+                <HeroFourSection
+                  sectionLabel="FOR YOU"
+                  sectionTitle={forYouModule.label || "Picks tuned to your SceneDNA"}
+                  hero={feedItemToHero(forYouModule.items[0])}
+                  four={forYouModule.items.slice(1, 5).map(feedItemToHero)}
+                  onPressTitle={(t) => {
+                    trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
+                    void openTitleModal(t.id);
+                  }}
+                  onSeeAll={() => router.push("/(tabs)/for-you")}
+                />
+              );
+            }
+            if (discoverFeedLoading) {
+              return (
+                <View style={styles.moduleLoading}>
+                  <ActivityIndicator color={colors.accent} size="small" />
+                </View>
+              );
+            }
             return (
-              <>
-                {forYouModule && "items" in forYouModule && forYouModule.items.length > 0 ? (
-                  <HeroFourSection
-                    sectionLabel="FOR YOU"
-                    sectionTitle={forYouModule.label || "Picks tuned to your SceneDNA"}
-                    hero={feedItemToHero(forYouModule.items[0])}
-                    four={forYouModule.items.slice(1, 5).map(feedItemToHero)}
-                    onPressTitle={(t) => {
-                      trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
-                      void openTitleModal(t.id);
-                    }}
-                    onSeeAll={() => router.push("/(tabs)/for-you")}
-                  />
-                ) : discoverFeedLoading ? (
-                  <View style={styles.moduleLoading}>
-                    <ActivityIndicator color={colors.accent} size="small" />
-                  </View>
-                ) : (
-                  <View style={styles.coldStartCard}>
-                    <Text style={styles.coldStartKicker}>FOR YOU</Text>
-                    <Text style={styles.coldStartTitle}>Your SceneDNA is still forming.</Text>
-                    <Text style={styles.coldStartBody}>
-                      Rate titles, save them, and swipe through a few. The more you tell us, the sharper
-                      your recommendations get.
-                    </Text>
-                    <Pressable onPress={() => router.push("/(tabs)/swipe")} style={styles.coldStartCta}>
-                      <Text style={styles.coldStartCtaLabel}>START SWIPING</Text>
-                    </Pressable>
-                  </View>
-                )}
-
-                {trendingModule && "items" in trendingModule && trendingModule.items.length > 0 ? (
-                  <HeroFourSection
-                    sectionLabel="TRENDING · TMDB WEEKLY"
-                    sectionTitle={trendingModule.label || "What everyone's watching this week"}
-                    hero={feedItemToHero(trendingModule.items[0])}
-                    four={trendingModule.items.slice(1, 5).map(feedItemToHero)}
-                    onPressTitle={(t) => {
-                      trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
-                      void openTitleModal(t.id);
-                    }}
-                  />
-                ) : null}
-
-                {nowInTheatersItems.length > 0 ? (
-                  <HeroFourSection
-                    sectionLabel="IN THEATERS NOW · TMDB"
-                    sectionTitle={null}
-                    hero={feedItemToHero({ title: nowInTheatersItems[0], impression_id: null, score: null, confidence: null, reasons: [], reason_template: null })}
-                    four={nowInTheatersItems.slice(1, 5).map((t) => feedItemToHero({ title: t, impression_id: null, score: null, confidence: null, reasons: [], reason_template: null }))}
-                    onPressTitle={(t) => {
-                      trackEvent("discover_item_clicked", { module: "now_in_theaters", content_id: t.id });
-                      void openTitleModal(t.id);
-                    }}
-                  />
-                ) : null}
-              </>
+              <View style={styles.coldStartCard}>
+                <Text style={styles.coldStartKicker}>FOR YOU</Text>
+                <Text style={styles.coldStartTitle}>Your SceneDNA is still forming.</Text>
+                <Text style={styles.coldStartBody}>
+                  Rate titles, save them, and swipe through a few. The more you tell us, the sharper
+                  your recommendations get.
+                </Text>
+                <Pressable onPress={() => router.push("/(tabs)/swipe")} style={styles.coldStartCta}>
+                  <Text style={styles.coldStartCtaLabel}>START SWIPING</Text>
+                </Pressable>
+              </View>
             );
           })()}
+
+          {/* 2 · Trending — dedicated /discover/trending (TMDB weekly). */}
+          {trending && trending.items && trending.items.length > 0 ? (
+            <HeroFourSection
+              sectionLabel="TRENDING · TMDB WEEKLY"
+              sectionTitle={null}
+              hero={feedItemToHero({
+                title: trending.items[0],
+                impression_id: null, score: null, confidence: null, reasons: [], reason_template: null,
+              })}
+              four={trending.items.slice(1, 5).map((t) => feedItemToHero({
+                title: t, impression_id: null, score: null, confidence: null, reasons: [], reason_template: null,
+              }))}
+              onPressTitle={(t) => {
+                trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
+                void openTitleModal(t.id);
+              }}
+            />
+          ) : trendingLoading ? (
+            <View style={styles.moduleLoading}>
+              <ActivityIndicator color={colors.accent} size="small" />
+            </View>
+          ) : null}
+
+          {/* 3 · In Theaters Now — /discover/now-in-theaters (TMDB
+              now_playing, movies only, user's region). */}
+          {nowInTheatersItems.length > 0 ? (
+            <HeroFourSection
+              sectionLabel="IN THEATERS NOW · TMDB"
+              sectionTitle={null}
+              hero={feedItemToHero({
+                title: nowInTheatersItems[0],
+                impression_id: null, score: null, confidence: null, reasons: [], reason_template: null,
+              })}
+              four={nowInTheatersItems.slice(1, 5).map((t) => feedItemToHero({
+                title: t, impression_id: null, score: null, confidence: null, reasons: [], reason_template: null,
+              }))}
+              onPressTitle={(t) => {
+                trackEvent("discover_item_clicked", { module: "now_in_theaters", content_id: t.id });
+                void openTitleModal(t.id);
+              }}
+            />
+          ) : null}
 
           <View style={{ height: 40 }} />
         </Animated.ScrollView>
@@ -1166,6 +1199,43 @@ const styles = StyleSheet.create({
   conciergeResultWrap: {
     position: "relative",
     overflow: "hidden",
+  },
+  shortcutStack: {
+    paddingHorizontal: spacing.lg,
+    paddingTop: 4,
+    paddingBottom: spacing.sm,
+    gap: 8,
+  },
+  shortcutCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+    padding: 14,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: colors.surface,
+  },
+  shortcutIcon: {
+    width: 42,
+    height: 42,
+    borderRadius: 10,
+    backgroundColor: "rgba(255,230,0,0.08)",
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,230,0,0.28)",
+  },
+  shortcutLabel: {
+    fontFamily: fonts.sansBold,
+    color: colors.ink,
+    fontSize: 15,
+  },
+  shortcutDesc: {
+    marginTop: 2,
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 12,
   },
   conciergeLandingPremium: {
     paddingTop: 8,

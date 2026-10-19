@@ -121,6 +121,19 @@ export function AppHeader({
       ]}
     >
       <View style={[styles.row, { paddingHorizontal: hz }]}>
+        {/* Centered title / selector is absolutely positioned so its
+            baseline stays locked to the viewport regardless of whether
+            the slots are symmetric. */}
+        <View style={styles.center}>
+          {variant === "immersive" && mode && onModeChange ? (
+            <ModeSelector mode={mode} onChange={onModeChange} />
+          ) : title ? (
+            <Text style={styles.title} numberOfLines={1}>
+              {title}
+            </Text>
+          ) : null}
+        </View>
+
         <HeaderSlot
           side="left"
           onPress={handleLeft}
@@ -133,7 +146,7 @@ export function AppHeader({
           }
         >
           {leftKind === "mark" ? (
-            <SSLogo variant="mark" size={28} />
+            <SSLogo variant="mark" size={34} />
           ) : (
             <Ionicons
               name={leftKind === "close" ? "close" : "chevron-back"}
@@ -143,15 +156,7 @@ export function AppHeader({
           )}
         </HeaderSlot>
 
-        <View style={styles.center}>
-          {variant === "immersive" && mode && onModeChange ? (
-            <ModeSelector mode={mode} onChange={onModeChange} />
-          ) : title ? (
-            <Text style={styles.title} numberOfLines={1}>
-              {title}
-            </Text>
-          ) : null}
-        </View>
+        <View style={{ flex: 1 }} />
 
         <HeaderSlot side="right">{rightSlot ?? null}</HeaderSlot>
       </View>
@@ -202,10 +207,11 @@ const styles = StyleSheet.create({
     height: APP_HEADER_ROW_HEIGHT,
   },
   slot: {
-    width: 44,
+    minWidth: 44,
     height: 44,
     alignItems: "center",
     justifyContent: "center",
+    zIndex: 2,
   },
   slotLeftAlign: {
     alignItems: "flex-start",
@@ -216,10 +222,15 @@ const styles = StyleSheet.create({
     paddingRight: 2,
   },
   center: {
-    flex: 1,
+    position: "absolute",
+    left: 60,
+    right: 60,
+    top: 0,
+    bottom: 0,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: 8,
+    zIndex: 1,
+    pointerEvents: "box-none",
   },
   title: {
     fontFamily: fonts.sansSemiBold,
