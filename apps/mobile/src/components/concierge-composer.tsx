@@ -123,29 +123,24 @@ export function ConciergeComposer({
           <Text style={styles.kicker}>AI CONCIERGE</Text>
         </View>
 
-        <Text style={styles.headline}>What do you feel{"\n"}like watching?</Text>
-        <Text style={styles.subhead}>A pick that fits your taste and your services.</Text>
-
-        <Text style={styles.tryLabel}>TRY ASKING</Text>
+        <Text style={styles.headline}>Find your next{"\n"}great watch.</Text>
+        <Text style={styles.subhead}>Tell us the mood. We'll find the movie.</Text>
 
         <View style={styles.inputRow}>
           <TextInput
             placeholder={currentExample}
-            placeholderTextColor="rgba(255,255,255,0.55)"
+            placeholderTextColor="rgba(255,255,255,0.65)"
             value={intent}
             onChangeText={setIntent}
             editable={!busy && !outOfAllowance}
             onSubmitEditing={submit}
-            onFocus={() => {
-              if (!intent) setIntent(currentExample);
-            }}
             returnKeyType="send"
             style={styles.input}
             multiline={false}
             maxLength={240}
           />
           <Pressable
-            disabled={busy || outOfAllowance || !intent.trim()}
+            disabled={busy || outOfAllowance}
             onPress={() => {
               if (!intent.trim()) {
                 setIntent(currentExample);
@@ -168,16 +163,6 @@ export function ConciergeComposer({
             )}
           </Pressable>
         </View>
-
-        <Pressable
-          onPress={() => setExampleIdx((i) => (i + 1) % ROTATING_EXAMPLES.length)}
-          hitSlop={8}
-          style={styles.cycleRow}
-          accessibilityLabel="Show another example ask"
-        >
-          <Ionicons name="refresh-outline" size={11} color={colors.muted} />
-          <Text style={styles.cycleLabel}>Another example</Text>
-        </Pressable>
 
         <AllowanceStrip
           tier={tier}
@@ -221,26 +206,29 @@ const styles = StyleSheet.create({
   wrap: {
     marginHorizontal: spacing.lg,
     marginTop: spacing.sm,
-    marginBottom: spacing.sm,
+    marginBottom: spacing.md,
     borderRadius: 20,
     overflow: "hidden",
     backgroundColor: "#0F1419",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.1)",
-    minHeight: 260,
+    borderWidth: 1.5,
+    // Subtle purple/pink outline per mock A — the only purple on the
+    // page. Acts as an accent, not atmosphere.
+    borderColor: "rgba(173,120,255,0.42)",
+    minHeight: 220,
   },
   scrim: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(8,11,14,0.72)",
+    backgroundColor: "rgba(8,11,14,0.68)",
   },
   body: {
-    padding: 20,
-    gap: 6,
+    padding: 18,
+    gap: 4,
   },
   kickerRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
+    marginBottom: 2,
   },
   kicker: {
     fontFamily: fonts.monoSemiBold,
@@ -249,7 +237,7 @@ const styles = StyleSheet.create({
     letterSpacing: 1.5,
   },
   headline: {
-    marginTop: 2,
+    marginTop: 4,
     fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 26,
@@ -257,31 +245,25 @@ const styles = StyleSheet.create({
     letterSpacing: -0.4,
   },
   subhead: {
-    marginTop: 4,
+    marginTop: 6,
     fontFamily: fonts.sans,
     color: colors.muted,
     fontSize: 13,
     lineHeight: 18,
-  },
-  tryLabel: {
-    marginTop: 14,
-    fontFamily: fonts.monoSemiBold,
-    color: colors.muted2,
-    fontSize: 10,
-    letterSpacing: 1.4,
+    marginBottom: 6,
   },
   inputRow: {
-    marginTop: 8,
+    marginTop: 10,
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
+    gap: 6,
     paddingLeft: 14,
     paddingRight: 4,
     paddingVertical: 4,
     borderRadius: 999,
-    backgroundColor: "rgba(0,0,0,0.4)",
+    backgroundColor: "rgba(0,0,0,0.5)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.14)",
+    borderColor: "rgba(255,255,255,0.16)",
   },
   input: {
     flex: 1,
@@ -303,20 +285,6 @@ const styles = StyleSheet.create({
   },
   goBtnPressed: {
     opacity: 0.8,
-  },
-  cycleRow: {
-    marginTop: 8,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    alignSelf: "flex-start",
-    paddingVertical: 2,
-  },
-  cycleLabel: {
-    fontFamily: fonts.monoMedium,
-    color: colors.muted,
-    fontSize: 10,
-    letterSpacing: 0.6,
   },
   strip: {
     marginTop: 8,

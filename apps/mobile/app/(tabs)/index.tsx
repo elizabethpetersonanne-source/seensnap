@@ -24,6 +24,7 @@ import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
 import { ConciergeResult } from "@/components/concierge-result";
+import { DiscoverSection, MediaToggle, type DiscoverTitle } from "@/components/discover-section";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
@@ -292,6 +293,20 @@ function conciergeTitleToHero(t: ConciergeTitleCard): HeroFourTitle {
   };
 }
 
+function titleItemToDiscover(t: TitleItem): DiscoverTitle {
+  return {
+    id: t.id,
+    title: t.title,
+    poster_url: t.poster_url ?? null,
+    backdrop_url: t.backdrop_url ?? null,
+    year: t.release_date ? new Date(t.release_date).getFullYear() : null,
+  };
+}
+
+function feedItemToDiscover(item: FeedItem): DiscoverTitle {
+  return titleItemToDiscover(item.title);
+}
+
 function feedItemToHero(item: FeedItem): HeroFourTitle {
   const releaseDate = item.title.release_date ? new Date(item.title.release_date) : null;
   return {
@@ -342,6 +357,10 @@ export default function DiscoverScreen() {
 
   // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
   const [nowInTheatersItems, setNowInTheatersItems] = useState<TitleItem[]>([]);
+
+  // Media-type toggles for For You + Trending (mock A).
+  const [forYouMedia, setForYouMedia] = useState<"movie" | "tv">("movie");
+  const [trendingMedia, setTrendingMedia] = useState<"movie" | "tv">("movie");
 
   const searchInputRef = useRef<TextInput>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -831,23 +850,28 @@ export default function DiscoverScreen() {
             ))}
           </View>
 
-          {/* Oct-19 Discover rebrief: ONLY three sections —
-              For You, Trending (TMDB weekly), Now in Theaters
-              (TMDB now_playing, movies). Each section always
-              renders (loading or cold-start fallback). */}
+          {/* Oct-19 Discover simplified mock A: three cinematic
+              sections — For You, Trending, Now in Theaters. Each one
+              is a section header + hero backdrop with title overlay +
+              row of four portrait posters with uppercase captions. */}
 
-          {/* 1 · For You — personalized_rail from /discover/feed. */}
+          {/* 1 · For You */}
           {(() => {
             const forYouModule = discoverFeed?.modules.find(
               (m) => m.type === "personalized_rail" || m.type === "because_you",
             );
             if (forYouModule && "items" in forYouModule && forYouModule.items.length > 0) {
+              const items = forYouModule.items.filter((item) => {
+                const t = item.title.content_type;
+                return forYouMedia === "movie" ? t === "movie" : t !== "movie";
+              });
+              const effective = items.length > 0 ? items : forYouModule.items;
               return (
-                <HeroFourSection
-                  sectionLabel="FOR YOU"
-                  sectionTitle={forYouModule.label || "Picks tuned to your SceneDNA"}
-                  hero={feedItemToHero(forYouModule.items[0])}
-                  four={forYouModule.items.slice(1, 5).map(feedItemToHero)}
+                <DiscoverSection
+                  kicker="FOR YOU"
+                  rightSlot={<MediaToggle value={forYouMedia} onChange={setForYouMedia} />}
+                  hero={feedItemToDiscover(effective[0])}
+                  four={effective.slice(1, 5).map(feedItemToDiscover)}
                   onPressTitle={(t) => {
                     trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
                     void openTitleModal(t.id);
@@ -878,46 +902,44 @@ export default function DiscoverScreen() {
             );
           })()}
 
-          {/* 2 · Trending — dedicated /discover/trending (TMDB weekly). */}
-          {trending && trending.items && trending.items.length > 0 ? (
-            <HeroFourSection
-              sectionLabel="TRENDING · TMDB WEEKLY"
-              sectionTitle={null}
-              hero={feedItemToHero({
-                title: trending.items[0],
-                impression_id: null, score: null, confidence: null, reasons: [], reason_template: null,
-              })}
-              four={trending.items.slice(1, 5).map((t) => feedItemToHero({
-                title: t, impression_id: null, score: null, confidence: null, reasons: [], reason_template: null,
-              }))}
-              onPressTitle={(t) => {
-                trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
-                void openTitleModal(t.id);
-              }}
-            />
-          ) : trendingLoading ? (
+          {/* 2 · Trending — dedicated /discover/trending (TMDB weekly) */}
+          {trending && trending.items && trending.items.length > 0 ? (() => {
+            const items = trending.items.filter((t) => {
+              return trendingMedia === "movie" ? t.content_type === "movie" : t.content_type !== "movie";
+            });
+            const effective = items.length > 0 ? items : trending.items;
+            return (
+              <DiscoverSection
+                kicker="TRENDING"
+                subtitle="This week on TMDB"
+                rightSlot={<MediaToggle value={trendingMedia} onChange={setTrendingMedia} />}
+                hero={titleItemToDiscover(effective[0])}
+                four={effective.slice(1, 5).map(titleItemToDiscover)}
+                onPressTitle={(t) => {
+                  trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
+                  void openTitleModal(t.id);
+                }}
+                onSeeAll={() => router.push("/(tabs)/for-you")}
+              />
+            );
+          })() : trendingLoading ? (
             <View style={styles.moduleLoading}>
               <ActivityIndicator color={colors.accent} size="small" />
             </View>
           ) : null}
 
-          {/* 3 · In Theaters Now — /discover/now-in-theaters (TMDB
-              now_playing, movies only, user's region). */}
+          {/* 3 · In Theaters Now — /discover/now-in-theaters */}
           {nowInTheatersItems.length > 0 ? (
-            <HeroFourSection
-              sectionLabel="IN THEATERS NOW · TMDB"
-              sectionTitle={null}
-              hero={feedItemToHero({
-                title: nowInTheatersItems[0],
-                impression_id: null, score: null, confidence: null, reasons: [], reason_template: null,
-              })}
-              four={nowInTheatersItems.slice(1, 5).map((t) => feedItemToHero({
-                title: t, impression_id: null, score: null, confidence: null, reasons: [], reason_template: null,
-              }))}
+            <DiscoverSection
+              kicker="NOW IN THEATERS"
+              locationLabel="United States"
+              hero={titleItemToDiscover(nowInTheatersItems[0])}
+              four={nowInTheatersItems.slice(1, 5).map(titleItemToDiscover)}
               onPressTitle={(t) => {
                 trackEvent("discover_item_clicked", { module: "now_in_theaters", content_id: t.id });
                 void openTitleModal(t.id);
               }}
+              onSeeAll={() => router.push("/(tabs)/for-you")}
             />
           ) : null}
 
@@ -1018,12 +1040,13 @@ const styles = StyleSheet.create({
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
-    borderWidth: 1,
-    borderColor: rules.default,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
     paddingHorizontal: spacing.md,
     paddingVertical: 10,
     gap: spacing.sm,
+    borderRadius: 999,
   },
   searchBarActive: {
     borderColor: "rgba(255,230,0,0.4)",

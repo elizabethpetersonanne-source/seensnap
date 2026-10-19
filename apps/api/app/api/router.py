@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import activity, analytics, auth, collections, concierge, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, picks, previews, profiles, ratings, recommendations, scene_dna, search, share_asset, shares, snips, social, team_home, teams, title_state, titles, watch_handoff, watch_options, watchlist
+from app.api.routes import activity, analytics, auth, collections, concierge, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, picks, previews, profiles, ratings, recommendations, scene_dna, search, share_asset, shares, snips, social, stories, team_home, teams, title_state, titles, watch_handoff, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
@@ -70,6 +70,10 @@ api_router.include_router(watch_handoff.router, prefix="/me/handoffs", tags=["ha
 # Share asset — Oct-18 build brief §6. Image renderer boundary with
 # honest unavailable state when no provider is configured.
 api_router.include_router(share_asset.router, prefix="/me/share-assets", tags=["share-assets"])
+# Social Stories — Oct-19 mock. 72-hour title stories per user.
+# Writer endpoints on /me/stories; reader endpoint on /social/stories.
+api_router.include_router(stories.router, prefix="/me/stories", tags=["stories"])
+api_router.include_router(stories.reader_router, prefix="/social/stories", tags=["stories"])
 # My Picks — Oct-18 UI/UX rebuild. Returns the five collections rendered
 # by the My Picks screen in one call.
 api_router.include_router(picks.router, prefix="/me/picks", tags=["picks"])

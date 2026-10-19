@@ -41,6 +41,7 @@ import { Avatar } from "@/components/avatar";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { SendToUserSheet } from "@/components/send-to-user-sheet";
 import { AppHeader } from "@/components/headers/app-header";
+import { StoriesStrip } from "@/components/stories-strip";
 import { relativeTime } from "@/lib/format";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -406,6 +407,14 @@ export default function SocialScreen() {
           per the brief's "preserve Find People and Create Post in the
           Social content's actions/menu, not a crowded global header." */}
       <AppHeader variant="primary" title="Social" />
+
+      {/* Oct-19 Stories strip — 72-hour title stories per actor.
+          Tapping Your Story opens the Add-to-Story flow (title picker). */}
+      <StoriesStrip
+        onAddPress={() => {
+          router.push({ pathname: "/add-to-story" });
+        }}
+      />
 
       {/* Feed | People sub-nav per People Discovery spec §5. Feed
           remains the default; People opens the dedicated discovery
