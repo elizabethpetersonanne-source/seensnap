@@ -43,6 +43,11 @@ SOCIAL_POST_TYPES: set[str] = {
     "review_share",
     "list_share",
     "list_publish",
+    # Oct-19 fix: /feed/wall-posts creates event_type="wall_post" (the
+    # Social-tab composer uses this for text + text-with-title posts).
+    # They were being created but never surfaced in the Following feed
+    # because the type wasn't in the allowed set.
+    "wall_post",
 }
 
 # Visibility levels for social posts. `team` is used only by team activity
