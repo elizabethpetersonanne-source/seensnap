@@ -469,7 +469,24 @@ export default function PreviewsScreen() {
             >
               <Ionicons name="chevron-down" size={22} color={colors.ink} />
             </Pressable>
-          ) : null}
+          ) : (
+            /* Last card: show a 'Load more previews' button so the user
+                can refresh the feed instead of being stuck. */
+            <Pressable
+              style={[
+                styles.loadMoreCta,
+                { bottom: 66 + insets.bottom + 16 },
+              ]}
+              onPress={() => {
+                trackEvent("previews_refresh_clicked", { items_seen: items.length });
+                void loadFeed();
+              }}
+              accessibilityLabel="Load more previews"
+            >
+              <Ionicons name="refresh" size={16} color={colors.background} />
+              <Text style={styles.loadMoreCtaLabel}>LOAD MORE</Text>
+            </Pressable>
+          )}
           {activeIndex === 0 ? (
             // Anchored to the TOP so it never covers the Save / Details /
             // Sound action row at the bottom of the card. Sits just below
@@ -745,6 +762,24 @@ const styles = StyleSheet.create({
   },
   navChevronTop: {},
   navChevronBottom: {},
+  loadMoreCta: {
+    position: "absolute",
+    alignSelf: "center",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+    zIndex: 10,
+  },
+  loadMoreCtaLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.background,
+    fontSize: 12,
+    letterSpacing: 1.1,
+  },
   firstUseHint: {
     position: "absolute",
     alignSelf: "center",

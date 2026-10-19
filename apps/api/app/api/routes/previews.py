@@ -186,8 +186,10 @@ def _filter_fingerprint(preferred_type: str | None, genre: str | None) -> str:
 
 # Previews candidates expand in waves to find enough with eligible
 # TMDB videos. The maximum scan ceiling guards against unbounded TMDB
-# fanout for a cold-start user whose rec pool is thin.
-_MAX_CANDIDATE_SCAN = 400
+# fanout for a cold-start user whose rec pool is thin. Bumped from 400
+# to 1200 so users who exhaust a 25-item session can keep scrolling
+# instead of hitting a hard wall at the first page.
+_MAX_CANDIDATE_SCAN = 1200
 
 
 @router.get("/feed", response_model=PreviewFeedResponse)
