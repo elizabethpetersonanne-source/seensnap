@@ -115,14 +115,14 @@ def get_team_home(
         .join(ContentTitle, ContentTitle.id == TeamTitle.content_title_id)
         .outerjoin(UserProfile, UserProfile.user_id == TeamTitle.added_by_user_id)
         .where(TeamTitle.team_id == team_id)
-        .order_by(TeamTitle.created_at.desc())
+        .order_by(TeamTitle.added_at.desc())
         .limit(40)
     ).all()
     recently_added = [
         _to_home_title(
             t,
             context=f"{profile.display_name} added this" if profile and profile.display_name else "Added",
-            added_at=tt.created_at,
+            added_at=tt.added_at,
         )
         for tt, t, profile in recent_rows
     ]
