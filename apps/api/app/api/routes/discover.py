@@ -99,6 +99,27 @@ def discover_trending(
     )
 
 
+@router.get("/now-in-theaters", response_model=TrendingResponse)
+def discover_now_in_theaters(
+    db: DbSession,
+    _user: CurrentUser,
+    limit: int = Query(default=12, ge=4, le=20),
+    region: str = Query(default="US", min_length=2, max_length=2),
+) -> TrendingResponse:
+    """Oct-19 Discover rebrief: TMDB movie/now_playing for the user's
+    region. Movie-only; no implied verified showtimes — the client
+    should label this as 'In theaters now'."""
+    from datetime import datetime, timezone
+    from app.services.tmdb import fetch_now_playing_titles
+    titles = fetch_now_playing_titles(db, limit=limit, region=region.upper())
+    return TrendingResponse(
+        source_mode="now_in_theaters",
+        display_label=f"In theaters now · {region.upper()}",
+        generated_at=datetime.now(timezone.utc),
+        items=[_to_title_response(t) for t in titles],
+    )
+
+
 @router.get("/home", response_model=DiscoverHomeResponse)
 def discover_home(
     db: DbSession,

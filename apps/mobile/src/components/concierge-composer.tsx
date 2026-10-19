@@ -48,6 +48,13 @@ export type ConciergeDecisionResponse = {
 };
 
 
+const DEFAULT_EXAMPLES = [
+  "A funny movie under two hours, on a service I have.",
+  "Something like a slow-burn drama with twists.",
+  "A rewatch that'll put me in a good mood.",
+  "A smart documentary I haven't seen yet.",
+];
+
 export function ConciergeComposer({
   token,
   tier,
@@ -55,6 +62,8 @@ export function ConciergeComposer({
   allowanceCap,
   resetsAt,
   onDecision,
+  examples = DEFAULT_EXAMPLES,
+  prominent = false,
 }: {
   token: string | null;
   tier: "free" | "premium";
@@ -62,6 +71,8 @@ export function ConciergeComposer({
   allowanceCap: number | null;
   resetsAt: string | null;
   onDecision: (decision: ConciergeDecisionResponse) => void;
+  examples?: string[];
+  prominent?: boolean;
 }) {
   const [intent, setIntent] = useState("");
   const [busy, setBusy] = useState(false);
@@ -97,9 +108,19 @@ export function ConciergeComposer({
 
   return (
     <View style={styles.wrap}>
+      {prominent ? (
+        <View style={styles.prominentHeader}>
+          <View style={styles.kickerRow}>
+            <Ionicons name="sparkles" size={11} color={colors.accent} />
+            <Text style={styles.prominentKicker}>CONCIERGE</Text>
+          </View>
+          <Text style={styles.prominentHeadline}>What do you feel like watching?</Text>
+        </View>
+      ) : null}
+
       <View style={styles.row}>
-        <View style={styles.inputWrap}>
-          <Ionicons name="sparkles-outline" size={16} color={colors.accent} style={{ marginRight: 8 }} />
+        <View style={[styles.inputWrap, prominent && styles.inputWrapProminent]}>
+          <Ionicons name="sparkles-outline" size={prominent ? 18 : 16} color={colors.accent} style={{ marginRight: 8 }} />
           <TextInput
             placeholder={tier === "premium" ? "Ask Concierge anything…" : "Ask Concierge — e.g. slow burn drama under 2h"}
             placeholderTextColor={colors.muted2}
@@ -108,7 +129,7 @@ export function ConciergeComposer({
             editable={!busy && !outOfAllowance}
             onSubmitEditing={submit}
             returnKeyType="send"
-            style={styles.input}
+            style={[styles.input, prominent && styles.inputProminent]}
             multiline={false}
             maxLength={240}
           />
@@ -118,6 +139,7 @@ export function ConciergeComposer({
           onPress={submit}
           style={({ pressed }) => [
             styles.goBtn,
+            prominent && styles.goBtnProminent,
             (busy || outOfAllowance || !intent.trim()) && styles.goBtnDisabled,
             pressed && !busy && styles.goBtnPressed,
           ]}
@@ -129,6 +151,22 @@ export function ConciergeComposer({
           )}
         </Pressable>
       </View>
+
+      {examples.length > 0 && !intent ? (
+        <View style={styles.examplesWrap}>
+          <Text style={styles.examplesLabel}>Try asking</Text>
+          {examples.slice(0, 2).map((ex) => (
+            <Pressable
+              key={ex}
+              onPress={() => setIntent(ex)}
+              style={({ pressed }) => [styles.exampleRow, pressed && { opacity: 0.6 }]}
+            >
+              <Ionicons name="return-down-forward-outline" size={13} color={colors.accent} />
+              <Text style={styles.exampleText}>{ex}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
 
       <AllowanceStrip
         tier={tier}
@@ -179,7 +217,65 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
+    gap: 10,
+  },
+  prominentHeader: {
     gap: 6,
+    marginBottom: 4,
+  },
+  kickerRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+  },
+  prominentKicker: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 10,
+    letterSpacing: 1.4,
+  },
+  prominentHeadline: {
+    fontFamily: fonts.sansBold,
+    color: colors.ink,
+    fontSize: 24,
+    lineHeight: 28,
+    letterSpacing: -0.3,
+  },
+  inputWrapProminent: {
+    paddingVertical: 12,
+    borderRadius: radii.md,
+  },
+  inputProminent: {
+    fontSize: 15,
+  },
+  goBtnProminent: {
+    paddingVertical: 14,
+  },
+  examplesWrap: {
+    gap: 4,
+    marginTop: 2,
+  },
+  examplesLabel: {
+    fontFamily: fonts.monoMedium,
+    color: colors.muted2,
+    fontSize: 10,
+    letterSpacing: 1,
+    marginBottom: 2,
+  },
+  exampleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 3,
+  },
+  exampleText: {
+    flex: 1,
+    fontFamily: fonts.serif,
+    color: colors.ink,
+    fontSize: 13,
+    lineHeight: 17,
+    fontStyle: "italic",
+    opacity: 0.86,
   },
   row: {
     flexDirection: "row",

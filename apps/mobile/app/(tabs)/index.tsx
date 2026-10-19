@@ -341,6 +341,9 @@ export default function DiscoverScreen() {
   const entitlement = useEntitlement(sessionToken);
   const [conciergeDecision, setConciergeDecision] = useState<ConciergeDecisionResponse | null>(null);
 
+  // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
+  const [nowInTheatersItems, setNowInTheatersItems] = useState<TitleItem[]>([]);
+
   const searchInputRef = useRef<TextInput>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
   const [isFocused, setIsFocused] = useState(true);
@@ -411,12 +414,25 @@ export default function DiscoverScreen() {
     }
   }
 
+  async function loadNowInTheaters() {
+    if (!sessionToken) return;
+    try {
+      const result = await apiRequest<TrendingResponse>("/discover/now-in-theaters?limit=12", {
+        token: sessionToken,
+      });
+      setNowInTheatersItems(result.items ?? []);
+    } catch {
+      // silently degrade — honest empty beats fabricated content.
+    }
+  }
+
   useFocusEffect(
     useCallback(() => {
       setIsFocused(true);
       void loadDiscoverFeed();
       void loadTrending();       // still fetched for the header backdrop cycling
       void loadCollections();    // editorial collections stay a separate module
+      void loadNowInTheaters();
       // loadRecommendations() removed — it called /titles/recommendations/for-me
       // (the slow SceneDNA-fanout endpoint that spins up 10 TMDB related-titles
       // calls per request) but nothing on Discover actually consumed the
@@ -749,22 +765,18 @@ export default function DiscoverScreen() {
           )}
           scrollEventThrottle={16}
         >
-          {/* Oct-18 Visual Design brief §7: Premium Discover opens
-              at Concierge; regular discovery scrolls below. Free
-              tier gets the same composer with the monthly allowance
-              strip. The composer itself is identical — placement
-              above every other module is the Premium signal. */}
+          {/* Oct-19 Discover rebrief: Large Concierge entry with a
+              tappable example that populates the input. Ordinary
+              title search stays available above. */}
           {entitlement ? (
-            <View style={entitlement.tier === "premium" ? styles.conciergeLandingPremium : null}>
-              {entitlement.tier === "premium" ? (
-                <Text style={styles.conciergeLandingKicker}>CONCIERGE</Text>
-              ) : null}
+            <View style={styles.conciergeLandingPremium}>
               <ConciergeComposer
                 token={sessionToken}
                 tier={entitlement.tier}
                 allowanceRemaining={null}
                 allowanceCap={entitlement.concierge_monthly_cap}
                 resetsAt={null}
+                prominent
                 onDecision={(decision) => {
                   setConciergeDecision(decision);
                   if (decision.allowance_remaining != null) {
@@ -831,115 +843,79 @@ export default function DiscoverScreen() {
             ))}
           </View>
 
-          {/* Dynamic module stack from /discover/feed. Backend decides which
-              modules qualify (§27); client renders in order. Contextual hero
-              gets a dedicated card treatment; every rail-type module renders
-              through the shared rail block. Falls back to a lightweight
-              loading state on first paint. */}
-          {discoverFeedLoading && !discoverFeed ? (
-            <View style={styles.moduleLoading}>
-              <ActivityIndicator color={colors.accent} size="small" />
-            </View>
-          ) : null}
-          {discoverFeed?.modules.map((mod, moduleIndex) => {
-            if (mod.type === "contextual_pick") {
-              const t = mod.item.title;
-              return (
-                <View key={`ctx-${mod.window}-${moduleIndex}`} style={styles.contextualHero}>
-                  <Text style={styles.contextualHeroKicker}>{mod.label.toUpperCase()}</Text>
-                  <Pressable
-                    onPress={() => {
-                      trackEvent("discover_contextual_pick_opened", {
-                        window: mod.window,
-                        mode: mod.mode,
-                        content_id: t.id,
-                        impression_id: mod.item.impression_id,
-                      });
+          {/* Oct-19 Discover rebrief: ONLY three sections —
+              For You, Trending (TMDB weekly), Now in Theaters
+              (TMDB now_playing, movies). Time-of-day modules
+              intentionally removed. */}
+          {(() => {
+            // Pull the personalized_rail / trending from the existing
+            // /discover/feed response so no additional endpoints are
+            // called on first paint. Now-in-theaters is a separate
+            // dedicated fetch.
+            const forYouModule = discoverFeed?.modules.find(
+              (m) => m.type === "personalized_rail" || m.type === "because_you",
+            );
+            const trendingModule = discoverFeed?.modules.find((m) => m.type === "trending");
+            return (
+              <>
+                {forYouModule && "items" in forYouModule && forYouModule.items.length > 0 ? (
+                  <HeroFourSection
+                    sectionLabel="FOR YOU"
+                    sectionTitle={forYouModule.label || "Picks tuned to your SceneDNA"}
+                    hero={feedItemToHero(forYouModule.items[0])}
+                    four={forYouModule.items.slice(1, 5).map(feedItemToHero)}
+                    onPressTitle={(t) => {
+                      trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
                       void openTitleModal(t.id);
                     }}
-                    style={styles.contextualHeroCard}
-                  >
-                    {t.backdrop_url ? (
-                      <Image source={{ uri: t.backdrop_url }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
-                    ) : null}
-                    <View style={styles.contextualHeroShade} />
-                    <View style={styles.contextualHeroBody}>
-                      <Text style={styles.contextualHeroTitle} numberOfLines={2}>{t.title}</Text>
-                      {mod.item.reason_template ? (
-                        <Text style={styles.contextualHeroReason} numberOfLines={2}>{mod.item.reason_template}</Text>
-                      ) : null}
-                    </View>
-                  </Pressable>
-                </View>
-              );
-            }
-            // All rail-shaped modules (personalized_rail, because_you,
-            // team_recommendation, trending, exploration_rail) now
-            // render as HeroFourSection per Oct-18 §4.
-            if (!mod.items || mod.items.length === 0) return null;
-            const heroItem = mod.items[0];
-            const continuation = mod.items.slice(1, 5);
-            return (
-              <HeroFourSection
-                key={`${mod.type}-${mod.key}-${moduleIndex}`}
-                sectionLabel={mod.type.replace(/_/g, " ").toUpperCase()}
-                sectionTitle={mod.label}
-                hero={feedItemToHero(heroItem)}
-                four={continuation.map(feedItemToHero)}
-                onPressTitle={(t) => {
-                  trackEvent("discover_item_clicked", {
-                    module_type: mod.type,
-                    module_key: mod.key,
-                    content_id: t.id,
-                    impression_id: heroItem.impression_id,
-                  });
-                  void openTitleModal(t.id);
-                }}
-                onSeeAll={
-                  mod.type === "personalized_rail"
-                    ? () => router.push("/(tabs)/for-you")
-                    : undefined
-                }
-              />
+                    onSeeAll={() => router.push("/(tabs)/for-you")}
+                  />
+                ) : discoverFeedLoading ? (
+                  <View style={styles.moduleLoading}>
+                    <ActivityIndicator color={colors.accent} size="small" />
+                  </View>
+                ) : (
+                  <View style={styles.coldStartCard}>
+                    <Text style={styles.coldStartKicker}>FOR YOU</Text>
+                    <Text style={styles.coldStartTitle}>Your SceneDNA is still forming.</Text>
+                    <Text style={styles.coldStartBody}>
+                      Rate titles, save them, and swipe through a few. The more you tell us, the sharper
+                      your recommendations get.
+                    </Text>
+                    <Pressable onPress={() => router.push("/(tabs)/swipe")} style={styles.coldStartCta}>
+                      <Text style={styles.coldStartCtaLabel}>START SWIPING</Text>
+                    </Pressable>
+                  </View>
+                )}
+
+                {trendingModule && "items" in trendingModule && trendingModule.items.length > 0 ? (
+                  <HeroFourSection
+                    sectionLabel="TRENDING · TMDB WEEKLY"
+                    sectionTitle={trendingModule.label || "What everyone's watching this week"}
+                    hero={feedItemToHero(trendingModule.items[0])}
+                    four={trendingModule.items.slice(1, 5).map(feedItemToHero)}
+                    onPressTitle={(t) => {
+                      trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
+                      void openTitleModal(t.id);
+                    }}
+                  />
+                ) : null}
+
+                {nowInTheatersItems.length > 0 ? (
+                  <HeroFourSection
+                    sectionLabel="IN THEATERS NOW · TMDB"
+                    sectionTitle={null}
+                    hero={feedItemToHero({ title: nowInTheatersItems[0], impression_id: null, score: null, confidence: null, reasons: [], reason_template: null })}
+                    four={nowInTheatersItems.slice(1, 5).map((t) => feedItemToHero({ title: t, impression_id: null, score: null, confidence: null, reasons: [], reason_template: null }))}
+                    onPressTitle={(t) => {
+                      trackEvent("discover_item_clicked", { module: "now_in_theaters", content_id: t.id });
+                      void openTitleModal(t.id);
+                    }}
+                  />
+                ) : null}
+              </>
             );
-          })}
-
-          {/* Modules 4–5: Collections */}
-          {(collectionsLoading || collections.length > 0) && (
-            <View style={styles.module}>
-              <View style={styles.moduleHeader}>
-                <View>
-                  <Text style={styles.moduleTitle}>Collections</Text>
-                </View>
-                <Pressable onPress={() => router.push("/collections")} hitSlop={10}>
-                  <Text style={styles.seeAll}>BROWSE ALL</Text>
-                </Pressable>
-              </View>
-
-              {collectionsLoading ? (
-                <View style={styles.moduleLoading}>
-                  <ActivityIndicator color={colors.accent} size="small" />
-                </View>
-              ) : (
-                <View style={styles.collectionList}>
-                  {collections.map((coll) => (
-                    <CollectionCard
-                      key={coll.slug}
-                      coll={coll}
-                      onPress={() => {
-                        trackEvent("collection_opened", {
-                          collection_id: coll.slug,
-                          entry_point: "discover",
-                          collection_type: coll.collection_type,
-                        });
-                        router.push(`/collections/${coll.slug}`);
-                      }}
-                    />
-                  ))}
-                </View>
-              )}
-            </View>
-          )}
+          })()}
 
           <View style={{ height: 40 }} />
         </Animated.ScrollView>
@@ -1207,6 +1183,48 @@ const styles = StyleSheet.create({
     letterSpacing: 1.4,
     textTransform: "uppercase",
     marginBottom: 4,
+  },
+  coldStartCard: {
+    marginHorizontal: spacing.lg,
+    marginVertical: spacing.md,
+    padding: spacing.lg,
+    borderRadius: 12,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+    backgroundColor: colors.surface,
+    gap: 8,
+  },
+  coldStartKicker: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 10,
+    letterSpacing: 1.4,
+  },
+  coldStartTitle: {
+    fontFamily: fonts.sansBold,
+    color: colors.ink,
+    fontSize: 18,
+    lineHeight: 22,
+  },
+  coldStartBody: {
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
+  },
+  coldStartCta: {
+    alignSelf: "flex-start",
+    marginTop: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  coldStartCtaLabel: {
+    fontFamily: fonts.sansSemiBold,
+    color: "#0b0f17",
+    fontSize: 11,
+    letterSpacing: 0.6,
   },
   quickNavRow: {
     flexDirection: "row",

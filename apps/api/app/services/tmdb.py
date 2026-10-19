@@ -460,6 +460,35 @@ def fetch_trending_titles(db: Session, limit: int = 20) -> list[ContentTitle]:
     return hydrated
 
 
+def fetch_now_playing_titles(db: Session, limit: int = 20, region: str = "US") -> list[ContentTitle]:
+    """TMDB `movie/now_playing` — movies currently in theaters for the
+    user's region. Discover brief: movie-only, no implied showtimes."""
+    hydrated: list[ContentTitle] = []
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+        for page in range(1, 3):
+            if len(hydrated) >= limit:
+                break
+            response = client.get(
+                "/movie/now_playing",
+                params={"language": "en-US", "page": page, "region": region},
+            )
+            response.raise_for_status()
+            results = response.json().get("results", [])
+            if not results:
+                break
+            for item in results:
+                # TMDB movie/now_playing items don't carry media_type;
+                # inject it so _upsert_title treats them as movies.
+                item = {**item, "media_type": "movie"}
+                row = _upsert_title_from_tmdb_result(db, item)
+                if row is not None:
+                    hydrated.append(row)
+                if len(hydrated) >= limit:
+                    break
+    db.commit()
+    return hydrated
+
+
 def fetch_popular_titles(
     db: Session,
     *,
