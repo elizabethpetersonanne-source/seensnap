@@ -23,8 +23,10 @@ import { router } from "expo-router";
 import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { Avatar } from "@/components/avatar";
 import { SSLogo } from "@/components/branding/ss-logo";
 import { colors, fonts } from "@/constants/theme";
+import { useAuth } from "@/lib/auth";
 
 
 export type AppHeaderMode = "swipe" | "preview";
@@ -78,18 +80,26 @@ export function AppHeader({
   mode,
   onModeChange,
   rightSlot,
+  rightExtras,
   onLeftPress,
   leftKind = "mark",
   transparent = false,
   ownsSafeArea = true,
+  hideProfileAvatar = false,
 }: {
   variant?: "primary" | "immersive" | "detail";
   title?: string | null;
   mode?: AppHeaderMode;
   onModeChange?: (mode: AppHeaderMode) => void;
+  // Fully replaces the right slot (power users / modal save button).
   rightSlot?: React.ReactNode;
+  // Adds an icon or action to the LEFT of the sticky profile avatar
+  // (e.g. the Teams '+' create-team button). Normal case.
+  rightExtras?: React.ReactNode;
   onLeftPress?: () => void;
   leftKind?: "mark" | "back" | "close";
+  // Opt out of the sticky profile avatar (modals, settings).
+  hideProfileAvatar?: boolean;
   // Immersive surfaces that render over artwork pass transparent=true
   // and apply their own scrim behind the row.
   transparent?: boolean;
@@ -100,7 +110,36 @@ export function AppHeader({
 }) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const { user } = useAuth();
   const hz = width < 380 ? 16 : 20;
+
+  // Default right slot: profile avatar that routes to the user's own
+  // profile. Shown on primary tabs so profile is one tap from anywhere.
+  // Immersive (Swipe/Preview) and detail routes opt out so the right
+  // slot stays clear for the destination-specific action.
+  const defaultRight = !hideProfileAvatar && variant === "primary" && user?.user_id ? (
+    <Pressable
+      onPress={() => router.push(`/profile/${user.user_id}`)}
+      hitSlop={10}
+      accessibilityRole="button"
+      accessibilityLabel="Open your profile"
+    >
+      <Avatar
+        uri={user.avatar_url ?? null}
+        label={user.display_name ?? user.email ?? ""}
+        size={30}
+      />
+    </Pressable>
+  ) : null;
+
+  const resolvedRight = rightSlot !== undefined ? rightSlot : (
+    rightExtras ? (
+      <View style={styles.rightCluster}>
+        {rightExtras}
+        {defaultRight}
+      </View>
+    ) : defaultRight
+  );
 
   function handleLeft() {
     if (onLeftPress) return onLeftPress();
@@ -158,7 +197,7 @@ export function AppHeader({
 
         <View style={{ flex: 1 }} />
 
-        <HeaderSlot side="right">{rightSlot ?? null}</HeaderSlot>
+        <HeaderSlot side="right">{resolvedRight}</HeaderSlot>
       </View>
     </View>
   );
@@ -264,5 +303,10 @@ const styles = StyleSheet.create({
     width: 24,
     backgroundColor: colors.accent,
     borderRadius: 1,
+  },
+  rightCluster: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
   },
 });

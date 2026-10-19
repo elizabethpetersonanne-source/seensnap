@@ -822,11 +822,11 @@ export default function TeamsScreen() {
       <ScrollView contentContainerStyle={styles.content}>
 
         {/* Oct-19 Header Standardization — compact shared app bar.
-            Right slot is the actual team-creation action. */}
+            '+' create-team sits to the left of the sticky profile avatar. */}
         <AppHeader
           variant="primary"
           title="Teams"
-          rightSlot={
+          rightExtras={
             <Pressable
               onPress={() => setShowCreate(true)}
               hitSlop={10}

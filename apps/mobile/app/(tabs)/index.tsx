@@ -633,27 +633,9 @@ export default function DiscoverScreen() {
   return (
     <SafeAreaView style={styles.root} edges={["left", "right"]}>
       {/* Oct-19 Header Standardization brief: shared compact AppHeader.
-          No photographic banner; Concierge is the leading content
-          feature just below. Right slot routes to the OWN profile
-          (not settings) per the brief's screen-by-screen contract. */}
-      <AppHeader
-        variant="primary"
-        title="Discover"
-        rightSlot={
-          <Pressable
-            onPress={() => user?.user_id && router.push(`/profile/${user.user_id}`)}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Open your profile"
-          >
-            <Avatar
-              uri={user?.avatar_url ?? null}
-              label={user?.display_name ?? user?.email ?? ""}
-              size={30}
-            />
-          </Pressable>
-        }
-      />
+          Avatar is sticky (built in to AppHeader) so profile is one
+          tap away from every tab. */}
+      <AppHeader variant="primary" title="Discover" />
 
       {/* ── Search bar ────────────────────────────────────────────────────── */}
       <Pressable
