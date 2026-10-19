@@ -19,9 +19,10 @@ service returns a honest unavailable state. The brief is explicit:
 "a keyword search renamed Concierge does not satisfy intent
 understanding."
 
-Supported providers in this version: "anthropic", "openai",
-"" (disabled). Adapters live in private _call_<provider> functions
-with timeouts, retries and bounded context.
+Supported providers in this version: "vertex" (Google Vertex AI
+Gemini), "anthropic", "openai", "" (disabled). Adapters live in
+private _call_<provider> functions with timeouts, retries and
+bounded context.
 """
 from __future__ import annotations
 
@@ -108,7 +109,9 @@ def resolve_concierge_decision(
 
     provider = (settings.concierge_ai_provider or os.environ.get("CONCIERGE_AI_PROVIDER", "")).strip().lower()
     api_key = (settings.concierge_ai_api_key or os.environ.get("CONCIERGE_AI_API_KEY", "")).strip()
-    if not provider or not api_key:
+    # Vertex uses ADC — api_key is not required for that provider.
+    needs_api_key = provider in {"anthropic", "openai"}
+    if not provider or (needs_api_key and not api_key):
         return ConciergeDecision(
             decision_id=None,
             constraints=ConciergeConstraints(raw_intent=intent),
@@ -117,14 +120,22 @@ def resolve_concierge_decision(
             status="unavailable",
             status_detail=(
                 "Concierge requires an AI provider configuration (set CONCIERGE_AI_PROVIDER "
-                "and CONCIERGE_AI_API_KEY) and is intentionally disabled until configured. "
-                "A keyword search cannot substitute for intent understanding — brief §4."
+                "— and CONCIERGE_AI_API_KEY for anthropic/openai; vertex uses ADC) and is "
+                "intentionally disabled until configured. A keyword search cannot substitute "
+                "for intent understanding — brief §4."
             ),
         )
 
     # Call the adapter. Timeouts + retries live inside each adapter.
     try:
-        if provider == "anthropic":
+        if provider == "vertex":
+            raw = _call_vertex(
+                intent,
+                project=(settings.concierge_ai_project or settings.gcp_project_id or os.environ.get("GOOGLE_CLOUD_PROJECT", "")).strip(),
+                location=(settings.concierge_ai_location or "us-central1").strip(),
+                model=(settings.concierge_ai_model or "gemini-2.5-flash").strip(),
+            )
+        elif provider == "anthropic":
             raw = _call_anthropic(intent, api_key, settings.concierge_ai_model or "claude-opus-4-7")
         elif provider == "openai":
             raw = _call_openai(intent, api_key, settings.concierge_ai_model or "gpt-4o-mini")
@@ -137,6 +148,15 @@ def resolve_concierge_decision(
                 status="unavailable",
                 status_detail=f"Unsupported CONCIERGE_AI_PROVIDER: {provider!r}",
             )
+    except VertexConfigError as exc:
+        return ConciergeDecision(
+            decision_id=None,
+            constraints=ConciergeConstraints(raw_intent=intent),
+            rationale="",
+            title_ids=[],
+            status="unavailable",
+            status_detail=f"vertex_config_error: {exc}",
+        )
     except (httpx.HTTPError, httpx.TimeoutException) as exc:
         return ConciergeDecision(
             decision_id=None,
@@ -302,6 +322,99 @@ User intent: {intent}"""
 
 
 _HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=25.0, write=5.0, pool=5.0)
+
+
+class VertexConfigError(RuntimeError):
+    """Raised when Vertex is selected but a required piece of config is
+    missing (project id or ADC). Surfaced to the client as an
+    unavailable status, not a 5xx."""
+
+
+# Cache the ADC credentials object. google-auth's `.default()` call
+# does a disk/metadata server lookup, which we don't want to repeat on
+# every Concierge request. The token itself still expires and refreshes
+# on `.refresh(request)`.
+_VERTEX_CREDS = None  # type: ignore[var-annotated]
+
+
+def _vertex_access_token() -> str:
+    """Mint a short-lived access token from the active Application
+    Default Credentials. On Cloud Run this picks up the attached
+    service account; locally it picks up `gcloud auth application-
+    default login`."""
+    global _VERTEX_CREDS
+    try:
+        import google.auth  # type: ignore
+        from google.auth.transport.requests import Request  # type: ignore
+    except ImportError as exc:
+        raise VertexConfigError(f"google-auth not installed: {exc}") from exc
+
+    if _VERTEX_CREDS is None:
+        try:
+            _VERTEX_CREDS, _ = google.auth.default(
+                scopes=["https://www.googleapis.com/auth/cloud-platform"],
+            )
+        except Exception as exc:
+            raise VertexConfigError(
+                f"No Application Default Credentials available ({exc}). "
+                "On Cloud Run attach a service account with the Vertex AI User role; "
+                "locally run `gcloud auth application-default login`."
+            ) from exc
+
+    if not _VERTEX_CREDS.valid:
+        try:
+            _VERTEX_CREDS.refresh(Request())
+        except Exception as exc:
+            raise VertexConfigError(f"Could not refresh ADC token: {exc}") from exc
+    return _VERTEX_CREDS.token  # type: ignore[attr-defined]
+
+
+def _call_vertex(intent: str, *, project: str, location: str, model: str) -> dict:
+    """Vertex AI Gemini adapter.
+
+    Uses the REST `:generateContent` endpoint with Application Default
+    Credentials. No new SDK required beyond google-auth (already in the
+    API deps). Requests JSON output via `response_mime_type` so the
+    extractor doesn't have to tolerate prose.
+    """
+    if not project:
+        raise VertexConfigError(
+            "concierge_ai_project (or gcp_project_id / GOOGLE_CLOUD_PROJECT) is required."
+        )
+    token = _vertex_access_token()
+    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000])
+    url = (
+        f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}"
+        f"/locations/{location}/publishers/google/models/{model}:generateContent"
+    )
+    body = {
+        "contents": [{"role": "user", "parts": [{"text": prompt}]}],
+        "generationConfig": {
+            "temperature": 0.4,
+            "topP": 0.95,
+            "maxOutputTokens": 1024,
+            "responseMimeType": "application/json",
+        },
+    }
+    with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+        r = client.post(
+            url,
+            headers={
+                "authorization": f"Bearer {token}",
+                "content-type": "application/json",
+            },
+            json=body,
+        )
+        r.raise_for_status()
+        payload = r.json()
+    # Gemini candidate shape: candidates[0].content.parts[*].text
+    text = ""
+    for cand in payload.get("candidates", []) or []:
+        content = cand.get("content") or {}
+        for part in content.get("parts", []) or []:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                text += part["text"]
+    return _extract_json(text)
 
 
 def _call_anthropic(intent: str, api_key: str, model: str) -> dict:

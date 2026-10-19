@@ -34,11 +34,17 @@ class Settings(BaseSettings):
     # Oct-18 build brief §4 Concierge. The AI adapter boundary is
     # provider-pluggable; absent configuration MUST yield an honest
     # unavailable state rather than a renamed keyword search.
-    # Provider slug + API key are read from env only; never from the
-    # request. Supported slugs: "anthropic", "openai", "" (disabled).
+    # Provider slug is read from env only; never from the request.
+    # Supported slugs: "vertex", "anthropic", "openai", "" (disabled).
+    # For Vertex (Google Cloud): api_key is unused — auth is Application
+    # Default Credentials via the Cloud Run service account. Set
+    # concierge_ai_project (defaults to gcp_project_id) and
+    # concierge_ai_location (defaults to "us-central1").
     concierge_ai_provider: str = ""
     concierge_ai_api_key: str = ""
     concierge_ai_model: str = ""
+    concierge_ai_project: str = ""
+    concierge_ai_location: str = "us-central1"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
