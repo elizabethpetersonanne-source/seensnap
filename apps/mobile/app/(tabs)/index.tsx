@@ -357,6 +357,8 @@ export default function DiscoverScreen() {
 
   // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
   const [nowInTheatersItems, setNowInTheatersItems] = useState<TitleItem[]>([]);
+  const [nowInTheatersLoading, setNowInTheatersLoading] = useState(true);
+  const [nowInTheatersError, setNowInTheatersError] = useState<string | null>(null);
 
   // Media-type toggles for For You + Trending (mock A).
   const [forYouMedia, setForYouMedia] = useState<"movie" | "tv">("movie");
@@ -434,13 +436,17 @@ export default function DiscoverScreen() {
 
   async function loadNowInTheaters() {
     if (!sessionToken) return;
+    setNowInTheatersLoading(true);
+    setNowInTheatersError(null);
     try {
       const result = await apiRequest<TrendingResponse>("/discover/now-in-theaters?limit=12", {
         token: sessionToken,
       });
       setNowInTheatersItems(result.items ?? []);
-    } catch {
-      // silently degrade — honest empty beats fabricated content.
+    } catch (err) {
+      setNowInTheatersError(err instanceof Error ? err.message : "Could not load now in theaters");
+    } finally {
+      setNowInTheatersLoading(false);
     }
   }
 
@@ -941,7 +947,19 @@ export default function DiscoverScreen() {
               }}
               onSeeAll={() => router.push("/(tabs)/for-you")}
             />
-          ) : null}
+          ) : nowInTheatersLoading ? (
+            <View style={styles.moduleLoading}>
+              <ActivityIndicator color={colors.accent} size="small" />
+            </View>
+          ) : (
+            <View style={styles.coldStartCard}>
+              <Text style={styles.coldStartKicker}>NOW IN THEATERS</Text>
+              <Text style={styles.coldStartTitle}>Couldn't load today's lineup.</Text>
+              <Text style={styles.coldStartBody}>
+                {nowInTheatersError ?? "Pull to refresh in a moment."}
+              </Text>
+            </View>
+          )}
 
           <View style={{ height: 40 }} />
         </Animated.ScrollView>
