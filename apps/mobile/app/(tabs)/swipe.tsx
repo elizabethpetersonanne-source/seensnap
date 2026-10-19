@@ -1606,7 +1606,7 @@ const styles = StyleSheet.create({
     color: colors.accent,
   },
   headerTitle: {
-    fontFamily: fonts.serif,
+    fontFamily: fonts.sans,
     fontSize: 20,
     lineHeight: 24,
     color: colors.ink,
@@ -1666,7 +1666,7 @@ const styles = StyleSheet.create({
   },
   loadingRule: { height: 1, width: 32, backgroundColor: rules.gold },
   loadingTitle: {
-    fontFamily: fonts.serif,
+    fontFamily: fonts.sans,
     fontSize: 28,
     lineHeight: 34,
     color: colors.ink,
@@ -1699,7 +1699,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   deckEmptyTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     fontSize: 22,
     lineHeight: 26,
     color: colors.ink,
@@ -1847,7 +1847,7 @@ const styles = StyleSheet.create({
     justifyContent: "flex-end",
   },
   cardTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     fontSize: 22,
     lineHeight: 26,
     color: colors.ink,
@@ -1958,7 +1958,7 @@ const styles = StyleSheet.create({
   },
   emptyRule: { height: 1, width: 32, backgroundColor: rules.default },
   emptyTitle: {
-    fontFamily: fonts.serif,
+    fontFamily: fonts.sans,
     fontSize: 26,
     lineHeight: 32,
     color: colors.ink,
@@ -2014,7 +2014,7 @@ const styles = StyleSheet.create({
     color: colors.muted,
   },
   revealTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     fontSize: 30,
     lineHeight: 34,
     color: colors.ink,
@@ -2111,7 +2111,7 @@ const styles = StyleSheet.create({
     color: colors.accent,
   },
   dnaHeadline: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     fontSize: 20,
     lineHeight: 24,
     color: colors.ink,
@@ -2248,14 +2248,14 @@ const styles = StyleSheet.create({
     textTransform: "uppercase",
   },
   featureTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 32,
     lineHeight: 36,
     letterSpacing: -0.5,
   },
   featureSubtitle: {
-    fontFamily: fonts.serif,
+    fontFamily: fonts.sans,
     fontStyle: "italic",
     color: colors.muted,
     fontSize: 14,
@@ -2348,7 +2348,7 @@ const styles = StyleSheet.create({
     gap: spacing.sm,
   },
   deckPosterFallbackTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 20,
     textAlign: "center",
@@ -2416,7 +2416,7 @@ const styles = StyleSheet.create({
     paddingTop: spacing.md,
   },
   detailsTitle: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     color: colors.ink,
     fontSize: 26,
     lineHeight: 30,

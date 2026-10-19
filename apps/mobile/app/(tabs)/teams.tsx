@@ -882,6 +882,9 @@ export default function TeamsScreen() {
                 sub-line. Tap opens the immersive Team Home. */}
             {teams.map((team) => {
               const coverUri = resolveMediaUrl(team.cover_image);
+              const fallbackAvatarUri = !coverUri && team.recent_member_avatars.length > 0
+                ? resolveMediaUrl(team.recent_member_avatars[0])
+                : null;
               return (
                 <Pressable
                   key={team.id}
@@ -893,8 +896,17 @@ export default function TeamsScreen() {
                 >
                   {coverUri ? (
                     <Image source={{ uri: coverUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                  ) : fallbackAvatarUri ? (
+                    <Image
+                      source={{ uri: fallbackAvatarUri }}
+                      style={StyleSheet.absoluteFill}
+                      resizeMode="cover"
+                      blurRadius={16}
+                    />
                   ) : (
-                    <View style={[StyleSheet.absoluteFill, styles.cinematicTeamFallback]} />
+                    <View style={[StyleSheet.absoluteFill, styles.cinematicTeamFallback]}>
+                      <Text style={styles.cinematicTeamFallbackEmoji}>{team.icon || "🍿"}</Text>
+                    </View>
                   )}
                   <View style={styles.cinematicTeamShade} />
                   <View style={styles.cinematicTeamBody}>
@@ -1897,6 +1909,12 @@ const styles = StyleSheet.create({
   },
   cinematicTeamFallback: {
     backgroundColor: colors.surfaceMuted,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  cinematicTeamFallbackEmoji: {
+    fontSize: 54,
+    opacity: 0.4,
   },
   cinematicTeamShade: {
     ...StyleSheet.absoluteFillObject,

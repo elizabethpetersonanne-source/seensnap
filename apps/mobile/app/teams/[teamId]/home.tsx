@@ -176,17 +176,30 @@ export default function TeamHomeScreen() {
         leftKind="back"
         title={data?.team_name ?? "Team"}
         rightSlot={
-          <Pressable
-            onPress={() => {
-              if (!teamId) return;
-              router.push({ pathname: "/(tabs)/teams" });
-            }}
-            hitSlop={10}
-            accessibilityRole="button"
-            accessibilityLabel="Team settings"
-          >
-            <Ionicons name="settings-outline" size={22} color={colors.muted} />
-          </Pressable>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+            <Pressable
+              onPress={() => {
+                if (!teamId) return;
+                router.push({ pathname: "/teams/[teamId]/add-title", params: { teamId } });
+              }}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Add a title to this team"
+            >
+              <Ionicons name="add" size={22} color={colors.ink} />
+            </Pressable>
+            <Pressable
+              onPress={() => {
+                if (!teamId) return;
+                router.push({ pathname: "/(tabs)/teams" });
+              }}
+              hitSlop={10}
+              accessibilityRole="button"
+              accessibilityLabel="Team settings"
+            >
+              <Ionicons name="settings-outline" size={22} color={colors.muted} />
+            </Pressable>
+          </View>
         }
       />
       {data ? (
@@ -204,7 +217,10 @@ export default function TeamHomeScreen() {
           title="Nothing here yet."
           body="Add titles to this team to see them show up as Top Picks, Recently Added, and more."
           actionLabel="Add a title"
-          onAction={() => router.push("/(tabs)/swipe")}
+          onAction={() => {
+            if (!teamId) return;
+            router.push({ pathname: "/teams/[teamId]/add-title", params: { teamId } });
+          }}
         />
       ) : (
         <FlatList

@@ -40,8 +40,15 @@ export const rules = {
 };
 
 export const fonts = {
-  serif: "BodoniModa_500Medium",
-  serifBold: "BodoniModa_700Bold",
+  // Oct-19 font standardization: `serif` and `serifBold` now point to
+  // Instrument Sans so every legacy caller gets consistent UI typography
+  // automatically. The real Bodoni Moda is still available via
+  // `editorial` / `editorialBold` for the few intentional display
+  // moments (SceneDNA headline, Premium paywall, publish composer eyebrow).
+  serif: "InstrumentSans_600SemiBold",
+  serifBold: "InstrumentSans_700Bold",
+  editorial: "BodoniModa_500Medium",
+  editorialBold: "BodoniModa_700Bold",
   sans: "InstrumentSans_400Regular",
   sansMedium: "InstrumentSans_500Medium",
   sansSemiBold: "InstrumentSans_600SemiBold",

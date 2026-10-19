@@ -141,6 +141,7 @@ function AuthGate() {
         <Stack.Screen name="publish/[titleId]" options={{ animation: "slide_from_bottom", presentation: "modal" }} />
         <Stack.Screen name="add-to-story" options={{ animation: "slide_from_bottom", presentation: "modal" }} />
         <Stack.Screen name="teams/[teamId]/home" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="teams/[teamId]/add-title" options={{ animation: "slide_from_bottom", presentation: "modal" }} />
         <Stack.Screen name="scene-dna" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/edit-profile" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/notifications" options={{ animation: "slide_from_right" }} />
