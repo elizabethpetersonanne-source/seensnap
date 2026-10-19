@@ -541,42 +541,32 @@ def recommend_for_user(
         # back to the TMDB-popular pool. This makes For You visibly
         # personalized instead of returning the same popular titles for
         # everyone.
-        top_user_signals = [
-            (stype, name) for (stype, name), score in signal_index.items() if score > 0
-        ]
+        # Signal-matched pool via a single JSONB SQL query so we don't
+        # drag thousands of rows through Python to overlap-check.
+        # genres is JSONB; the ?| operator asks "does any key in the
+        # top-level array match any of these keys?". If the user has
+        # positive genre signals we hard-filter on them; otherwise we
+        # fall through to the popular pool below.
+        user_genre_names = [
+            name for (stype, name), score in signal_index.items()
+            if stype == "genre" and score > 0
+        ][:16]
         candidate_ids: list[UUID] = []
-        if top_user_signals:
-            from app.services.user_signals import _signal_names_for_title as _title_sigs
-            # Pull a larger pool and filter in Python — we need per-title
-            # signal lookups to overlap-check.
-            broad = db.scalars(
-                select(ContentTitle)
-                .where(ContentTitle.tmdb_vote_average.is_not(None), ContentTitle.tmdb_vote_average >= 6.0)
-                .order_by(ContentTitle.tmdb_vote_average.desc())
-                .limit(1200)
+        if user_genre_names:
+            from sqlalchemy import text as _sql_text
+            rows = db.execute(
+                _sql_text(
+                    "SELECT id FROM content_titles "
+                    "WHERE tmdb_vote_average IS NOT NULL "
+                    "AND tmdb_vote_average >= 6.0 "
+                    "AND genres ?| :genres "
+                    "ORDER BY tmdb_vote_average DESC "
+                    "LIMIT 400"
+                ),
+                {"genres": user_genre_names},
             ).all()
-            user_sig_set = set(top_user_signals)
-            matching = []
-            for t in broad:
-                if t.id in exclude:
-                    continue
-                t_sigs = _title_sigs(t)
-                has_match = False
-                for stype, names in t_sigs.items():
-                    for name in names:
-                        if (stype, name) in user_sig_set:
-                            has_match = True
-                            break
-                    if has_match:
-                        break
-                if has_match:
-                    matching.append(t.id)
-                if len(matching) >= 400:
-                    break
-            candidate_ids = matching
-        # Fallback: if the user has no signals yet, OR too few signal-
-        # matching titles exist, pull the popular pool so For You still
-        # has something to show (ranked by quality floor).
+            candidate_ids = [r[0] for r in rows if r[0] not in exclude]
+        # Fallback: no signals yet OR too few signal-matched titles.
         if len(candidate_ids) < limit * 3:
             popular = db.scalars(
                 select(ContentTitle)
