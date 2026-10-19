@@ -22,6 +22,7 @@ import {
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
+import { OutlineActionRail } from "@/components/outline-action-rail";
 import { RatingBadge, RatingEditor, WatchStatusToggle, subscribeRatingChanges, type RatingSnapshot } from "@/components/rating-editor";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { TasteSignal } from "@/components/taste-signal";
@@ -32,6 +33,7 @@ import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
+import { recordWatchHandoff } from "@/lib/watch-handoff";
 import {
   fetchPersonDetails,
   fetchUniversalTitle,
@@ -362,6 +364,16 @@ export function UniversalTitleModal({
   async function openWatchAction(provider: WatchProvider, action: WatchAction) {
     const url = action.outbound_url;
     if (!url) return;
+    // Oct-18 §8: persist handoff BEFORE launch so Did you watch? can
+    // prompt on meaningful return. Non-fatal if it fails.
+    if (sessionToken && currentTitle?.id) {
+      void recordWatchHandoff(sessionToken, {
+        titleId: currentTitle.id,
+        providerCode: provider.provider_code,
+        outboundUrl: url,
+        originSurface: "title_modal",
+      });
+    }
     const isDeepLink = !url.startsWith("http");
     if (isDeepLink) {
       const supported = await Linking.canOpenURL(url).catch(() => false);
@@ -595,70 +607,28 @@ export function UniversalTitleModal({
                   </View>
                 </View>
 
-                {/* Compact action toolbar — Mobile Title Detail spec §6.1.
-                    Replaces the old five-card stack. Four equal targets
-                    (Save · Watch Team · Send · More) placed BEFORE Overview
-                    so decisions are one tap without displacing content. */}
-                <View style={[styles.section, styles.actionToolbar]}>
-                  <Pressable
-                    style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed, savedState && styles.toolbarBtnActive]}
-                    onPress={openSaveFlow}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: savedState }}
-                    accessibilityLabel={savedState ? `Saved: ${currentTitle?.title ?? ""}` : `Save ${currentTitle?.title ?? ""}`}
-                  >
-                    <Ionicons
-                      name={savedState ? "bookmark" : "bookmark-outline"}
-                      size={20}
-                      color={colors.background}
-                    />
-                    <Text style={styles.toolbarBtnLabel}>
-                      {savedState ? "Saved" : "Save"}
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed]}
-                    onPress={openAddToTeamFlow}
-                    accessibilityRole="button"
-                    accessibilityLabel="Add to a Watch Team"
-                  >
-                    <Ionicons name="people-outline" size={20} color={colors.background} />
-                    <Text style={styles.toolbarBtnLabel}>Team</Text>
-                  </Pressable>
-                  <Pressable
-                    style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed]}
-                    onPress={() => {
+                {/* Oct-18 §4: OutlineActionRail replaces the filled
+                    toolbar. Outline icons, no backplates. Rating
+                    expands inline from the star — the modal-based
+                    RatingEditor stays available for an accessibility
+                    fallback via the long-press on the star. */}
+                <View style={styles.section}>
+                  <OutlineActionRail
+                    variant="discovery"
+                    token={sessionToken}
+                    titleId={currentTitle?.id ?? null}
+                    saved={savedState}
+                    onSave={openSaveFlow}
+                    onSend={() => {
                       if (!currentTitle) return;
                       setShowSendSheet(true);
                     }}
-                    accessibilityRole="button"
-                    accessibilityLabel="Send this title to a SeenSnap user"
-                  >
-                    <Ionicons name="paper-plane-outline" size={20} color={colors.background} />
-                    <Text style={styles.toolbarBtnLabel}>Send</Text>
-                  </Pressable>
-                  <Pressable
-                    style={({ pressed }) => [styles.toolbarBtn, pressed && styles.toolbarBtnPressed]}
-                    onPress={() => setShowMoreSheet(true)}
-                    accessibilityRole="button"
-                    accessibilityLabel="More actions"
-                  >
-                    <Ionicons name="ellipsis-horizontal" size={20} color={colors.background} />
-                    <Text style={styles.toolbarBtnLabel}>More</Text>
-                  </Pressable>
-                </View>
-
-                {/* Sep-22 brief §7: sticky personal rating. Uses the
-                    shared RatingBadge so the visual identity matches
-                    every other title-bearing surface. Tapping opens
-                    the editor without leaving the modal. */}
-                <View style={styles.ratingRow}>
-                  <RatingBadge
-                    snapshot={ratingSnapshot}
-                    onPress={() => setShowRatingEditor(true)}
+                    onTeam={openAddToTeamFlow}
+                    ratingSnapshot={ratingSnapshot}
+                    onRatingChanged={setRatingSnapshot}
                   />
                   {currentTitle?.id ? (
-                    <View style={{ marginLeft: 8 }}>
+                    <View style={{ marginTop: 10 }}>
                       <WatchStatusToggle
                         token={sessionToken}
                         titleId={currentTitle.id}
@@ -880,6 +850,26 @@ export function UniversalTitleModal({
                   <View style={{ flex: 1 }}>
                     <Text style={styles.moreSheetRowTitle}>Share to Feed</Text>
                     <Text style={styles.moreSheetRowBody}>Post this title to your SeenSnap followers.</Text>
+                  </View>
+                </Pressable>
+                {/* Oct-18 §6: explicit publication snapshots the
+                    historical rating/rank at publish time so later
+                    private edits don't silently rewrite the post. */}
+                <Pressable
+                  style={({ pressed }) => [styles.moreSheetRow, pressed && { opacity: 0.7 }]}
+                  onPress={() => {
+                    if (!currentTitle) return;
+                    setShowMoreSheet(false);
+                    router.push({ pathname: "/publish/[titleId]", params: { titleId: currentTitle.id, kind: "rated_title" } });
+                  }}
+                  accessibilityRole="button"
+                >
+                  <View style={styles.moreSheetIcon}>
+                    <Ionicons name="send-outline" size={20} color={colors.accent} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={styles.moreSheetRowTitle}>Publish Activity</Text>
+                    <Text style={styles.moreSheetRowBody}>Share your rating or rank with a Take.</Text>
                   </View>
                 </Pressable>
                 <Pressable

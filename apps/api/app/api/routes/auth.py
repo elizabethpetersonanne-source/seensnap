@@ -112,6 +112,9 @@ def delete_account(current_user: CurrentUser, db: DbSession) -> None:
     from app.models.entitlements import ConciergeAllowanceEntry, EntitlementGrant
     db.execute(delete(ConciergeAllowanceEntry).where(ConciergeAllowanceEntry.user_id == uid))
     db.execute(delete(EntitlementGrant).where(EntitlementGrant.user_id == uid))
+    # Oct-18 brief §8: watch handoff cleanup.
+    from app.models.watch_handoff import WatchHandoff
+    db.execute(delete(WatchHandoff).where(WatchHandoff.user_id == uid))
     db.execute(delete(FeedEvent).where(FeedEvent.actor_user_id == uid))
     db.execute(delete(TeamActivity).where(TeamActivity.actor_user_id == uid))
     db.execute(delete(TeamTitle).where(TeamTitle.added_by_user_id == uid))

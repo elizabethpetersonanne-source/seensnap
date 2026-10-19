@@ -31,6 +31,14 @@ class Settings(BaseSettings):
     # Regex fallback for Netlify's per-deploy preview subdomains
     # (deploy-preview-42--seensnap-alpha.netlify.app). Optional.
     cors_allowed_origin_regex: str = ""
+    # Oct-18 build brief §4 Concierge. The AI adapter boundary is
+    # provider-pluggable; absent configuration MUST yield an honest
+    # unavailable state rather than a renamed keyword search.
+    # Provider slug + API key are read from env only; never from the
+    # request. Supported slugs: "anthropic", "openai", "" (disabled).
+    concierge_ai_provider: str = ""
+    concierge_ai_api_key: str = ""
+    concierge_ai_model: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

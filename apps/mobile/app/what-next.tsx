@@ -24,6 +24,7 @@ import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { type StreamingAvailability, getStreamingServiceMeta } from "@/lib/streaming";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
+import { recordWatchHandoff } from "@/lib/watch-handoff";
 
 type RecommendationItem = {
   title: {
@@ -357,6 +358,14 @@ export default function WhatNextScreen() {
       return;
     }
     trackEvent("recommendation_accept", { title_id: revealDetail.id, session_id: sessionId, source: "what_next" });
+    if (sessionToken) {
+      void recordWatchHandoff(sessionToken, {
+        titleId: revealDetail.id,
+        providerCode: primary?.service ?? "unknown",
+        outboundUrl: target,
+        originSurface: "what_next",
+      });
+    }
     await Linking.openURL(target);
   }
 

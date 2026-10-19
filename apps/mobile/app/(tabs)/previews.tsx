@@ -35,8 +35,10 @@ import {
   type NativeScrollEvent,
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import YouTubePlayerComponent from "@/components/youtube-player";
 
 import { CategoryChips, type CategoryFilter } from "@/components/category-chips";
+import { OutlineActionRail } from "@/components/outline-action-rail";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
@@ -77,93 +79,11 @@ type PreviewFeedResponse = {
   status: "ready" | "pending" | "exhausted";
 };
 
-// Sep-22 brief §5: mute toggle must not rebuild the iframe. Keep the
-// `mute` param out of the URL so state changes don't re-source the
-// player, then drive mute/unmute via the YouTube IFrame API's
-// postMessage command channel. Start-muted is still needed for the
-// initial autoplay policy — that comes from `mute=1` on the initial
-// src only, and only the FIRST render for a given key.
-function youtubeEmbedUrl(key: string, autoplay: boolean, initialMuted: boolean): string {
-  const params = new URLSearchParams({
-    autoplay: autoplay ? "1" : "0",
-    mute: initialMuted ? "1" : "0",
-    playsinline: "1",
-    modestbranding: "1",
-    rel: "0",
-    enablejsapi: "1",
-    // Origin is required by YouTube for postMessage command delivery;
-    // omitted here because we render off `window.location.origin`
-    // when available (see the embed HTML below).
-  });
-  return `https://www.youtube.com/embed/${key}?${params.toString()}`;
-}
-
-function YouTubeEmbed({
-  videoKey,
-  isActive,
-  muted,
-  width,
-  height,
-}: {
-  videoKey: string;
-  isActive: boolean;
-  muted: boolean;
-  width: number;
-  height: number;
-}) {
-  // Ref that survives re-renders, only null when the iframe hasn't
-  // mounted yet. `mute` state changes toggle via postMessage below,
-  // NOT by re-rendering the iframe.
-  const iframeIdRef = useRef<string>(`yt-${videoKey}-${Math.random().toString(36).slice(2, 8)}`);
-  const iframeId = iframeIdRef.current;
-
-  useEffect(() => {
-    if (Platform.OS !== "web") return;
-    if (!isActive) return;
-    const el = (typeof document !== "undefined" ? document.getElementById(iframeId) : null) as HTMLIFrameElement | null;
-    if (!el || !el.contentWindow) return;
-    // YouTube IFrame API accepts JSON-string postMessage commands.
-    // "mute" / "unMute" toggle without touching the current time, so
-    // the timestamp is preserved across taps of the sound button.
-    const cmd = muted ? "mute" : "unMute";
-    try {
-      el.contentWindow.postMessage(
-        JSON.stringify({ event: "command", func: cmd, args: [] }),
-        "*",
-      );
-    } catch {
-      // No-op — if the iframe isn't ready yet, the next re-mount will
-      // pick up the correct initial muted state via the URL.
-    }
-  }, [muted, isActive, iframeId]);
-
-  if (Platform.OS === "web") {
-    if (!isActive) {
-      return <View style={{ width, height, backgroundColor: "#000" }} />;
-    }
-    // src is STABLE per videoKey — mute state does NOT re-source.
-    const src = youtubeEmbedUrl(videoKey, true, true);
-    return (
-      <View style={{ width, height, overflow: "hidden", backgroundColor: "#000" }}>
-        {/* eslint-disable-next-line react/no-danger */}
-        <div
-          style={{ width: "100%", height: "100%" }}
-          dangerouslySetInnerHTML={{
-            __html: `<iframe id="${iframeId}" src="${src}" style="width:100%;height:100%;border:0;" allow="autoplay; encrypted-media; picture-in-picture" allowfullscreen></iframe>`,
-          }}
-        />
-      </View>
-    );
-  }
-  return (
-    <View style={{ width, height, backgroundColor: "#000", justifyContent: "center", alignItems: "center" }}>
-      <Ionicons name="play-circle-outline" size={72} color={colors.accent} />
-      <Text style={{ color: colors.muted, fontFamily: fonts.sans, marginTop: 8 }}>
-        Native player coming in the next build.
-      </Text>
-    </View>
-  );
-}
+// Platform-split YouTube player: web renders a raw <iframe> with
+// IFrame API postMessage mute toggle; native renders via
+// react-native-youtube-iframe (brief §3 fix 1 — real native playback).
+// See src/components/youtube-player.tsx + youtube-player.native.tsx.
+const YouTubeEmbed = YouTubePlayerComponent;
 
 export default function PreviewsScreen() {
   const { sessionToken } = useAuth();
@@ -463,35 +383,50 @@ export default function PreviewsScreen() {
                     <Text style={styles.reason} numberOfLines={2}>{item.reason.label}</Text>
                   </View>
                   <View style={styles.actionRow}>
-                    <Pressable
-                      style={styles.actionPrimary}
-                      onPress={() => {
+                    {/* Oct-18 §4 OutlineActionRail: no backplates;
+                        Save/Send/Team/Rate as outline-only icons. */}
+                    <OutlineActionRail
+                      variant="discovery"
+                      token={sessionToken}
+                      titleId={item.title_id}
+                      saved={false}
+                      onSave={() => {
                         setSaveTitleId(item.title_id);
                         setShowSaveSheet(true);
                         trackEvent("preview_save_clicked", { title_id: item.title_id });
                       }}
-                    >
-                      <Ionicons name="bookmark-outline" size={18} color={colors.background} />
-                      <Text style={styles.actionPrimaryText}>Save</Text>
-                    </Pressable>
+                      onSend={() => {
+                        trackEvent("preview_send_clicked", { title_id: item.title_id });
+                        void openDetails(item.title_id);
+                      }}
+                      onTeam={() => {
+                        trackEvent("preview_team_clicked", { title_id: item.title_id });
+                        void openDetails(item.title_id);
+                      }}
+                      ratingSnapshot={null}
+                    />
+                  </View>
+                  <View style={styles.secondaryActionRow}>
                     <Pressable
-                      style={styles.actionSecondary}
+                      hitSlop={10}
                       onPress={() => void openDetails(item.title_id)}
+                      style={({ pressed }) => [styles.secondaryActionBtn, pressed && { opacity: 0.6 }]}
                     >
-                      <Ionicons name="information-circle-outline" size={18} color={colors.ink} />
-                      <Text style={styles.actionSecondaryText}>Details</Text>
+                      <Ionicons name="information-circle-outline" size={16} color={colors.ink} />
+                      <Text style={styles.secondaryActionLabel}>Details</Text>
                     </Pressable>
                     <Pressable
-                      style={styles.actionSecondary}
+                      hitSlop={10}
                       onPress={() => setMuted((m) => !m)}
                       accessibilityLabel={muted ? "Unmute preview" : "Mute preview"}
+                      style={({ pressed }) => [styles.secondaryActionBtn, pressed && { opacity: 0.6 }]}
                     >
                       <Ionicons
                         name={muted ? "volume-mute-outline" : "volume-high-outline"}
-                        size={18}
+                        size={16}
                         color={colors.ink}
                       />
-                      <Text style={styles.actionSecondaryText}>{muted ? "Sound" : "Mute"}</Text>
+                      <Text style={styles.secondaryActionLabel}>{muted ? "Sound" : "Mute"}</Text>
                     </Pressable>
                   </View>
                 </View>
@@ -727,12 +662,29 @@ const styles = StyleSheet.create({
     marginTop: 4,
   },
   actionRow: {
-    flexDirection: "row",
-    gap: 10,
     width: "100%",
     maxWidth: 720,
     marginTop: 8,
     paddingHorizontal: 4,
+  },
+  secondaryActionRow: {
+    flexDirection: "row",
+    gap: 14,
+    marginTop: 10,
+    paddingHorizontal: 4,
+  },
+  secondaryActionBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingVertical: 6,
+  },
+  secondaryActionLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    letterSpacing: 1,
+    color: colors.ink,
+    textTransform: "uppercase",
   },
   actionPrimary: {
     flexDirection: "row",

@@ -31,8 +31,8 @@ from sqlalchemy import select
 from app.api.dependencies import DbSession
 from app.core.config import settings
 from app.models.content import ContentTitle
-from app.models.social import ListShare, Watchlist, WatchlistItem
-from app.models.user import UserProfile
+from app.models.social import FeedEvent, ListShare, Watchlist, WatchlistItem
+from app.models.user import User, UserProfile
 
 router = APIRouter()
 
@@ -284,6 +284,109 @@ def public_title_landing(kind: str, tmdb_id: int, db: DbSession) -> HTMLResponse
     )
 
 
+@router.get("/events/{event_id}", response_class=HTMLResponse)
+def public_event_landing(event_id: UUID, db: DbSession) -> HTMLResponse:
+    """Oct-18 brief §7: public landing for a shared feed event.
+
+    Only renders events the author explicitly marked public (visibility
+    = public). Followers-only or private events render a 404-style
+    placeholder — brief forbids silently leaking private posts."""
+    event = db.scalar(select(FeedEvent).where(FeedEvent.id == event_id))
+    canonical = f"{settings.share_base_url.rstrip('/')}/events/{event_id}"
+    deep_link = f"seensnap://events/{event_id}"
+
+    if event is None or event.visibility != "public":
+        return HTMLResponse(
+            _og_page(
+                title="Post not available",
+                description="This post isn't public, or the link isn't valid.",
+                image_url=None,
+                canonical_url=canonical,
+                deep_link=deep_link,
+                body_html='<span class="kicker">SeenSnap</span><h1>Post not available.</h1><p class="desc">The owner may have made it private, or the link is invalid.</p>',
+            ),
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    actor_profile = db.scalar(select(UserProfile).where(UserProfile.user_id == event.actor_user_id))
+    actor_name = actor_profile.display_name if actor_profile and actor_profile.display_name else "A SeenSnap user"
+
+    title = None
+    if event.content_title_id:
+        title = db.scalar(select(ContentTitle).where(ContentTitle.id == event.content_title_id))
+
+    take = str(event.payload.get("take") or "").strip() if isinstance(event.payload, dict) else ""
+    rating_at_publish = event.payload.get("rating_at_publish") if isinstance(event.payload, dict) else None
+    kind_label = event.event_type.replace("_", " ").title()
+
+    heading = title.title if title else kind_label
+    tagline = take or (title.overview if title and title.overview else f"{actor_name} on SeenSnap.")
+
+    body = (
+        f'<span class="kicker">{html.escape(kind_label)} · {html.escape(actor_name)}</span>'
+        f'<h1>{html.escape(heading)}</h1>'
+        f'<p class="desc">{html.escape(tagline[:280])}</p>'
+    )
+    if rating_at_publish is not None:
+        body += f'<p class="desc"><strong>{html.escape(str(rating_at_publish))}/10</strong> at the time of posting</p>'
+    if title and title.poster_url:
+        body += f'<div class="grid" style="grid-template-columns: 200px;"><div class="poster"><img src="{html.escape(title.poster_url, quote=True)}" alt="" /></div></div>'
+
+    image_url = (title.backdrop_url or title.poster_url) if title else None
+    return HTMLResponse(
+        _og_page(
+            title=f"{actor_name} on SeenSnap",
+            description=tagline[:280],
+            image_url=image_url,
+            canonical_url=canonical,
+            deep_link=deep_link,
+            body_html=body,
+        )
+    )
+
+
+@router.get("/profiles/{username}", response_class=HTMLResponse)
+def public_profile_landing(username: str, db: DbSession) -> HTMLResponse:
+    """Oct-18 brief §7: public landing for a shared profile."""
+    profile = db.scalar(select(UserProfile).where(UserProfile.username == username))
+    canonical = f"{settings.share_base_url.rstrip('/')}/profiles/{username}"
+    deep_link = f"seensnap://profiles/{username}"
+
+    if profile is None:
+        return HTMLResponse(
+            _og_page(
+                title="Profile not found",
+                description="This SeenSnap profile isn't available.",
+                image_url=None,
+                canonical_url=canonical,
+                deep_link=deep_link,
+                body_html='<span class="kicker">SeenSnap</span><h1>Profile not available.</h1><p class="desc">The handle may have changed, or the profile is private.</p>',
+            ),
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    display = profile.display_name or username
+    bio = (profile.bio or "").strip()
+    body = (
+        f'<span class="kicker">Profile · SeenSnap</span>'
+        f'<h1>{html.escape(display)}</h1>'
+        f'<p class="desc">{html.escape(bio or f"On SeenSnap as @{username}.")}</p>'
+    )
+    if profile.avatar_url:
+        body += f'<div class="grid" style="grid-template-columns: 120px;"><div class="poster" style="aspect-ratio: 1 / 1; border-radius: 50%;"><img src="{html.escape(profile.avatar_url, quote=True)}" alt="" /></div></div>'
+
+    return HTMLResponse(
+        _og_page(
+            title=f"{display} on SeenSnap",
+            description=bio[:280] or f"@{username} on SeenSnap",
+            image_url=profile.avatar_url,
+            canonical_url=canonical,
+            deep_link=deep_link,
+            body_html=body,
+        )
+    )
+
+
 @router.get("/.well-known/apple-app-site-association")
 def apple_app_site_association() -> JSONResponse:
     """Universal Links (iOS) — Apple crawls this file when the app is installed
@@ -295,7 +398,7 @@ def apple_app_site_association() -> JSONResponse:
             "details": [
                 {
                     "appID": f"{IOS_APP_ID_PREFIX}.{IOS_BUNDLE_ID}",
-                    "paths": ["/lists/*", "/titles/*"],
+                    "paths": ["/lists/*", "/titles/*", "/events/*", "/profiles/*"],
                 }
             ],
         }

@@ -22,9 +22,12 @@ import { SeenSnapHeader } from "@/components/headers/seensnap-header";
 import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 
 import { UniversalTitleModal } from "@/components/universal-title-modal";
+import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
+import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useEntitlement } from "@/lib/entitlement";
 import { Avatar } from "@/components/avatar";
 import { trackEvent } from "@/lib/analytics";
 import {
@@ -278,6 +281,27 @@ function CollectionCard({
   );
 }
 
+function conciergeTitleToHero(t: ConciergeTitleCard): HeroFourTitle {
+  return {
+    id: t.title_id,
+    title: t.title,
+    poster_url: t.poster_url,
+    backdrop_url: t.backdrop_url,
+    year: t.year,
+  };
+}
+
+function feedItemToHero(item: FeedItem): HeroFourTitle {
+  const releaseDate = item.title.release_date ? new Date(item.title.release_date) : null;
+  return {
+    id: item.title.id,
+    title: item.title.title,
+    poster_url: item.title.poster_url,
+    backdrop_url: item.title.backdrop_url,
+    year: releaseDate ? releaseDate.getFullYear() : null,
+  };
+}
+
 // ─── Main screen ──────────────────────────────────────────────────────────────
 
 export default function DiscoverScreen() {
@@ -310,6 +334,10 @@ export default function DiscoverScreen() {
   const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
   const [titleModalVisible, setTitleModalVisible] = useState(false);
   const [titleLoading, setTitleLoading] = useState(false);
+
+  // Oct-18 §4 Concierge
+  const entitlement = useEntitlement(sessionToken);
+  const [conciergeDecision, setConciergeDecision] = useState<ConciergeDecisionResponse | null>(null);
 
   const searchInputRef = useRef<TextInput>(null);
   const scrollY = useRef(new Animated.Value(0)).current;
@@ -719,6 +747,46 @@ export default function DiscoverScreen() {
           )}
           scrollEventThrottle={16}
         >
+          {/* Oct-18 §4 Concierge entry. Beta: every user has Premium
+              server-side, but the composer still respects the typed
+              allowance strip so Free behavior is testable. */}
+          {entitlement ? (
+            <ConciergeComposer
+              token={sessionToken}
+              tier={entitlement.tier}
+              allowanceRemaining={null}
+              allowanceCap={entitlement.concierge_monthly_cap}
+              resetsAt={null}
+              onDecision={(decision) => {
+                setConciergeDecision(decision);
+                if (decision.allowance_remaining != null) {
+                  // No-op: the strip reads from the next decision; the
+                  // server tracks state. We don't fabricate client-side
+                  // allowance math.
+                }
+                trackEvent("concierge_decision", {
+                  status: decision.status,
+                  title_count: decision.titles.length,
+                });
+              }}
+            />
+          ) : null}
+
+          {/* Concierge result as hero-plus-four. */}
+          {conciergeDecision && conciergeDecision.status === "ready" && conciergeDecision.titles.length > 0 ? (
+            <HeroFourSection
+              sectionLabel="CONCIERGE"
+              sectionTitle={conciergeDecision.rationale ? "Based on your ask" : "Suggestions"}
+              hero={conciergeTitleToHero(conciergeDecision.titles[0])}
+              four={conciergeDecision.titles.slice(1, 5).map(conciergeTitleToHero)}
+              onPressTitle={(t) => {
+                trackEvent("concierge_title_opened", { title_id: t.id, decision_id: conciergeDecision.decision_id });
+                void openTitleModal(t.id);
+              }}
+              emptyMessage={null}
+            />
+          ) : null}
+
           {/* Primary nav row — quick jumps to the three most-used destinations. */}
           <View style={styles.quickNavRow}>
             {[
@@ -794,46 +862,33 @@ export default function DiscoverScreen() {
               );
             }
             // All rail-shaped modules (personalized_rail, because_you,
-            // team_recommendation, trending, exploration_rail).
+            // team_recommendation, trending, exploration_rail) now
+            // render as HeroFourSection per Oct-18 §4.
             if (!mod.items || mod.items.length === 0) return null;
+            const heroItem = mod.items[0];
+            const continuation = mod.items.slice(1, 5);
             return (
-              <View key={`${mod.type}-${mod.key}-${moduleIndex}`} style={styles.module}>
-                <View style={styles.moduleHeader}>
-                  <View style={{ flex: 1, paddingRight: 12 }}>
-                    <Text style={styles.moduleTitle}>{mod.label}</Text>
-                    {mod.subtitle ? (
-                      <Text style={styles.moduleSubtitle} numberOfLines={1}>{mod.subtitle}</Text>
-                    ) : null}
-                  </View>
-                  {mod.type === "personalized_rail" ? (
-                    <Pressable onPress={() => router.push("/(tabs)/for-you")} hitSlop={10}>
-                      <Text style={styles.seeAll}>SEE ALL</Text>
-                    </Pressable>
-                  ) : null}
-                </View>
-                <FlatList
-                  data={mod.items}
-                  keyExtractor={(item) => `${mod.key}-${item.title.id}`}
-                  horizontal
-                  showsHorizontalScrollIndicator={false}
-                  contentContainerStyle={styles.railContent}
-                  renderItem={({ item, index }) => (
-                    <PosterCard
-                      item={item.title}
-                      onPress={() => {
-                        trackEvent("discover_item_clicked", {
-                          module_type: mod.type,
-                          module_key: mod.key,
-                          content_id: item.title.id,
-                          rank: index + 1,
-                          impression_id: item.impression_id,
-                        });
-                        void openTitleModal(item.title.id);
-                      }}
-                    />
-                  )}
-                />
-              </View>
+              <HeroFourSection
+                key={`${mod.type}-${mod.key}-${moduleIndex}`}
+                sectionLabel={mod.type.replace(/_/g, " ").toUpperCase()}
+                sectionTitle={mod.label}
+                hero={feedItemToHero(heroItem)}
+                four={continuation.map(feedItemToHero)}
+                onPressTitle={(t) => {
+                  trackEvent("discover_item_clicked", {
+                    module_type: mod.type,
+                    module_key: mod.key,
+                    content_id: t.id,
+                    impression_id: heroItem.impression_id,
+                  });
+                  void openTitleModal(t.id);
+                }}
+                onSeeAll={
+                  mod.type === "personalized_rail"
+                    ? () => router.push("/(tabs)/for-you")
+                    : undefined
+                }
+              />
             );
           })}
 

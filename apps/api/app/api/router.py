@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import activity, analytics, auth, collections, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, scene_dna, search, shares, snips, social, teams, title_state, titles, watch_options, watchlist
+from app.api.routes import activity, analytics, auth, collections, concierge, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, scene_dna, search, share_asset, shares, snips, social, teams, title_state, titles, watch_handoff, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
@@ -58,3 +58,15 @@ api_router.include_router(title_state.router, prefix="/me/title-state", tags=["t
 # with an optional ≤300-char Take. Historical rating/rank is snapshot
 # at publish time so later private edits don't silently rewrite posts.
 api_router.include_router(activity.router, prefix="/me/activity", tags=["activity"])
+# Concierge decision — Oct-18 build brief §4. Server-side AI adapter
+# resolves natural-language intent to typed constraints + grounded
+# titles. Honest unavailable state when no provider is configured.
+api_router.include_router(concierge.router, prefix="/me/concierge", tags=["concierge"])
+# Watch handoff — Oct-18 build brief §8. Persist handoff on provider
+# launch, prompt Did you watch? on meaningful return. 10-minute
+# starting threshold; routes through title_state for canonical
+# save/watched/rate transitions.
+api_router.include_router(watch_handoff.router, prefix="/me/handoffs", tags=["handoffs"])
+# Share asset — Oct-18 build brief §6. Image renderer boundary with
+# honest unavailable state when no provider is configured.
+api_router.include_router(share_asset.router, prefix="/me/share-assets", tags=["share-assets"])

@@ -33,6 +33,7 @@ import { type StreamingAvailability, getStreamingServiceMeta } from "@/lib/strea
 import { playSwipeSound } from "@/lib/swipe-sfx";
 import { CategoryChips } from "@/components/category-chips";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
+import { recordWatchHandoff } from "@/lib/watch-handoff";
 
 type RecommendationItem = {
   title: {
@@ -515,6 +516,14 @@ export default function SwipeTab() {
           session_id: sessionId,
           source: "swipe_watch_now",
         });
+        if (sessionToken) {
+          void recordWatchHandoff(sessionToken, {
+            titleId: item.title.id,
+            providerCode: primary?.service ?? "unknown",
+            outboundUrl: target,
+            originSurface: "swipe_watch_now",
+          });
+        }
         void Linking.openURL(target).catch(() => {});
       } else {
         // No streaming URL — fall back to opening the title detail
@@ -595,6 +604,14 @@ export default function SwipeTab() {
       return;
     }
     trackEvent("recommendation_accept", { title_id: revealDetail.id, session_id: sessionId, source: "swipe_tab" });
+    if (sessionToken) {
+      void recordWatchHandoff(sessionToken, {
+        titleId: revealDetail.id,
+        providerCode: primary?.service ?? "unknown",
+        outboundUrl: target,
+        originSurface: "swipe_tab_reveal",
+      });
+    }
     await Linking.openURL(target);
   }
 

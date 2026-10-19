@@ -21,6 +21,7 @@ import {
 } from "@expo-google-fonts/ibm-plex-mono";
 
 import { colors } from "@/constants/theme";
+import { DidYouWatchPrompt } from "@/components/did-you-watch-prompt";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { apiRequest } from "@/lib/api";
 import { BackdropPoolProvider } from "@/lib/backdrop-pool";
@@ -127,16 +128,21 @@ function AuthGate() {
   }
 
   return (
-    <Stack screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="sign-in" />
-      <Stack.Screen name="(tabs)" />
-      <Stack.Screen name="profile/[userId]" />
-      <Stack.Screen name="person/[tmdbId]" />
-      <Stack.Screen name="what-next" />
-      <Stack.Screen name="onboarding" />
-      <Stack.Screen name="teams/join" />
-      <Stack.Screen name="notifications" options={{ animation: "slide_from_right" }} />
-    </Stack>
+    <>
+      <Stack screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="sign-in" />
+        <Stack.Screen name="(tabs)" />
+        <Stack.Screen name="profile/[userId]" />
+        <Stack.Screen name="person/[tmdbId]" />
+        <Stack.Screen name="what-next" />
+        <Stack.Screen name="onboarding" />
+        <Stack.Screen name="teams/join" />
+        <Stack.Screen name="notifications" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="publish/[titleId]" options={{ animation: "slide_from_bottom", presentation: "modal" }} />
+      </Stack>
+      {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
+      <DidYouWatchPrompt />
+    </>
   );
 }
 

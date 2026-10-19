@@ -12,6 +12,7 @@ import {
   Platform,
   Pressable,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   TextInput,
@@ -25,6 +26,7 @@ import { SeenSnapHeader } from "@/components/headers/seensnap-header";
 import { useCyclingBackdrop, useFallbackBackdrop } from "@/lib/backdrop-pool";
 import { PosterMosaic } from "@/components/poster-mosaic";
 import { RatingCircle, RatingPicker } from "@/components/rating";
+import { OutlineActionRail } from "@/components/outline-action-rail";
 import { RatingBadge, RatingEditor, subscribeRatingChanges, type RatingSnapshot } from "@/components/rating-editor";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { FeedSkeleton } from "@/components/shimmer";
@@ -629,6 +631,20 @@ export default function FeedScreen() {
                 onOpenDetails={() => void openDetails(item)}
                 onOpenComposer={() => openComposer(item, "card")}
                 onCta={(label) => onCta(item, label)}
+                onSaveTitle={() => {
+                  if (!item.title?.id) return;
+                  setSaveTitleId(item.title.id);
+                  setShowSaveSheet(true);
+                }}
+                onSendTitle={() => {
+                  if (!item.title) return;
+                  const message = `${item.title.title} — on SeenSnap`;
+                  void Share.share({ message }).catch(() => {});
+                }}
+                onAddToTeamTitle={() => {
+                  if (!item.title) return;
+                  openAddToTeam({ id: item.title.id, title: item.title.title ?? "" });
+                }}
                 currentUserAvatar={user?.avatar_url ?? null}
                 onDeletePost={() => {
                   Alert.alert("Delete this post?", "This can’t be undone.", [
@@ -806,6 +822,9 @@ function FeedCard({
   onOpenDetails,
   onOpenComposer,
   onCta,
+  onSaveTitle,
+  onSendTitle,
+  onAddToTeamTitle,
   currentUserAvatar,
   onDeletePost,
   onDeleteComment,
@@ -825,6 +844,9 @@ function FeedCard({
   onOpenDetails: () => void;
   onOpenComposer: () => void;
   onCta: (label: string) => void;
+  onSaveTitle: () => void;
+  onSendTitle: () => void;
+  onAddToTeamTitle: () => void;
   currentUserAvatar: string | null;
   onDeletePost: () => void;
   onDeleteComment: (comment: FeedComment) => void;
@@ -978,20 +1000,25 @@ function FeedCard({
             onPress={() => onReact(reaction.key)}
           />
         ))}
-        {item.title?.id ? (
-          <View style={{ marginLeft: "auto" }}>
-            <RatingBadge
-              snapshot={viewerRating}
-              compact
-              onPress={(e?: unknown) => {
-                // Stop propagation so tapping Rate it doesn't
-                // trigger the post's open-details behavior per §7.
-                setShowRatingEditor(true);
-              }}
-            />
-          </View>
-        ) : null}
       </View>
+      {item.title?.id ? (
+        <View style={{ paddingHorizontal: spacing.lg, paddingTop: 2, paddingBottom: 6 }}>
+          {/* Oct-18 §4 OutlineActionRail: Save · Send · Team · Rate.
+              Like/Comment live in the richer reactionBar above
+              (SeenSnap's reactions are a superset of Like). */}
+          <OutlineActionRail
+            variant="discovery"
+            token={sessionToken}
+            titleId={item.title.id}
+            saved={false}
+            onSave={onSaveTitle}
+            onSend={onSendTitle}
+            onTeam={onAddToTeamTitle}
+            ratingSnapshot={viewerRating}
+            onRatingChanged={setViewerRating}
+          />
+        </View>
+      ) : null}
       {item.title?.id ? (
         <RatingEditor
           visible={showRatingEditor}
