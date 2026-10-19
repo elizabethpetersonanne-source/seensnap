@@ -336,9 +336,16 @@ def refresh_streaming_options(db: Session, title: ContentTitle, region: str = "U
     return created
 
 
-def fetch_title_videos(title: ContentTitle) -> list[dict[str, str]]:
+def fetch_title_videos(title: ContentTitle, *, client: "httpx.Client | None" = None) -> list[dict[str, str]]:
+    """Fetch available videos (trailers, teasers, …) for a title from
+    TMDB. Pass a shared `client` when calling in a loop so you reuse
+    the connection pool — otherwise we build a one-shot client."""
     endpoint = f"/movie/{title.tmdb_id}/videos" if title.content_type == "movie" else f"/tv/{title.tmdb_id}/videos"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=10) as client:
+    if client is None:
+        with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=10) as c:
+            response = c.get(endpoint, params={"language": "en-US"})
+            response.raise_for_status()
+    else:
         response = client.get(endpoint, params={"language": "en-US"})
         response.raise_for_status()
     results = response.json().get("results", [])

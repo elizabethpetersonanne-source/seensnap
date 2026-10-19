@@ -59,6 +59,9 @@ const MISSING_API_URL_MESSAGE =
 
 type ApiRequestOptions = RequestInit & {
   token?: string | null;
+  // Override the default 12s client timeout. Use a larger value for
+  // endpoints that fan out to TMDB per candidate (e.g. previews feed).
+  timeoutMs?: number;
 };
 
 export async function apiRequest<T>(path: string, options: ApiRequestOptions = {}): Promise<T> {
@@ -66,7 +69,7 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     throw new Error(MISSING_API_URL_MESSAGE);
   }
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 12000);
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 12000);
   const headers = new Headers(options.headers);
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   if (!headers.has("Content-Type") && !isFormData) {

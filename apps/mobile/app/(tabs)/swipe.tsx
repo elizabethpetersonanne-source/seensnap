@@ -836,8 +836,16 @@ export default function SwipeTab() {
       ) : null}
       {activeStreaming.length > 0 ? (
         <View style={styles.providerStrip}>
-          {activeStreaming.slice(0, 3).map((s) => {
+          {activeStreaming.slice(0, 4).map((s) => {
             const meta = getStreamingServiceMeta(s.service);
+            // Real TMDB logo first; brand short-name pill fallback.
+            if (s.logoUrl) {
+              return (
+                <View key={s.service} style={styles.providerLogoBox}>
+                  <Image source={{ uri: s.logoUrl }} style={styles.providerLogoImg} resizeMode="contain" />
+                </View>
+              );
+            }
             return (
               <View
                 key={s.service}
@@ -849,9 +857,9 @@ export default function SwipeTab() {
               </View>
             );
           })}
-          {activeStreaming.length > 3 ? (
+          {activeStreaming.length > 4 ? (
             <View style={styles.providerMore}>
-              <Text style={styles.providerMoreLabel}>+{activeStreaming.length - 3} more</Text>
+              <Text style={styles.providerMoreLabel}>+{activeStreaming.length - 4} more</Text>
               <Ionicons name="chevron-forward" size={11} color={colors.muted} />
             </View>
           ) : null}
@@ -2479,6 +2487,15 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.12)",
     backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  providerLogoBox: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  providerLogoImg: {
+    width: 42,
+    height: 24,
+    borderRadius: 4,
   },
   providerPill: {
     paddingHorizontal: 10,

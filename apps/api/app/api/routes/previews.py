@@ -262,7 +262,15 @@ def get_previews_feed(
     items: list[PreviewFeedItemResponse] = []
     scanned = 0
     tmdb_broken = False
-    for rec in candidates:
+    # Share a single httpx client across the loop so TMDB calls reuse
+    # a single connection pool instead of opening/closing a connection
+    # per candidate (previously ~N×TLS handshakes per request).
+    import httpx as _httpx  # local import to avoid broadening the module imports
+    from app.core.config import settings as _settings
+    from app.services.tmdb import _tmdb_headers as _hdrs
+    tmdb_client = _httpx.Client(base_url=_settings.tmdb_base_url, headers=_hdrs(), timeout=10)
+    try:
+      for rec in candidates:
         scanned += 1
         if len(items) >= limit:
             break
@@ -273,7 +281,7 @@ def get_previews_feed(
         if title_row is None:
             continue
         try:
-            videos = fetch_title_videos(title_row)
+            videos = fetch_title_videos(title_row, client=tmdb_client)
         except TmdbConfigurationError:
             tmdb_broken = True
             break
@@ -304,6 +312,8 @@ def get_previews_feed(
                 reason=_reason_from_recommendation(rec),
             )
         )
+    finally:
+        tmdb_client.close()
 
     # Session state: scan_offset advances by what we actually scanned.
     # served_title_ids grows but stays bounded because it's server-side

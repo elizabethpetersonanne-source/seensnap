@@ -639,6 +639,21 @@ export default function WhatNextScreen() {
                       <View style={styles.streamingRow}>
                         {activeStreaming.map((entry) => {
                           const meta = getStreamingServiceMeta(entry.service);
+                          // Real TMDB brand mark first; fall back to the brand text chip.
+                          if (entry.logoUrl) {
+                            return (
+                              <View
+                                key={`${activeCard.title.id}-${entry.service}`}
+                                style={styles.streamingLogoBox}
+                              >
+                                <Image
+                                  source={{ uri: entry.logoUrl }}
+                                  style={styles.streamingLogoImg}
+                                  resizeMode="contain"
+                                />
+                              </View>
+                            );
+                          }
                           return (
                             <View
                               key={`${activeCard.title.id}-${entry.service}`}
@@ -1136,6 +1151,15 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     flexWrap: "wrap",
     gap: 8,
+  },
+  streamingLogoBox: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  streamingLogoImg: {
+    width: 44,
+    height: 26,
+    borderRadius: 4,
   },
   streamingChip: {
     paddingHorizontal: 12,

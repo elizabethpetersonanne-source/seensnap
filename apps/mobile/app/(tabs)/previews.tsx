@@ -169,6 +169,9 @@ export default function PreviewsScreen() {
       if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
       const resp = await apiRequest<PreviewFeedResponse>(`/previews/feed?${p.toString()}`, {
         token: sessionToken,
+        // Previews fan out to TMDB per candidate — bump timeout to
+        // 60s so a slow pass through 80 candidates doesn't abort.
+        timeoutMs: 60000,
       });
       setItems(resp.items);
       setActiveIndex(0);
@@ -194,6 +197,9 @@ export default function PreviewsScreen() {
       if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
       const resp = await apiRequest<PreviewFeedResponse>(`/previews/feed?${p.toString()}`, {
         token: sessionToken,
+        // Previews fan out to TMDB per candidate — bump timeout to
+        // 60s so a slow pass through 80 candidates doesn't abort.
+        timeoutMs: 60000,
       });
       setItems((prev) => {
         // Append + dedupe by feed_item_id so a late duplicate can't
