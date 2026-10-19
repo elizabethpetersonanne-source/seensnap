@@ -47,6 +47,9 @@ class StreamingAvailabilityResponse(BaseModel):
     service_name: str
     app_url: str | None = None
     web_url: str | None = None
+    # Oct-19: resolved TMDB provider logo URL so clients render the
+    # real brand mark rather than a short-name text pill.
+    logo_url: str | None = None
 
 
 class TitleImageResponse(BaseModel):

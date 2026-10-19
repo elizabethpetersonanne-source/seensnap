@@ -1240,25 +1240,34 @@ export default function SwipeTab() {
 
               {activeStreaming.length > 0 ? (
                 <View style={styles.unifiedProviderStrip}>
-                  {activeStreaming.slice(0, 3).map((s) => {
+                  {activeStreaming.slice(0, 4).map((s) => {
                     const meta = getStreamingServiceMeta(s.service);
+                    const label = (meta?.shortName || s.serviceName || "").toUpperCase();
+                    // Real TMDB-provided logo takes precedence; brand
+                    // short-name text is the fallback when logo_url
+                    // isn't available for a provider.
                     return (
-                      <View
-                        key={s.service}
-                        style={[styles.unifiedProviderPill, meta ? { backgroundColor: meta.color } : null]}
-                      >
-                        <Text
-                          style={[styles.unifiedProviderPillLabel, meta ? { color: meta.textColor } : null]}
-                          numberOfLines={1}
-                        >
-                          {(meta?.shortName || s.serviceName || "").toUpperCase()}
-                        </Text>
+                      <View key={s.service} style={styles.unifiedProviderLogoWrap}>
+                        {s.logoUrl ? (
+                          <Image source={{ uri: s.logoUrl }} style={styles.unifiedProviderLogo} resizeMode="contain" />
+                        ) : (
+                          <View
+                            style={[styles.unifiedProviderPill, meta ? { backgroundColor: meta.color } : null]}
+                          >
+                            <Text
+                              style={[styles.unifiedProviderPillLabel, meta ? { color: meta.textColor } : null]}
+                              numberOfLines={1}
+                            >
+                              {label}
+                            </Text>
+                          </View>
+                        )}
                       </View>
                     );
                   })}
-                  {activeStreaming.length > 3 ? (
+                  {activeStreaming.length > 4 ? (
                     <View style={styles.unifiedProviderMore}>
-                      <Text style={styles.unifiedProviderMoreLabel}>+{activeStreaming.length - 3} more</Text>
+                      <Text style={styles.unifiedProviderMoreLabel}>+{activeStreaming.length - 4} more</Text>
                       <Ionicons name="chevron-forward" size={11} color={colors.muted} />
                     </View>
                   ) : null}
@@ -2798,6 +2807,15 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.12)",
     backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  unifiedProviderLogoWrap: {
+    paddingHorizontal: 4,
+    paddingVertical: 4,
+  },
+  unifiedProviderLogo: {
+    width: 42,
+    height: 24,
+    borderRadius: 4,
   },
   unifiedProviderPill: {
     paddingHorizontal: 10,

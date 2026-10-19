@@ -17,6 +17,7 @@ export type StreamingAvailability = {
   serviceName: string;
   appUrl?: string | null;
   webUrl?: string | null;
+  logoUrl?: string | null;
 };
 
 export function getStreamingServiceMeta(serviceId: string) {

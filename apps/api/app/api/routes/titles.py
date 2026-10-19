@@ -468,6 +468,11 @@ def _to_title_response(
                 service_name=option.provider_name,
                 app_url=option.deeplink_url,
                 web_url=option.web_url,
+                logo_url=(
+                    f"https://image.tmdb.org/t/p/original{option.logo_path}"
+                    if getattr(option, "logo_path", None)
+                    else None
+                ),
             )
             for option in (availability or [])
             if option.deeplink_url or option.web_url

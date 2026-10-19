@@ -36,6 +36,7 @@ type TitleResponse = {
     service_name: string;
     app_url?: string | null;
     web_url?: string | null;
+    logo_url?: string | null;
   }>;
   image_gallery?: Array<{
     url: string;
@@ -148,6 +149,7 @@ function normalizeFromApi(data: TitleResponse): UniversalTitle {
       serviceName: entry.service_name,
       appUrl: entry.app_url ?? null,
       webUrl: entry.web_url ?? null,
+      logoUrl: entry.logo_url ?? null,
     })),
     imageGallery: (data.image_gallery ?? []).map((entry) => ({
       url: entry.url,
