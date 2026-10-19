@@ -1,18 +1,17 @@
 /**
- * Oct-18 build brief §4: Concierge composer.
+ * Oct-19 Discover simplified mock: AI Concierge entry card.
  *
- * Lives on Discover for every user — Premium gets unlimited, Free
- * gets a visible monthly allowance strip. Submits a natural-language
- * intent; on success the parent renders the result set as a
- * HeroFourSection.
- *
- * Honest unavailable state when the server reports no AI provider.
- * No fabricated latency, no fake decisions.
+ * Dark cinematic backdrop (no purple aura). Eyebrow + big serif
+ * headline + subtitle. "TRY ASKING" label with a single rounded
+ * input showing a tappable example; the yellow arrow on the right
+ * submits.
  */
 import { Ionicons } from "@expo/vector-icons";
 import { useState } from "react";
 import {
   ActivityIndicator,
+  Image,
+  ImageSourcePropType,
   Pressable,
   StyleSheet,
   Text,
@@ -48,12 +47,14 @@ export type ConciergeDecisionResponse = {
 };
 
 
-const DEFAULT_EXAMPLES = [
+const DEFAULT_EXAMPLE = "A funny movie under two hours, on a service I have.";
+const ROTATING_EXAMPLES = [
   "A funny movie under two hours, on a service I have.",
-  "Something like a slow-burn drama with twists.",
+  "A slow-burn drama with twists.",
   "A rewatch that'll put me in a good mood.",
   "A smart documentary I haven't seen yet.",
 ];
+
 
 export function ConciergeComposer({
   token,
@@ -62,8 +63,7 @@ export function ConciergeComposer({
   allowanceCap,
   resetsAt,
   onDecision,
-  examples = DEFAULT_EXAMPLES,
-  prominent = false,
+  backdropUri,
 }: {
   token: string | null;
   tier: "free" | "premium";
@@ -71,14 +71,15 @@ export function ConciergeComposer({
   allowanceCap: number | null;
   resetsAt: string | null;
   onDecision: (decision: ConciergeDecisionResponse) => void;
-  examples?: string[];
-  prominent?: boolean;
+  backdropUri?: string | null;
 }) {
   const [intent, setIntent] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [exampleIdx, setExampleIdx] = useState(0);
 
   const outOfAllowance = tier === "free" && allowanceRemaining != null && allowanceRemaining <= 0;
+  const currentExample = ROTATING_EXAMPLES[exampleIdx] ?? DEFAULT_EXAMPLE;
 
   async function submit() {
     if (!token || busy) return;
@@ -108,74 +109,85 @@ export function ConciergeComposer({
 
   return (
     <View style={styles.wrap}>
-      {prominent ? (
-        <View style={styles.prominentHeader}>
-          <View style={styles.kickerRow}>
-            <Ionicons name="sparkles" size={11} color={colors.accent} />
-            <Text style={styles.prominentKicker}>CONCIERGE</Text>
-          </View>
-          <Text style={styles.prominentHeadline}>What do you feel like watching?</Text>
-        </View>
+      {/* Cinematic backdrop. If the caller supplies a real poster/
+          backdrop URI, we use it. Otherwise a dark surface with a
+          subtle gradient keeps the card readable. */}
+      {backdropUri ? (
+        <Image source={{ uri: backdropUri }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
       ) : null}
+      <View style={styles.scrim} />
 
-      <View style={styles.row}>
-        <View style={[styles.inputWrap, prominent && styles.inputWrapProminent]}>
-          <Ionicons name="sparkles-outline" size={prominent ? 18 : 16} color={colors.accent} style={{ marginRight: 8 }} />
+      <View style={styles.body}>
+        <View style={styles.kickerRow}>
+          <Ionicons name="sparkles" size={11} color={colors.accent} />
+          <Text style={styles.kicker}>AI CONCIERGE</Text>
+        </View>
+
+        <Text style={styles.headline}>What do you feel{"\n"}like watching?</Text>
+        <Text style={styles.subhead}>A pick that fits your taste and your services.</Text>
+
+        <Text style={styles.tryLabel}>TRY ASKING</Text>
+
+        <View style={styles.inputRow}>
           <TextInput
-            placeholder={tier === "premium" ? "Ask Concierge anything…" : "Ask Concierge — e.g. slow burn drama under 2h"}
-            placeholderTextColor={colors.muted2}
+            placeholder={currentExample}
+            placeholderTextColor="rgba(255,255,255,0.55)"
             value={intent}
             onChangeText={setIntent}
             editable={!busy && !outOfAllowance}
             onSubmitEditing={submit}
+            onFocus={() => {
+              if (!intent) setIntent(currentExample);
+            }}
             returnKeyType="send"
-            style={[styles.input, prominent && styles.inputProminent]}
+            style={styles.input}
             multiline={false}
             maxLength={240}
           />
+          <Pressable
+            disabled={busy || outOfAllowance || !intent.trim()}
+            onPress={() => {
+              if (!intent.trim()) {
+                setIntent(currentExample);
+                return;
+              }
+              void submit();
+            }}
+            style={({ pressed }) => [
+              styles.goBtn,
+              (busy || outOfAllowance) && styles.goBtnDisabled,
+              pressed && !busy && styles.goBtnPressed,
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Ask Concierge"
+          >
+            {busy ? (
+              <ActivityIndicator size="small" color="#0b0f17" />
+            ) : (
+              <Ionicons name="arrow-forward" size={16} color="#0b0f17" />
+            )}
+          </Pressable>
         </View>
+
         <Pressable
-          disabled={busy || outOfAllowance || !intent.trim()}
-          onPress={submit}
-          style={({ pressed }) => [
-            styles.goBtn,
-            prominent && styles.goBtnProminent,
-            (busy || outOfAllowance || !intent.trim()) && styles.goBtnDisabled,
-            pressed && !busy && styles.goBtnPressed,
-          ]}
+          onPress={() => setExampleIdx((i) => (i + 1) % ROTATING_EXAMPLES.length)}
+          hitSlop={8}
+          style={styles.cycleRow}
+          accessibilityLabel="Show another example ask"
         >
-          {busy ? (
-            <ActivityIndicator size="small" color="#0b0f17" />
-          ) : (
-            <Text style={styles.goBtnLabel}>Ask</Text>
-          )}
+          <Ionicons name="refresh-outline" size={11} color={colors.muted} />
+          <Text style={styles.cycleLabel}>Another example</Text>
         </Pressable>
+
+        <AllowanceStrip
+          tier={tier}
+          remaining={allowanceRemaining}
+          cap={allowanceCap}
+          resetsAt={resetsAt}
+        />
+
+        {error ? <Text style={styles.error}>{error}</Text> : null}
       </View>
-
-      {examples.length > 0 && !intent ? (
-        <View style={styles.examplesWrap}>
-          <Text style={styles.examplesLabel}>Try asking</Text>
-          {examples.slice(0, 2).map((ex) => (
-            <Pressable
-              key={ex}
-              onPress={() => setIntent(ex)}
-              style={({ pressed }) => [styles.exampleRow, pressed && { opacity: 0.6 }]}
-            >
-              <Ionicons name="return-down-forward-outline" size={13} color={colors.accent} />
-              <Text style={styles.exampleText}>{ex}</Text>
-            </Pressable>
-          ))}
-        </View>
-      ) : null}
-
-      <AllowanceStrip
-        tier={tier}
-        remaining={allowanceRemaining}
-        cap={allowanceCap}
-        resetsAt={resetsAt}
-      />
-
-      {error ? <Text style={styles.error}>{error}</Text> : null}
     </View>
   );
 }
@@ -191,14 +203,7 @@ function AllowanceStrip({
   cap: number | null;
   resetsAt: string | null;
 }) {
-  if (tier === "premium") {
-    return (
-      <View style={styles.strip}>
-        <Ionicons name="infinite" size={11} color={colors.accent} />
-        <Text style={styles.stripLabel}>UNLIMITED · Premium</Text>
-      </View>
-    );
-  }
+  if (tier === "premium") return null;
   if (remaining == null || cap == null) return null;
   const resets = resetsAt ? new Date(resetsAt) : null;
   const resetsLabel = resets ? resets.toLocaleDateString(undefined, { month: "short", day: "numeric" }) : null;
@@ -214,111 +219,107 @@ function AllowanceStrip({
 
 const styles = StyleSheet.create({
   wrap: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.md,
-    gap: 10,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    marginBottom: spacing.sm,
+    borderRadius: 20,
+    overflow: "hidden",
+    backgroundColor: "#0F1419",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.1)",
+    minHeight: 260,
   },
-  prominentHeader: {
+  scrim: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(8,11,14,0.72)",
+  },
+  body: {
+    padding: 20,
     gap: 6,
-    marginBottom: 4,
   },
   kickerRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
   },
-  prominentKicker: {
+  kicker: {
     fontFamily: fonts.monoSemiBold,
     color: colors.accent,
     fontSize: 10,
-    letterSpacing: 1.4,
+    letterSpacing: 1.5,
   },
-  prominentHeadline: {
+  headline: {
+    marginTop: 2,
     fontFamily: fonts.sansBold,
     color: colors.ink,
-    fontSize: 24,
-    lineHeight: 28,
-    letterSpacing: -0.3,
+    fontSize: 26,
+    lineHeight: 30,
+    letterSpacing: -0.4,
   },
-  inputWrapProminent: {
-    paddingVertical: 12,
-    borderRadius: radii.md,
+  subhead: {
+    marginTop: 4,
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 13,
+    lineHeight: 18,
   },
-  inputProminent: {
-    fontSize: 15,
-  },
-  goBtnProminent: {
-    paddingVertical: 14,
-  },
-  examplesWrap: {
-    gap: 4,
-    marginTop: 2,
-  },
-  examplesLabel: {
-    fontFamily: fonts.monoMedium,
+  tryLabel: {
+    marginTop: 14,
+    fontFamily: fonts.monoSemiBold,
     color: colors.muted2,
     fontSize: 10,
-    letterSpacing: 1,
-    marginBottom: 2,
+    letterSpacing: 1.4,
   },
-  exampleRow: {
+  inputRow: {
+    marginTop: 8,
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingVertical: 3,
-  },
-  exampleText: {
-    flex: 1,
-    fontFamily: fonts.serif,
-    color: colors.ink,
-    fontSize: 13,
-    lineHeight: 17,
-    fontStyle: "italic",
-    opacity: 0.86,
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.xs,
-  },
-  inputWrap: {
-    flex: 1,
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: spacing.sm,
-    paddingVertical: 8,
-    borderRadius: radii.md,
-    backgroundColor: colors.surface,
+    gap: 8,
+    paddingLeft: 14,
+    paddingRight: 4,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(0,0,0,0.4)",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,230,0,0.28)",
+    borderColor: "rgba(255,255,255,0.14)",
   },
   input: {
     flex: 1,
     color: colors.ink,
     fontFamily: fonts.sans,
-    fontSize: 14,
-    paddingVertical: 0,
+    fontSize: 13,
+    paddingVertical: 10,
   },
   goBtn: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: 10,
-    borderRadius: radii.md,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     backgroundColor: colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
   },
   goBtnDisabled: {
-    opacity: 0.4,
+    opacity: 0.5,
   },
   goBtnPressed: {
-    opacity: 0.7,
+    opacity: 0.8,
   },
-  goBtnLabel: {
-    fontFamily: fonts.sansSemiBold,
-    color: "#0b0f17",
+  cycleRow: {
+    marginTop: 8,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    alignSelf: "flex-start",
+    paddingVertical: 2,
+  },
+  cycleLabel: {
+    fontFamily: fonts.monoMedium,
+    color: colors.muted,
+    fontSize: 10,
     letterSpacing: 0.6,
-    fontSize: 13,
   },
   strip: {
+    marginTop: 8,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
@@ -335,6 +336,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
   },
   error: {
+    marginTop: 6,
     fontFamily: fonts.sansMedium,
     color: colors.danger,
     fontSize: 12,

@@ -22,7 +22,6 @@ import { AppHeader } from "@/components/headers/app-header";
 import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 
 import { UniversalTitleModal } from "@/components/universal-title-modal";
-import { ConciergeAura } from "@/components/concierge-aura";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
 import { ConciergeResult } from "@/components/concierge-result";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
@@ -760,97 +759,74 @@ export default function DiscoverScreen() {
           )}
           scrollEventThrottle={16}
         >
-          {/* Oct-19 Discover rebrief: Large Concierge entry with a
-              tappable example that populates the input. Ordinary
-              title search stays available above. */}
+          {/* Oct-19 Discover simplified mock: cinematic AI Concierge
+              card. Backdrop uses the trending title's artwork so the
+              card feels native to the catalog, not a purple aura. */}
           {entitlement ? (
-            <View style={styles.conciergeLandingPremium}>
-              <ConciergeComposer
-                token={sessionToken}
-                tier={entitlement.tier}
-                allowanceRemaining={null}
-                allowanceCap={entitlement.concierge_monthly_cap}
-                resetsAt={null}
-                prominent
-                onDecision={(decision) => {
-                  setConciergeDecision(decision);
-                  if (decision.allowance_remaining != null) {
-                    // No-op: the strip reads from the next decision;
-                    // the server tracks state. We don't fabricate
-                    // client-side allowance math.
-                  }
-                  trackEvent("concierge_decision", {
-                    status: decision.status,
-                    title_count: decision.titles.length,
-                  });
-                }}
-              />
-            </View>
+            <ConciergeComposer
+              token={sessionToken}
+              tier={entitlement.tier}
+              allowanceRemaining={null}
+              allowanceCap={entitlement.concierge_monthly_cap}
+              resetsAt={null}
+              backdropUri={trending?.items?.[0]?.backdrop_url ?? trending?.items?.[0]?.poster_url ?? null}
+              onDecision={(decision) => {
+                setConciergeDecision(decision);
+                trackEvent("concierge_decision", {
+                  status: decision.status,
+                  title_count: decision.titles.length,
+                });
+              }}
+            />
           ) : null}
 
-          {/* Concierge result — Visual Design brief §7. Serif
-              pullquote rationale + horizontal strip of options. Soft
-              peripheral aura behind the block (low-opacity, slow,
-              reduced-motion aware). */}
+          {/* Concierge result — serif pullquote + horizontal strip. */}
           {conciergeDecision && conciergeDecision.status === "ready" && conciergeDecision.titles.length > 0 ? (
-            <View style={styles.conciergeResultWrap}>
-              <ConciergeAura width={360} height={420} intensity={1} />
-              <ConciergeResult
-                rationale={conciergeDecision.rationale}
-                titles={conciergeDecision.titles}
-                onPressTitle={(t) => {
-                  trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
-                  void openTitleModal(t.title_id);
-                }}
-              />
-            </View>
+            <ConciergeResult
+              rationale={conciergeDecision.rationale}
+              titles={conciergeDecision.titles}
+              onPressTitle={(t) => {
+                trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
+                void openTitleModal(t.title_id);
+              }}
+            />
           ) : null}
 
-          {/* Oct-19 Discover rebrief: THREE substantial shortcuts.
-              Each tile is a full-width action card with a clear
-              icon, label, and short descriptor. They supplement the
-              bottom navigation; a quick tap routes straight to the
-              existing destination. */}
-          <View style={styles.shortcutStack}>
+          {/* Oct-19 Discover simplified mock: three horizontal shortcut
+              tiles (Swipe · My Picks · Watch Team). First one filled
+              yellow as the primary action; the other two outlined. */}
+          <View style={styles.shortcutRow}>
             {[
-              {
-                key: "swipe",
-                label: "Swipe",
-                desc: "Rate titles to shape your SceneDNA.",
-                icon: "layers" as const,
-                route: "/(tabs)/swipe" as const,
-              },
-              {
-                key: "my-picks",
-                label: "My Picks",
-                desc: "Your Ranked Favorites, lists and watched.",
-                icon: "bookmark" as const,
-                route: "/(tabs)/my-picks" as const,
-              },
-              {
-                key: "teams",
-                label: "Watch Teams",
-                desc: "Find something everyone wants to watch.",
-                icon: "people" as const,
-                route: "/(tabs)/teams" as const,
-              },
+              { key: "swipe", label: "Swipe", icon: "layers" as const, route: "/(tabs)/swipe" as const, primary: true },
+              { key: "my-picks", label: "My Picks", icon: "heart-outline" as const, route: "/(tabs)/my-picks" as const, primary: false },
+              { key: "teams", label: "Watch Team", icon: "people-outline" as const, route: "/(tabs)/teams" as const, primary: false },
             ].map((tile) => (
               <Pressable
                 key={tile.key}
-                style={({ pressed }) => [styles.shortcutCard, pressed && { opacity: 0.78 }]}
+                style={({ pressed }) => [
+                  styles.shortcutTile,
+                  tile.primary ? styles.shortcutTilePrimary : styles.shortcutTileOutline,
+                  pressed && { opacity: 0.78 },
+                ]}
                 onPress={() => {
                   trackEvent("discover_quick_nav", { destination: tile.key });
                   router.push(tile.route);
                 }}
               >
-                <View style={styles.shortcutIcon}>
-                  <Ionicons name={tile.icon} size={22} color={colors.accent} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={styles.shortcutLabel}>{tile.label}</Text>
-                  <Text style={styles.shortcutDesc}>{tile.desc}</Text>
-                </View>
-                <Ionicons name="chevron-forward" size={16} color={colors.muted2} />
+                <Ionicons
+                  name={tile.icon}
+                  size={22}
+                  color={tile.primary ? colors.background : colors.ink}
+                />
+                <Text
+                  style={[
+                    styles.shortcutTileLabel,
+                    tile.primary ? styles.shortcutTileLabelPrimary : styles.shortcutTileLabelOutline,
+                  ]}
+                  numberOfLines={1}
+                >
+                  {tile.label}
+                </Text>
               </Pressable>
             ))}
           </View>
@@ -1200,42 +1176,41 @@ const styles = StyleSheet.create({
     position: "relative",
     overflow: "hidden",
   },
-  shortcutStack: {
+  shortcutRow: {
+    flexDirection: "row",
+    gap: 8,
     paddingHorizontal: spacing.lg,
     paddingTop: 4,
     paddingBottom: spacing.sm,
-    gap: 8,
   },
-  shortcutCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-    padding: 14,
-    borderRadius: 12,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.14)",
-    backgroundColor: colors.surface,
-  },
-  shortcutIcon: {
-    width: 42,
-    height: 42,
-    borderRadius: 10,
-    backgroundColor: "rgba(255,230,0,0.08)",
+  shortcutTile: {
+    flex: 1,
+    aspectRatio: 1.05,
+    borderRadius: 14,
     alignItems: "center",
     justifyContent: "center",
+    gap: 8,
+  },
+  shortcutTilePrimary: {
+    backgroundColor: colors.accent,
+    borderWidth: 1.5,
+    borderColor: colors.accent,
+  },
+  shortcutTileOutline: {
+    backgroundColor: "transparent",
     borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,230,0,0.28)",
+    borderColor: "rgba(255,255,255,0.14)",
   },
-  shortcutLabel: {
-    fontFamily: fonts.sansBold,
+  shortcutTileLabel: {
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 13,
+    letterSpacing: 0.1,
+  },
+  shortcutTileLabelPrimary: {
+    color: colors.background,
+  },
+  shortcutTileLabelOutline: {
     color: colors.ink,
-    fontSize: 15,
-  },
-  shortcutDesc: {
-    marginTop: 2,
-    fontFamily: fonts.sans,
-    color: colors.muted,
-    fontSize: 12,
   },
   conciergeLandingPremium: {
     paddingTop: 8,
