@@ -93,7 +93,7 @@ def get_team_home(
     rankings = db.scalars(
         select(TeamRanking)
         .where(TeamRanking.team_id == team_id)
-        .order_by(TeamRanking.position.asc())
+        .order_by(TeamRanking.rank.asc())
         .limit(10)
     ).all()
     ranked_title_ids = [r.content_title_id for r in rankings]
@@ -104,7 +104,7 @@ def get_team_home(
         )
     }
     top_picks = [
-        _to_home_title(titles_map[r.content_title_id], rank=r.position)
+        _to_home_title(titles_map[r.content_title_id], rank=r.rank)
         for r in rankings
         if r.content_title_id in titles_map
     ]

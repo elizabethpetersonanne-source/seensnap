@@ -861,7 +861,9 @@ export default function DiscoverScreen() {
               is a section header + hero backdrop with title overlay +
               row of four portrait posters with uppercase captions. */}
 
-          {/* 1 · For You */}
+          {/* 1 · For You — explicitly SceneDNA-driven. Subtitle names
+              the signal when the backend returns because_you, so the
+              user can see WHY these picks surfaced. */}
           {(() => {
             const forYouModule = discoverFeed?.modules.find(
               (m) => m.type === "personalized_rail" || m.type === "because_you",
@@ -872,9 +874,13 @@ export default function DiscoverScreen() {
                 return forYouMedia === "movie" ? t === "movie" : t !== "movie";
               });
               const effective = items.length > 0 ? items : forYouModule.items;
+              const subtitle = forYouModule.type === "because_you"
+                ? `${forYouModule.label} — tuned to your SceneDNA`
+                : "Tuned to your SceneDNA";
               return (
                 <DiscoverSection
                   kicker="FOR YOU"
+                  subtitle={subtitle}
                   rightSlot={<MediaToggle value={forYouMedia} onChange={setForYouMedia} />}
                   hero={feedItemToDiscover(effective[0])}
                   four={effective.slice(1, 5).map(feedItemToDiscover)}

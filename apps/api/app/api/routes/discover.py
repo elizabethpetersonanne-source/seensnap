@@ -115,7 +115,7 @@ def discover_now_in_theaters(
     return TrendingResponse(
         source_mode="now_in_theaters",
         display_label=f"In theaters now · {region.upper()}",
-        generated_at=datetime.now(timezone.utc),
+        generated_at=datetime.now(timezone.utc).isoformat(),
         items=[_to_title_response(t) for t in titles],
     )
 
