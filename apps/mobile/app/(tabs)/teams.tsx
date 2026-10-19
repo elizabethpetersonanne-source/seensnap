@@ -889,79 +889,47 @@ export default function TeamsScreen() {
             </View>
           </View>
         ) : (
-          <View style={styles.teamsList}>
-            {/* Watch Teams brief §6 — compact "inbox of momentum" rows: team
-                name, member count + unread badge, latest event with time, and
-                a state indicator. Sorted server-side by last_activity_at so
-                the noisiest teams float up. Selected row still gets the accent
-                treatment; a live/active dot pulses when team_status === 'active'. */}
+          <View style={styles.cinematicTeamsList}>
+            {/* Oct-18 Watch Teams vision mock (step 1): large cinematic
+                team cards. Hero backdrop fills the card; team name sits
+                in the lower-left in serif; member avatars + count in a
+                sub-line. Tap opens the immersive Team Home. */}
             {teams.map((team) => {
-              const isActive = selectedTeamSummary?.id === team.id;
               const coverUri = resolveMediaUrl(team.cover_image);
-              const unread = team.unread_activity_count ?? 0;
-              const status = team.team_status ?? "quiet";
               return (
                 <Pressable
                   key={team.id}
-                  style={[styles.teamCard, isActive && styles.teamCardActive]}
+                  style={({ pressed }) => [styles.cinematicTeamCard, pressed && { opacity: 0.88 }]}
                   onPress={() => {
-                    // Oct-18 UI/UX rebuild: open the immersive Team
-                    // Home instead of the legacy tabbed detail view.
                     router.push({ pathname: "/teams/[teamId]/home", params: { teamId: team.id } });
                   }}
                   onLongPress={() => setSelectedTeamId(team.id)}
                 >
-                  <View style={styles.teamRow}>
-                    <View style={styles.teamRowThumb}>
-                      {coverUri ? (
-                        <Image source={{ uri: coverUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-                      ) : null}
-                      <View style={[StyleSheet.absoluteFill, styles.teamCardTint]} />
-                      <Text style={styles.teamRowThumbEmoji}>{team.icon || "🍿"}</Text>
-                    </View>
-                    <View style={styles.teamRowBody}>
-                      <View style={styles.teamRowHeader}>
-                        <Text numberOfLines={1} style={styles.teamCardName}>{team.name}</Text>
-                        {unread > 0 ? (
-                          <View style={styles.teamUnreadPill}>
-                            <Text style={styles.teamUnreadPillText}>
-                              {unread > 9 ? "9+" : String(unread)} new
-                            </Text>
-                          </View>
-                        ) : null}
-                      </View>
-                      <Text style={styles.teamRowMemberLine}>
+                  {coverUri ? (
+                    <Image source={{ uri: coverUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
+                  ) : (
+                    <View style={[StyleSheet.absoluteFill, styles.cinematicTeamFallback]} />
+                  )}
+                  <View style={styles.cinematicTeamShade} />
+                  <View style={styles.cinematicTeamBody}>
+                    <Text numberOfLines={1} style={styles.cinematicTeamName}>{team.name}</Text>
+                    <View style={styles.cinematicTeamMetaRow}>
+                      {team.recent_member_avatars.slice(0, 4).map((uri, idx) => (
+                        <Image
+                          key={`${team.id}-av-${idx}`}
+                          source={{ uri: resolveMediaUrl(uri) ?? uri }}
+                          style={[
+                            styles.cinematicTeamAvatar,
+                            { marginLeft: idx === 0 ? 0 : -8, zIndex: 4 - idx },
+                          ]}
+                        />
+                      ))}
+                      <Text style={styles.cinematicTeamMemberCount}>
                         {team.member_count} member{team.member_count === 1 ? "" : "s"}
-                        {team.recent_member_avatars.length > 0 ? "  ·  " : ""}
                       </Text>
-                      {team.latest_activity ? (
-                        <Text numberOfLines={1} style={styles.teamRowActivity}>
-                          {team.latest_activity}
-                          {team.last_activity_at ? `  ·  ${relativeTime(team.last_activity_at)}` : ""}
-                        </Text>
-                      ) : (
-                        <Text numberOfLines={1} style={styles.teamRowActivityMuted}>
-                          {team.description || "No activity yet"}
-                        </Text>
-                      )}
-                      {status === "active" ? (
-                        <View style={styles.teamRowStatusRow}>
-                          <Animated.View style={[styles.activeDot, { opacity: pulseAnim }]} />
-                          <Text style={styles.teamRowActiveText}>Active tonight</Text>
-                        </View>
-                      ) : status === "dormant" ? (
-                        <View style={styles.teamRowStatusRow}>
-                          <View style={styles.dormantDot} />
-                          <Text style={styles.teamRowDormantText}>Quiet lately</Text>
-                        </View>
-                      ) : null}
                     </View>
-                    {isActive && canManageTeam ? (
-                      <Pressable onPress={() => setShowEditTeam(true)} style={styles.editPill}>
-                        <Text style={styles.editPillText}>Edit</Text>
-                      </Pressable>
-                    ) : null}
                   </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.ink} style={styles.cinematicTeamChevron} />
                 </Pressable>
               );
             })}
@@ -1921,6 +1889,71 @@ const styles = StyleSheet.create({
     letterSpacing: 0.4,
     color: colors.muted,
     marginTop: 2,
+  },
+
+  // Oct-18 vision rebuild: cinematic team cards. Hero-backdrop fills
+  // the card; serif team name sits in the lower-left; member avatars
+  // + member count below.
+  cinematicTeamsList: {
+    gap: 12,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+  },
+  cinematicTeamCard: {
+    width: "100%",
+    aspectRatio: 16 / 9,
+    borderRadius: radii.lg,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceMuted,
+    position: "relative",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  cinematicTeamFallback: {
+    backgroundColor: colors.surfaceMuted,
+  },
+  cinematicTeamShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.42)",
+  },
+  cinematicTeamBody: {
+    position: "absolute",
+    left: spacing.md,
+    right: 48,
+    bottom: spacing.sm,
+    gap: 6,
+  },
+  cinematicTeamName: {
+    fontFamily: fonts.sansBold,
+    color: colors.ink,
+    fontSize: 22,
+    letterSpacing: -0.3,
+  },
+  cinematicTeamMetaRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  cinematicTeamAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: colors.surface,
+    borderWidth: 1.5,
+    borderColor: colors.background,
+  },
+  cinematicTeamMemberCount: {
+    marginLeft: 10,
+    fontFamily: fonts.monoMedium,
+    color: colors.ink,
+    fontSize: 11,
+    letterSpacing: 0.6,
+    opacity: 0.86,
+  },
+  cinematicTeamChevron: {
+    position: "absolute",
+    right: spacing.md,
+    bottom: spacing.md,
+    opacity: 0.86,
   },
 
   // Team cards — compact row layout per Watch Teams brief §6.
