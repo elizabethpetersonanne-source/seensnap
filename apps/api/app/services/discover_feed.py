@@ -332,6 +332,41 @@ def build_discover_feed(
         available_providers=available_providers,
     )
     signal_count = _signal_count_for(db, user_id)
+
+    # Self-healing: if the user has >= 10 real interactions (saves +
+    # ratings) but their computed signal_count is < 3, their signals
+    # are almost certainly stale. Force a recompute so they don't
+    # stay stuck in cold_start indefinitely.
+    try:
+        from app.models.social import Rating, WatchlistItem, Watchlist
+        from sqlalchemy import func as _func
+        rating_cnt = int(db.scalar(select(_func.count(Rating.id)).where(Rating.user_id == user_id)) or 0)
+        save_cnt = int(db.scalar(
+            select(_func.count(WatchlistItem.id))
+            .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+            .where(Watchlist.owner_user_id == user_id)
+        ) or 0)
+        interaction_total = rating_cnt + save_cnt
+        import logging as _logging
+        _logging.getLogger("seensnap.discover").info(
+            "discover_feed signal_state user=%s signals=%d ratings=%d saves=%d",
+            str(user_id), signal_count, rating_cnt, save_cnt,
+        )
+        if interaction_total >= 10 and signal_count < _STAGE_1_MIN_SIGNALS:
+            from app.services.user_signals import compute_user_signals as _recompute
+            _recompute(db, user_id)
+            # Re-count after recompute.
+            signal_count = _signal_count_for(db, user_id)
+            _logging.getLogger("seensnap.discover").info(
+                "discover_feed signal_state_after_recompute user=%s signals=%d",
+                str(user_id), signal_count,
+            )
+    except Exception as _exc:
+        import logging as _logging
+        _logging.getLogger("seensnap.discover").warning(
+            "discover_feed signal self-heal failed user=%s err=%s", str(user_id), _exc
+        )
+
     if signal_count < _STAGE_1_MIN_SIGNALS:
         user_stage = "cold_start"
     elif signal_count < _STAGE_2_MIN_SIGNALS:
