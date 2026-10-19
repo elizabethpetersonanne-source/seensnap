@@ -416,21 +416,45 @@ export default function SocialScreen() {
         }}
       />
 
-      {/* Feed | People sub-nav per People Discovery spec §5. Feed
-          remains the default; People opens the dedicated discovery
-          surface. Kept as a sub-nav (not a tab) so we don't add a
-          persistent bottom-nav destination for a browse experience. */}
-      <View style={styles.subNav}>
-        <View style={[styles.subNavPill, styles.subNavPillActive]}>
-          <Text style={styles.subNavPillTextActive}>Feed</Text>
+      {/* Feed | People sub-nav + inline actions. Find people + Create
+          post live here (not the global header) per the standardization
+          brief. */}
+      <View style={styles.socialSubRow}>
+        <View style={styles.subNav}>
+          <View style={[styles.subNavPill, styles.subNavPillActive]}>
+            <Text style={styles.subNavPillTextActive}>Feed</Text>
+          </View>
+          <Pressable
+            style={styles.subNavPill}
+            onPress={() => router.push("/social/people")}
+            accessibilityRole="button"
+          >
+            <Text style={styles.subNavPillText}>People</Text>
+          </Pressable>
         </View>
-        <Pressable
-          style={styles.subNavPill}
-          onPress={() => router.push("/social/people")}
-          accessibilityRole="button"
-        >
-          <Text style={styles.subNavPillText}>People</Text>
-        </Pressable>
+        <View style={styles.socialSubActions}>
+          <Pressable
+            onPress={() => setShowFindPeople((prev) => !prev)}
+            hitSlop={10}
+            style={styles.socialSubBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Find people to follow"
+          >
+            <Ionicons name="person-add-outline" size={18} color={colors.ink} />
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              setComposerError(null);
+              setShowComposer(true);
+            }}
+            hitSlop={10}
+            style={styles.socialSubBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Create a post"
+          >
+            <Ionicons name="create-outline" size={18} color={colors.ink} />
+          </Pressable>
+        </View>
       </View>
 
       {showFindPeople ? (
@@ -1166,12 +1190,31 @@ function formatPostType(post: SocialPost): string {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.background },
-  subNav: {
+  socialSubRow: {
     flexDirection: "row",
-    gap: 8,
+    alignItems: "center",
     paddingHorizontal: spacing.md,
     paddingTop: 4,
     paddingBottom: spacing.sm,
+    gap: 10,
+  },
+  socialSubActions: {
+    flexDirection: "row",
+    gap: 10,
+    marginLeft: "auto",
+  },
+  socialSubBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  subNav: {
+    flexDirection: "row",
+    gap: 8,
   },
   subNavPill: {
     paddingHorizontal: 14,

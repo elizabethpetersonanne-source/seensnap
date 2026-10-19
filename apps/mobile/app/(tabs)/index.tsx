@@ -911,7 +911,7 @@ export default function DiscoverScreen() {
             return (
               <DiscoverSection
                 kicker="TRENDING"
-                subtitle="This week on TMDB"
+                subtitle="Popular this week"
                 rightSlot={<MediaToggle value={trendingMedia} onChange={setTrendingMedia} />}
                 hero={titleItemToDiscover(effective[0])}
                 four={effective.slice(1, 5).map(titleItemToDiscover)}

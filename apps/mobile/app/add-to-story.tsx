@@ -59,7 +59,7 @@ export default function AddToStoryScreen() {
     const handle = setTimeout(async () => {
       try {
         const res = await apiRequest<{ movies: SearchItem[]; series: SearchItem[] }>(
-          `/search?q=${encodeURIComponent(query.trim())}`,
+          `/search/global?q=${encodeURIComponent(query.trim())}`,
           { token: sessionToken },
         );
         if (cancelled) return;
