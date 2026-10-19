@@ -26,6 +26,7 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AppHeader } from "@/components/headers/app-header";
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { EmptyView, LoadingView } from "@/components/state-views";
@@ -238,11 +239,8 @@ export default function MyPicksScreen() {
   const activeCategoryLabel = CATEGORIES.find((c) => c.key === activeCategory)?.label ?? "";
 
   return (
-    <SafeAreaView style={styles.root} edges={["top"]}>
-      <View style={[styles.header, { paddingTop: 8 }]}>
-        <Ionicons name="camera-outline" size={18} color={colors.accent} />
-        <Text style={styles.headerTitle}>My Picks</Text>
-      </View>
+    <SafeAreaView style={styles.root} edges={[]}>
+      <AppHeader variant="primary" title="My Picks" />
       <View style={styles.sectionKicker}>
         <Text style={styles.sectionKickerLabel}>{activeCategoryLabel.toUpperCase()}</Text>
         <Ionicons name="chevron-forward" size={14} color={colors.accent} style={{ marginLeft: 4 }} />
@@ -367,12 +365,10 @@ const styles = StyleSheet.create({
     fontSize: 15,
   },
   sectionKicker: {
-    position: "absolute",
-    top: 48,
-    left: spacing.lg,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: 4,
     flexDirection: "row",
     alignItems: "center",
-    zIndex: 10,
   },
   sectionKickerLabel: {
     fontFamily: fonts.monoSemiBold,

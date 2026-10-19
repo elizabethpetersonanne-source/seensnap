@@ -22,6 +22,7 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AppHeader } from "@/components/headers/app-header";
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { EmptyView, LoadingView } from "@/components/state-views";
@@ -166,26 +167,33 @@ export default function TeamHomeScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.root} edges={["top"]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <View style={styles.headerCenter}>
-          <Text style={styles.headerTitle} numberOfLines={1}>{data?.team_name ?? "Team"}</Text>
-          {data ? (
-            <Text style={styles.headerSub}>{data.member_count} member{data.member_count === 1 ? "" : "s"}</Text>
-          ) : null}
-        </View>
-        <Pressable
-          onPress={() => router.push({ pathname: "/(tabs)/teams" })}
-          hitSlop={10}
-          style={styles.settingsBtn}
-          accessibilityLabel="Team settings"
-        >
-          <Ionicons name="settings-outline" size={20} color={colors.muted} />
-        </Pressable>
-      </View>
+    <SafeAreaView style={styles.root} edges={[]}>
+      {/* Oct-19 Header Standardization — detail variant: Back + team
+          name + Team settings right-slot. Member summary moves into
+          the content below. */}
+      <AppHeader
+        variant="detail"
+        leftKind="back"
+        title={data?.team_name ?? "Team"}
+        rightSlot={
+          <Pressable
+            onPress={() => {
+              if (!teamId) return;
+              router.push({ pathname: "/(tabs)/teams" });
+            }}
+            hitSlop={10}
+            accessibilityRole="button"
+            accessibilityLabel="Team settings"
+          >
+            <Ionicons name="settings-outline" size={22} color={colors.muted} />
+          </Pressable>
+        }
+      />
+      {data ? (
+        <Text style={styles.memberSummary}>
+          {data.member_count} member{data.member_count === 1 ? "" : "s"}
+        </Text>
+      ) : null}
 
       {loading && !data ? (
         <LoadingView height={sectionHeight} />
@@ -254,6 +262,14 @@ const styles = StyleSheet.create({
   root: {
     flex: 1,
     backgroundColor: "#000",
+  },
+  memberSummary: {
+    fontFamily: fonts.mono,
+    color: colors.muted2,
+    fontSize: 11,
+    letterSpacing: 0.4,
+    textAlign: "center",
+    paddingBottom: 4,
   },
   header: {
     flexDirection: "row",

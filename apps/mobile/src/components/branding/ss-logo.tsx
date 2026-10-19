@@ -1,18 +1,20 @@
 import { Image, StyleSheet, View, type ImageStyle, type StyleProp, type ViewStyle } from "react-native";
 
 /**
- * Canonical SeenSnap logo. Uses the real PNG assets — never redraw or text-approximate.
+ * Canonical SeenSnap logo.
  *
  * variants:
- *   - "gold"     — full mark on transparent (camera+play mark + "SeenSnap" wordmark + tagline). Use on dark hero surfaces.
- *   - "white"    — same layout, white. Use over rich imagery where gold would clash.
- *   - "mark"     — icon-only (crop from full logo via width; height controls). For nav bars, tight spaces.
+ *   - "gold"  — full stacked lockup (camera+play mark + "SeenSnap" wordmark + tagline). Welcome / sign-in / share graphics only.
+ *   - "white" — same lockup, white. Over rich imagery where gold would clash.
+ *   - "mark"  — icon-only camera/play glyph for the app bar. Rendered as an inline
+ *               vector so it's crisp at any size and never clips a stacked raster.
  *
- * sizes: "sm" (24), "md" (32), "lg" (44), "xl" (64), or explicit numeric height.
+ * `size` always refers to the VISIBLE mark size. The surrounding slot
+ * in AppHeader owns the touch target.
+ *
+ * sizes: "sm" (20), "md" (28), "lg" (40), "xl" (60), or explicit numeric height.
  */
 
-// Actual PNG asset registry — matches files at apps/mobile/assets/branding/
-// Both gold and white variants are the same layout (mark above wordmark); pick by canvas contrast.
 const ASSETS = {
   gold: require("../../../assets/branding/seensnap-logo-gold.png"),
   white: require("../../../assets/branding/seensnap-logo-white-v2.png"),
@@ -32,34 +34,93 @@ export function SSLogo({
   variant = "gold",
   size = "md",
   style,
+  color,
 }: {
   variant?: SSLogoVariant;
   size?: SSLogoSize;
   style?: StyleProp<ImageStyle | ViewStyle>;
+  color?: string;
 }) {
   const heightPx = typeof size === "number" ? size : SIZE_MAP[size];
-  // The full-logo PNGs are ~2000 × 1200 (roughly 1.67:1). The mark alone (top ~55%) is ~1:1.
-  // For "mark" variant, we clip the wordmark by rendering the same source cropped.
-  const isMarkOnly = variant === "mark";
-  const src = variant === "white" ? ASSETS.white : ASSETS.gold;
-  const aspectRatio = isMarkOnly ? 1 : 1.67;
-  const width = heightPx * aspectRatio;
 
-  if (isMarkOnly) {
-    // Render only the top 55% of the source (the camera+play mark) via a clipped container.
-    // The full source is ~1.67:1; the mark occupies roughly the upper 55% square.
-    const containerH = heightPx;
-    const sourceH = heightPx * (1 / 0.55); // scale up so 55% == our target height
+  if (variant === "mark") {
+    const tint = color ?? "#FFE600";
+    // Inline vector camera+play glyph. The brief flagged raster
+    // clipping as unreliable; building the mark from primitives means
+    // the visible icon size equals `heightPx` with no cropping math.
+    const bodyR = Math.round(heightPx * 0.18);
+    const lensR = Math.round(heightPx * 0.24);
+    const triW = Math.round(heightPx * 0.2);
+    const triH = Math.round(heightPx * 0.22);
+    const strokeW = Math.max(2, Math.round(heightPx * 0.08));
     return (
-      <View style={[{ width: containerH, height: containerH, overflow: "hidden" }, style]}>
-        <Image
-          source={src}
-          style={{ width: containerH, height: sourceH, resizeMode: "cover" }}
+      <View style={[{ width: heightPx, height: heightPx, position: "relative" }, style]}>
+        {/* Viewfinder bump on top */}
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            left: heightPx * 0.3,
+            width: heightPx * 0.4,
+            height: heightPx * 0.18,
+            borderTopLeftRadius: bodyR * 0.6,
+            borderTopRightRadius: bodyR * 0.6,
+            borderWidth: strokeW,
+            borderBottomWidth: 0,
+            borderColor: tint,
+          }}
+        />
+        {/* Camera body */}
+        <View
+          style={{
+            position: "absolute",
+            top: heightPx * 0.17,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            borderRadius: bodyR,
+            borderWidth: strokeW,
+            borderColor: tint,
+          }}
+        />
+        {/* Lens ring */}
+        <View
+          style={{
+            position: "absolute",
+            top: heightPx / 2 - lensR + heightPx * 0.05,
+            left: heightPx / 2 - lensR,
+            width: lensR * 2,
+            height: lensR * 2,
+            borderRadius: lensR,
+            borderWidth: strokeW,
+            borderColor: tint,
+          }}
+        />
+        {/* Play triangle inside lens */}
+        <View
+          style={{
+            position: "absolute",
+            top: heightPx / 2 - triH / 2 + heightPx * 0.05,
+            left: heightPx / 2 - triW * 0.35,
+            width: 0,
+            height: 0,
+            borderStyle: "solid",
+            borderLeftWidth: triW,
+            borderTopWidth: triH / 2,
+            borderBottomWidth: triH / 2,
+            borderLeftColor: tint,
+            borderTopColor: "transparent",
+            borderBottomColor: "transparent",
+          }}
         />
       </View>
     );
   }
 
+  // Full stacked lockup — welcome / sign-in / share graphics only.
+  const aspectRatio = 1.67;
+  const width = heightPx * aspectRatio;
+  const src = variant === "white" ? ASSETS.white : ASSETS.gold;
   return (
     <Image source={src} style={[styles.full, { width, height: heightPx } as ImageStyle, style as StyleProp<ImageStyle>]} />
   );

@@ -413,7 +413,7 @@ function IdentityPage({
             {profile.compatibility ? (
               <View style={styles.counterCol}>
                 <Text style={[styles.counterValue, { color: colors.accent }]}>
-                  {Math.round(profile.compatibility.compatibility * 100)}%
+                  {Math.round(profile.compatibility.compatibility)}%
                 </Text>
                 <Text style={styles.counterLabel}>SceneDNA with you</Text>
               </View>

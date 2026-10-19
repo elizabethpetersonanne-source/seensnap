@@ -104,7 +104,7 @@ async function fetchPicksCollectionsLegacy(token: string): Promise<PicksCollecti
     name: summary.name,
     description: summary.description ?? null,
     is_default: summary.is_default,
-    titles: (res?.items ?? []).slice(0, 5).map((item) => ({
+    titles: (res?.items ?? []).map((item) => ({
       id: item.title.id,
       title: item.title.title,
       poster_url: item.title.poster_url ?? null,

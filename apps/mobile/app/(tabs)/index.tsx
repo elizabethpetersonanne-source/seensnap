@@ -18,7 +18,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { SSAnimatedRule } from "@/components/ss-animated-rule";
 import { SSMotionBackdrop } from "@/components/ss-motion-backdrop";
-import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { AppHeader } from "@/components/headers/app-header";
 import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 
 import { UniversalTitleModal } from "@/components/universal-title-modal";
@@ -608,29 +608,24 @@ export default function DiscoverScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["left", "right"]}>
-      {/* Unified Header System brief §7 taxonomy — H1 reinforces navigation.
-          "What's next?" moved to Swipe (where it belongs); Discover's H1 IS
-          "Discover" so the tab bar and page title agree. Same SeenSnapHeader
-          instance used everywhere. */}
-      <SeenSnapHeader
+      {/* Oct-19 Header Standardization brief: shared compact AppHeader.
+          No photographic banner; Concierge is the leading content
+          feature just below. Right slot routes to the OWN profile
+          (not settings) per the brief's screen-by-screen contract. */}
+      <AppHeader
+        variant="primary"
         title="Discover"
-        artworkSource={trendingBackdrop}
-        scrollY={scrollY}
-        fallbackSeed={1}
-        contextualAction={
+        rightSlot={
           <Pressable
-            onPress={() => router.push("/(tabs)/settings")}
+            onPress={() => user?.user_id && router.push(`/profile/${user.user_id}`)}
             hitSlop={10}
             accessibilityRole="button"
             accessibilityLabel="Open your profile"
           >
-            {/* Oct-18 build brief §4: Profile is reached from the
-                Discover avatar (top right) + contextual identity
-                links. No Profile tab in the bottom bar. */}
             <Avatar
               uri={user?.avatar_url ?? null}
               label={user?.display_name ?? user?.email ?? ""}
-              size={28}
+              size={30}
             />
           </Pressable>
         }

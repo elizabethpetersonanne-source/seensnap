@@ -167,15 +167,15 @@ export function FullBleedPosterSection({
         </View>
       ) : null}
 
-      {/* Continuation strip pinned to the bottom. Horizontally
-          scrollable when more than 4 — brief §5 "Horizontal movement
+      {/* Continuation strip pinned to the bottom. Always horizontally
+          scrollable so whether there are 2 or 20 titles the layout +
+          interaction is identical. Brief §5: "Horizontal movement
           continues the smaller-poster sequence." */}
       {smallList.length > 0 ? (
-        scrolls ? (
+        <View style={[styles.continuationScrollWrap, { height: smallHeight + 40, bottom: spacing.sm }]}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}
-            style={[styles.continuationScroll, { bottom: spacing.sm }]}
             contentContainerStyle={styles.continuationScrollContent}
           >
             {smallList.map((t, idx) => (
@@ -202,33 +202,7 @@ export function FullBleedPosterSection({
               </Pressable>
             ))}
           </ScrollView>
-        ) : (
-          <View style={[styles.continuationRow, { bottom: spacing.sm }]}>
-            {smallList.map((t, idx) => (
-              <Pressable
-                key={t.id}
-                onPress={() => onPressContinuation?.(t, idx)}
-                style={[styles.continuationCard, { width: smallWidth }]}
-              >
-                {t.rank_label ? (
-                  <Text style={styles.continuationRankAbove} numberOfLines={1}>
-                    {t.rank_label.replace(/^#/, "")}
-                  </Text>
-                ) : null}
-                <View style={{ width: smallWidth, height: smallHeight }}>
-                  {t.poster_url ? (
-                    <Image source={{ uri: t.poster_url }} style={styles.continuationPoster} resizeMode="cover" />
-                  ) : (
-                    <View style={[styles.continuationPoster, styles.continuationFallback]}>
-                      <Ionicons name="film-outline" size={16} color={colors.muted2} />
-                    </View>
-                  )}
-                </View>
-                <Text style={styles.continuationCaption} numberOfLines={1}>{t.title}</Text>
-              </Pressable>
-            ))}
-          </View>
-        )
+        </View>
       ) : null}
     </View>
   );
@@ -352,7 +326,7 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
     zIndex: 2,
   },
-  continuationScroll: {
+  continuationScrollWrap: {
     position: "absolute",
     left: 0,
     right: 0,

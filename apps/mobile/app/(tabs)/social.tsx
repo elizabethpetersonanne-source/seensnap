@@ -40,7 +40,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "@/components/avatar";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { SendToUserSheet } from "@/components/send-to-user-sheet";
-import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { AppHeader } from "@/components/headers/app-header";
 import { relativeTime } from "@/lib/format";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -401,40 +401,11 @@ export default function SocialScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={[]}>
-      {/* Unified Header §7 — H1 "Social", editorial subtitle. Backdrop
-          cycles through the shared trending pool so the header has real
-          artwork weight matching Discover / SceneDNA / Teams. */}
-      <SeenSnapHeader
-        title="Social"
-        subtitle="People whose taste you care about."
-        artworkSource={socialCyclingBackdrop ?? socialFallbackBackdrop}
-        fallbackSeed={9}
-        contextualAction={
-          <View style={{ flexDirection: "row", gap: 12 }}>
-            <Pressable
-              onPress={() => setShowFindPeople((prev) => !prev)}
-              hitSlop={10}
-              style={styles.contextualBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Find people to follow"
-            >
-              <Ionicons name="person-add-outline" size={18} color={colors.ink} />
-            </Pressable>
-            <Pressable
-              onPress={() => {
-                setComposerError(null);
-                setShowComposer(true);
-              }}
-              hitSlop={10}
-              style={styles.contextualBtn}
-              accessibilityRole="button"
-              accessibilityLabel="Create a post"
-            >
-              <Ionicons name="create-outline" size={18} color={colors.ink} />
-            </Pressable>
-          </View>
-        }
-      />
+      {/* Oct-19 Header Standardization — compact shared app bar. Find
+          People + Create Post relocated into the Social content below
+          per the brief's "preserve Find People and Create Post in the
+          Social content's actions/menu, not a crowded global header." */}
+      <AppHeader variant="primary" title="Social" />
 
       {/* Feed | People sub-nav per People Discovery spec §5. Feed
           remains the default; People opens the dedicated discovery

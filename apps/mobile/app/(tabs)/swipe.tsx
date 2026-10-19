@@ -20,7 +20,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
-import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { AppHeader } from "@/components/headers/app-header";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { selectSafeBackdrop } from "@/lib/backdrop";
 import { useFallbackBackdrop } from "@/lib/backdrop-pool";
@@ -918,19 +918,17 @@ export default function SwipeTab() {
           variant="standard" and pass NO artworkSource so it collapses to
           the minimum shell height without a photographic banner —
           poster is the workspace's focal element, not the header. */}
-      {/* Shared header — removed entirely on narrow (mobile) modes
-          per product ask "get rid of the header on swipe so the
-          poster is bigger". Wide modes still render the header for
-          nav parity with the other primary tabs. */}
-      {!isNarrow ? (
-        <SeenSnapHeader
-          variant="standard"
-          title=""
-          subtitle=""
-          artworkSource={headerArtwork}
-          fallbackSeed={3}
-        />
-      ) : null}
+      {/* Oct-19 Header Standardization — shared immersive AppHeader
+          on every width. Mark + SWIPE/PREVIEW selector + empty right.
+          Switching between Swipe and Preview uses the same selector
+          instance, so metrics and alignment stay consistent. */}
+      <AppHeader
+        variant="immersive"
+        mode="swipe"
+        onModeChange={(next) => {
+          if (next === "preview") router.push("/previews");
+        }}
+      />
       <ScrollView
         contentContainerStyle={[
           styles.workspaceScroll,
@@ -955,29 +953,8 @@ export default function SwipeTab() {
               toggle back. Independent queues + positions per mode are
               preserved by leaving each screen mounted through the tabs
               layout — switching modes never resets the other's queue. */}
-          {/* Vision-mock centered SWIPE | PREVIEWS selector per
-              Visual Design brief §8. Gold underline on active, no
-              background chip. Spans the top of the workspace. */}
-          <View style={styles.modeSelectorRow}>
-            <View style={styles.modeSelector}>
-              <Pressable
-                style={styles.modeOption}
-                accessibilityRole="button"
-                accessibilityLabel="Swipe is active"
-              >
-                <Text style={styles.modeOptionLabelActive}>SWIPE</Text>
-                <View style={styles.modeOptionUnderline} />
-              </Pressable>
-              <Pressable
-                style={styles.modeOption}
-                onPress={() => router.push("/previews")}
-                accessibilityRole="button"
-                accessibilityLabel="Switch to Previews"
-              >
-                <Text style={styles.modeOptionLabel}>PREVIEWS</Text>
-              </Pressable>
-            </View>
-          </View>
+          {/* SWIPE | PREVIEWS selector now lives in the shared
+              AppHeader above — don't duplicate it here. */}
           <CategoryChips
             value={categoryFilter}
             onChange={(next) => {

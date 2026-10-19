@@ -37,6 +37,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import YouTubePlayerComponent from "@/components/youtube-player";
 
+import { AppHeader } from "@/components/headers/app-header";
 import { CategoryChips, type CategoryFilter } from "@/components/category-chips";
 import { OutlineActionRail } from "@/components/outline-action-rail";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
@@ -284,30 +285,18 @@ export default function PreviewsScreen() {
   const emptyState = !loading && !error && items.length === 0;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      {/* Mirror-image Swipe|Previews mode toggle per Sep-22 brief §1.
-          Tapping Swipe returns to the /swipe route without unmounting
-          Previews' queue (both screens live in the same tabs stack). */}
-      <View style={styles.modeToggleRow}>
-        <Pressable
-          style={styles.modeChip}
-          onPress={() => router.push("/swipe")}
-          accessibilityRole="button"
-          accessibilityLabel="Switch to Swipe"
-        >
-          <Ionicons name="layers-outline" size={14} color={colors.ink} />
-          <Text style={styles.modeChipText}>Swipe</Text>
-        </Pressable>
-        <View style={[styles.modeChip, styles.modeChipActive]}>
-          <Ionicons name="play-circle" size={14} color={colors.background} />
-          <Text style={styles.modeChipTextActive}>Previews</Text>
-        </View>
-      </View>
-      {/* Category chips row — same component the Swipe screen uses so
-          filter semantics are identical across the two discovery modes.
-          Positioned as a floating overlay so it doesn't shrink the
-          paging viewport. */}
-      <View style={[styles.categoryOverlay, { top: insets.top + 12 + 40 + 36 }]}>
+    <SafeAreaView style={styles.safeArea} edges={[]}>
+      {/* Oct-19 Header Standardization: shared immersive AppHeader.
+          Same selector instance + metrics as Swipe. */}
+      <AppHeader
+        variant="immersive"
+        mode="preview"
+        onModeChange={(next) => {
+          if (next === "swipe") router.push("/swipe");
+        }}
+      />
+      {/* Category chips below the header. No magic absolute offsets. */}
+      <View style={styles.categoryOverlay}>
         <CategoryChips value={categoryFilter} onChange={setCategoryFilter} />
       </View>
       {loading ? (
@@ -442,7 +431,7 @@ export default function PreviewsScreen() {
           Hidden when loading / empty / error. */}
       {!loading && !error && items.length > 0 ? (
         <>
-          <View style={[styles.positionBadge, { top: insets.top + 12 + 40 }]}>
+          <View style={[styles.positionBadge, { top: insets.top + 56 + 48 + 8 }]}>
             <Text style={styles.positionBadgeText}>
               {activeIndex + 1} / {items.length}
             </Text>
@@ -525,9 +514,8 @@ const styles = StyleSheet.create({
     zIndex: 10,
   },
   categoryOverlay: {
-    position: "absolute",
-    left: 12,
-    right: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     zIndex: 9,
   },
   modeChip: {

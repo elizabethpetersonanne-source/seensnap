@@ -163,12 +163,15 @@ def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksC
     ).all()
     my_lists: list[PickList] = []
     for wl in list_rows:
-        preview = db.execute(
+        # Return the full list so the mobile My Lists tab can show
+        # every title in the horizontal continuation strip, not just
+        # a 5-poster preview.
+        items = db.execute(
             select(WatchlistItem, ContentTitle)
             .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
             .where(WatchlistItem.watchlist_id == wl.id)
             .order_by(WatchlistItem.created_at.desc())
-            .limit(5)
+            .limit(200)
         ).all()
         my_lists.append(
             PickList(
@@ -176,7 +179,7 @@ def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksC
                 name=wl.name,
                 description=wl.description,
                 is_default=bool(wl.is_default),
-                titles=[_title_to_pick(t) for _, t in preview],
+                titles=[_title_to_pick(t) for _, t in items],
             )
         )
 

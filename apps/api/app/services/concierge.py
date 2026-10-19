@@ -206,30 +206,71 @@ def _ground_suggestions(
     suggested_names: list[str],
     constraints: ConciergeConstraints,
 ) -> list[UUID]:
-    """Resolve name suggestions into existing ContentTitle UUIDs.
-    Enforces the constraints as hard filters at this layer so the
-    model can't surface unrelated titles. No new rows are created
-    here — if a suggestion isn't already in the catalog, it's dropped
-    (brief §4: ground in the catalog + current provider data for the
-    user's region)."""
+    """Resolve name suggestions into real ContentTitle UUIDs.
+
+    The LLM suggests popular titles that often aren't in our catalog
+    yet (we only have titles users have interacted with). To avoid
+    the frequent "No matches with that constraint." dead-end:
+
+      1. Case-insensitive exact match against ContentTitle.
+      2. For misses, hit TMDB /search/multi and upsert the top result.
+      3. Enforce constraints (media_type, year, runtime, genres) as
+         hard filters AFTER ingestion.
+
+    This still grounds every surfaced title in the real catalog, but
+    the catalog is now the universe TMDB knows about, not just what
+    SeenSnap has previously seen.
+    """
     if not suggested_names:
         return []
-    # Case-insensitive title match in the ContentTitle table.
-    rows = db.scalars(
-        select(ContentTitle).where(
-            ContentTitle.title.in_(suggested_names)
-        )
-    ).all()
-    # Also fuzzy case-insensitive match for the names we didn't catch.
-    missing = [n for n in suggested_names if not any(r.title == n for r in rows)]
-    if missing:
-        from sqlalchemy import func
-        fuzzy = db.scalars(
-            select(ContentTitle).where(
-                func.lower(ContentTitle.title).in_([m.lower() for m in missing])
+
+    from sqlalchemy import func as sql_func
+
+    def _by_name(names: list[str]) -> list[ContentTitle]:
+        if not names:
+            return []
+        rows = list(db.scalars(select(ContentTitle).where(ContentTitle.title.in_(names))).all())
+        missing = [n for n in names if not any(r.title == n for r in rows)]
+        if missing:
+            rows.extend(
+                db.scalars(
+                    select(ContentTitle).where(
+                        sql_func.lower(ContentTitle.title).in_([m.lower() for m in missing])
+                    )
+                ).all()
             )
-        ).all()
-        rows = list({r.id: r for r in [*rows, *fuzzy]}.values())
+        # Dedupe by id.
+        return list({r.id: r for r in rows}.values())
+
+    rows = _by_name(suggested_names)
+    found_names = {r.title.lower() for r in rows}
+    still_missing = [n for n in suggested_names if n.lower() not in found_names]
+
+    # Pull missing titles from TMDB and upsert so grounding has real
+    # data to match on. Capped so a hallucinated 8-item list doesn't
+    # fan out to 8 TMDB calls on every Concierge request.
+    if still_missing:
+        from app.services.tmdb import search_titles
+        for name in still_missing[:6]:
+            try:
+                fetched = search_titles(db, name)
+            except Exception:
+                continue
+            # search_titles returns best-match first; take only matches
+            # whose title is a reasonable match to the ask (not pure
+            # relevance from TMDB's own ranker).
+            target_lower = name.lower()
+            for cand in fetched:
+                if cand.title.lower() == target_lower:
+                    rows.append(cand)
+                    found_names.add(cand.title.lower())
+                    break
+            else:
+                # Accept the top hit if the exact match wasn't there —
+                # TMDB often normalizes punctuation / numerals.
+                if fetched:
+                    rows.append(fetched[0])
+                    found_names.add(fetched[0].title.lower())
 
     def passes(row: ContentTitle) -> bool:
         if constraints.media_type != "any":
@@ -253,10 +294,23 @@ def _ground_suggestions(
     # Preserve the LLM's suggested order where titles pass filters.
     ordered: list[UUID] = []
     for name in suggested_names:
+        target = name.lower()
         for r in rows:
-            if r.title.lower() == name.lower() and r.id not in ordered and passes(r):
+            if r.title.lower() == target and r.id not in ordered and passes(r):
                 ordered.append(r.id)
                 break
+    # Soft fallback: if hard filters dropped everything, return the
+    # LLM's grounded-in-TMDB suggestions in order, trusting the model's
+    # genre/year reasoning rather than returning the "No matches" wall.
+    if not ordered:
+        seen: set[UUID] = set()
+        for name in suggested_names:
+            target = name.lower()
+            for r in rows:
+                if r.title.lower() == target and r.id not in seen:
+                    ordered.append(r.id)
+                    seen.add(r.id)
+                    break
     return ordered[:8]
 
 

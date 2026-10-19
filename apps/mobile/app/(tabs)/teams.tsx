@@ -24,7 +24,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "@/components/avatar";
 import { RatingCircle, RatingPicker } from "@/components/rating";
 import { SSMotionBackdrop } from "@/components/ss-motion-backdrop";
-import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { AppHeader } from "@/components/headers/app-header";
 import { useCyclingBackdrop, useFallbackBackdrop } from "@/lib/backdrop-pool";
 import { relativeTime as sharedRelativeTime } from "@/lib/format";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
@@ -821,36 +821,22 @@ export default function TeamsScreen() {
     <SafeAreaView style={styles.safeArea} edges={[]}>
       <ScrollView contentContainerStyle={styles.content}>
 
-        {/* Unified Header §7 + §14 — H1 "Watch Teams" (overview page).
-             Team-name subtitle removed from the global hero; team names
-             appear when the user opens a specific team. Contextual '+'
-             action sits in the reserved slot before Search/Bell. */}
-        <SeenSnapHeader
-          title="Watch Teams"
-          subtitle="Find something everyone wants to watch."
-          artworkSource={teamsPrimaryBackdrop ?? teamsFallbackBackdrop}
-          fallbackSeed={5}
-          contextualAction={
+        {/* Oct-19 Header Standardization — compact shared app bar.
+            Right slot is the actual team-creation action. */}
+        <AppHeader
+          variant="primary"
+          title="Teams"
+          rightSlot={
             <Pressable
               onPress={() => setShowCreate(true)}
               hitSlop={10}
-              style={styles.iconBtn}
+              accessibilityRole="button"
+              accessibilityLabel="Create a Watch Team"
             >
-              <Ionicons name="add" size={20} color={colors.ink} />
+              <Ionicons name="add" size={22} color={colors.ink} />
             </Pressable>
           }
         />
-        {/* Old-header container kept for the join-code button + energy row below the hero. */}
-        <View style={styles.headerWrap}>
-          <View style={styles.header}>
-            <View />
-            <View style={styles.headerActions}>
-              <Pressable style={styles.iconBtn} onPress={() => setShowJoin(true)}>
-                <Ionicons name="people-outline" size={18} color={colors.ink} />
-              </Pressable>
-            </View>
-          </View>
-        </View>
 
         {/* Tonight's Energy — Watch Teams brief §5. Two-line summary: mood
             (derived from recent reactions) + concrete activity attribution so
