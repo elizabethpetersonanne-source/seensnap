@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from app.api.routes import activity, analytics, auth, collections, concierge, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, previews, profiles, ratings, recommendations, scene_dna, search, share_asset, shares, snips, social, teams, title_state, titles, watch_handoff, watch_options, watchlist
+from app.api.routes import activity, analytics, auth, collections, concierge, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, picks, previews, profiles, ratings, recommendations, scene_dna, search, share_asset, shares, snips, social, team_home, teams, title_state, titles, watch_handoff, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
@@ -70,3 +70,10 @@ api_router.include_router(watch_handoff.router, prefix="/me/handoffs", tags=["ha
 # Share asset — Oct-18 build brief §6. Image renderer boundary with
 # honest unavailable state when no provider is configured.
 api_router.include_router(share_asset.router, prefix="/me/share-assets", tags=["share-assets"])
+# My Picks — Oct-18 UI/UX rebuild. Returns the five collections rendered
+# by the My Picks screen in one call.
+api_router.include_router(picks.router, prefix="/me/picks", tags=["picks"])
+# Team Home — Oct-18 UI/UX rebuild. Immersive full-screen team home;
+# returns top_picks / recently_added / both_want_to_watch / watched
+# in one call.
+api_router.include_router(team_home.router, prefix="/teams", tags=["teams"])

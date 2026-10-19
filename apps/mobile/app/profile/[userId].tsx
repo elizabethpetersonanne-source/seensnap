@@ -1,32 +1,43 @@
+/**
+ * Oct-18 UI/UX rebuild: immersive public profile pod.
+ *
+ * Spec image 1. Five vertical pages:
+ *   1. Identity hero (avatar + name + bio + counters + MY TOP 4 strip)
+ *   2. Ranked Favorites — full-screen hero #1 + 4 continuation
+ *   3. Public Lists — full-screen hero list + 4 continuation
+ *   4. Recent Activity — full-screen hero post + reactions
+ *   5. Back to Profile (loops to page 1)
+ *
+ * Each page snaps to the viewport, so the whole pod reads as one
+ * curated story. Uses existing profile endpoints — this file replaces
+ * the earlier non-immersive profile card.
+ */
 import { Ionicons } from "@expo/vector-icons";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useCallback, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
-  Animated,
+  FlatList,
   Image,
   Pressable,
-  SafeAreaView,
   ScrollView,
+  Share,
   StyleSheet,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
-import { useFocusEffect } from "@react-navigation/native";
-import { useLocalSearchParams, useRouter } from "expo-router";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Avatar } from "@/components/avatar";
-import { SaveToListSheet } from "@/components/save-to-list-sheet";
+import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
+import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 
-type Compatibility = {
-  compatibility: number;
-  top_shared_genres: string[];
-  summary?: string | null;
-};
 
 type PublicProfile = {
   user_id: string;
@@ -44,7 +55,28 @@ type PublicProfile = {
   profile_summary?: string | null;
   current_obsessions: Array<{ title_name: string; poster_url?: string | null }>;
   top_posters: string[];
-  compatibility?: Compatibility | null;
+  compatibility?: { compatibility: number; top_shared_genres: string[]; summary?: string | null } | null;
+};
+
+type RankedRow = {
+  position: number;
+  title_id: string;
+  tmdb_id: number;
+  title: string;
+  poster_url: string | null;
+  year: number | null;
+  media_type: string;
+  personal_score: number | null;
+  version: number;
+};
+
+type PublicList = {
+  list_id: string;
+  name: string;
+  description: string | null;
+  item_count: number;
+  share_token: string;
+  preview_posters: string[];
 };
 
 type PublicPost = {
@@ -57,879 +89,772 @@ type PublicPost = {
   created_at: string;
 };
 
-type PublicList = {
-  list_id: string;
-  name: string;
-  description: string | null;
-  item_count: number;
-  share_token: string;
-  preview_posters: string[];
-};
 
-type Personality = { archetype: string; tagline: string; accentColor: string };
+type PageKey = "identity" | "ranked" | "lists" | "activity" | "loop";
 
-function derivePersonality(bio: string | null | undefined): Personality {
-  const b = (bio ?? "").toLowerCase();
-  if (b.includes("slow cinema") || b.includes("long take") || b.includes("auteur"))
-    return { archetype: "The Auteur", tagline: "Studying every frame.", accentColor: "#5c7cfa" };
-  if (b.includes("award") || b.includes("prestige"))
-    return { archetype: "The Prestige Purist", tagline: "Spiraling through awards bait.", accentColor: "#f4c430" };
-  if (b.includes("horror") || b.includes("disturbing"))
-    return { archetype: "The Horror Head", tagline: "Running through the disturbing stuff.", accentColor: "#e03131" };
-  if (b.includes("cinematograph") || b.includes("director"))
-    return { archetype: "The Visual Obsessive", tagline: "Watching everything twice.", accentColor: "#2ec4b6" };
-  if (b.includes("comfort") || b.includes("rewatch"))
-    return { archetype: "The Comfort Rewatcher", tagline: "Revisiting all-time favorites.", accentColor: "#74c0fc" };
-  if (b.includes("letterboxd") || b.includes("logging"))
-    return { archetype: "The Completionist", tagline: "Logging everything released.", accentColor: "#a9e34b" };
-  if (b.includes("messy") || b.includes("moody") || b.includes("lighting"))
-    return { archetype: "The Mood Watcher", tagline: "Only watching when the vibe is right.", accentColor: "#cc5de8" };
-  if (b.includes("writing") || b.includes("plot"))
-    return { archetype: "The Script Snob", tagline: "Won't settle for weak dialogue.", accentColor: "#ff922b" };
-  if (b.includes("90s") || b.includes("rewind"))
-    return { archetype: "The Retro Specialist", tagline: "Rewatching the classics.", accentColor: "#ffc078" };
-  if (b.includes("big screen") || b.includes("blockbuster"))
-    return { archetype: "The Spectacle Seeker", tagline: "Chasing the next big experience.", accentColor: "#63e6be" };
-  return { archetype: "The Taste Maker", tagline: "Building a distinct point of view.", accentColor: "#f4c430" };
-}
-
-function relativeTime(dateString: string) {
-  const now = Date.now();
-  const ts = new Date(dateString).getTime();
-  if (Number.isNaN(ts)) return "now";
-  const diff = Math.max(now - ts, 0);
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return "now";
-  if (mins < 60) return `${mins}m`;
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return `${hrs}h`;
-  return `${Math.floor(hrs / 24)}d`;
-}
 
 export default function PublicProfileScreen() {
-  const { userId } = useLocalSearchParams<{ userId: string }>();
-  const { sessionToken } = useAuth();
+  const { sessionToken, user } = useAuth();
   const router = useRouter();
+  const insets = useSafeAreaInsets();
+  const { height } = useWindowDimensions();
+  const params = useLocalSearchParams<{ userId: string }>();
+  const userId = typeof params.userId === "string" ? params.userId : undefined;
 
   const [profile, setProfile] = useState<PublicProfile | null>(null);
+  const [ranked, setRanked] = useState<RankedRow[]>([]);
+  const [lists, setLists] = useState<PublicList[]>([]);
   const [posts, setPosts] = useState<PublicPost[]>([]);
-  const [publicLists, setPublicLists] = useState<PublicList[]>([]);
-  const [isLoading, setIsLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [followBusy, setFollowBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const [showDetails, setShowDetails] = useState(false);
-  const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [showSaveSheet, setShowSaveSheet] = useState(false);
-  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
+  const [titleModalId, setTitleModalId] = useState<string | null>(null);
+  const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
+  const [titleLoading, setTitleLoading] = useState(false);
 
-  const floatAnim = useRef(new Animated.Value(0)).current;
-
-  useEffect(() => {
-    const anim = Animated.loop(
-      Animated.sequence([
-        Animated.timing(floatAnim, { toValue: -7, duration: 2600, useNativeDriver: true }),
-        Animated.timing(floatAnim, { toValue: 0, duration: 2600, useNativeDriver: true }),
-      ])
-    );
-    anim.start();
-    return () => anim.stop();
-  }, [floatAnim]);
+  const listRef = useRef<FlatList<{ key: PageKey }>>(null);
 
   useFocusEffect(
     useCallback(() => {
-      async function load() {
-        if (!sessionToken || !userId) return;
-        setIsLoading(true);
-        setError(null);
-        try {
-          const [p, feed, lists] = await Promise.all([
-            apiRequest<PublicProfile>(`/profiles/${userId}`, { token: sessionToken }),
-            apiRequest<PublicPost[]>(`/profiles/${userId}/posts`, { token: sessionToken }),
-            apiRequest<PublicList[]>(`/profiles/${userId}/public-lists`, { token: sessionToken })
-              .catch(() => [] as PublicList[]),
-          ]);
-          setProfile(p);
-          setPosts(feed);
-          setPublicLists(lists);
-        } catch (loadError) {
-          setError(loadError instanceof Error ? loadError.message : "Failed to load profile");
-        } finally {
-          setIsLoading(false);
-        }
-      }
-      void load();
-    }, [sessionToken, userId])
+      let cancelled = false;
+      if (!sessionToken || !userId) return;
+      setLoading(true);
+      Promise.allSettled([
+        apiRequest<PublicProfile>(`/profiles/${userId}`, { token: sessionToken }),
+        apiRequest<{ items: RankedRow[]; total: number }>(`/profiles/${userId}/favorites/ranked`, { token: sessionToken }).catch(() => ({ items: [], total: 0 })),
+        apiRequest<PublicList[]>(`/profiles/${userId}/public-lists`, { token: sessionToken }).catch(() => []),
+        apiRequest<PublicPost[]>(`/profiles/${userId}/posts?limit=10`, { token: sessionToken }).catch(() => []),
+      ]).then((results) => {
+        if (cancelled) return;
+        if (results[0].status === "fulfilled") setProfile(results[0].value);
+        if (results[1].status === "fulfilled") setRanked(results[1].value?.items ?? []);
+        if (results[2].status === "fulfilled") setLists(results[2].value ?? []);
+        if (results[3].status === "fulfilled") setPosts(results[3].value ?? []);
+      }).finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+      return () => { cancelled = true; };
+    }, [sessionToken, userId]),
   );
 
-  async function openDetails(post: PublicPost) {
-    if (!sessionToken || !post.title_id) return;
-    setShowDetails(true);
-    setDetailLoading(true);
+  const sectionHeight = height - insets.top - insets.bottom;
+
+  async function openTitle(titleId: string) {
+    if (!sessionToken) return;
+    setTitleModalId(titleId);
+    setTitleLoading(true);
     try {
-      const title = await fetchUniversalTitle(sessionToken, post.title_id, {
-        id: post.title_id,
-        title: post.title_name ?? "Untitled",
-        content_type: "movie",
-        poster_url: post.title_poster_url,
-        overview: post.caption,
-      });
-      setDetailTitle(title);
+      const detail = await fetchUniversalTitle(sessionToken, titleId);
+      setUniversalTitle(detail);
     } catch {
-      setDetailTitle(null);
+      setUniversalTitle(null);
     } finally {
-      setDetailLoading(false);
+      setTitleLoading(false);
     }
   }
+
+  function rankedToFullBleed(r: RankedRow): FullBleedTitle {
+    return {
+      id: r.title_id,
+      title: r.title,
+      poster_url: r.poster_url,
+      backdrop_url: r.poster_url,
+      year: r.year,
+      rank_label: `#${r.position}`,
+    };
+  }
+
+  function postToFullBleed(p: PublicPost): FullBleedTitle | null {
+    if (!p.title_id) return null;
+    return {
+      id: p.title_id,
+      title: p.title_name ?? "",
+      poster_url: p.title_poster_url ?? null,
+      backdrop_url: p.title_poster_url ?? null,
+      year: null,
+    };
+  }
+
+  const topFour = ranked.slice(0, 4);
+  const rankedHero = ranked[0];
+  const rankedFour = ranked.slice(1, 5);
+  const activityPost = posts.find((p) => p.title_id) ?? null;
+
+  const pages: { key: PageKey }[] = useMemo(() => {
+    const base: PageKey[] = ["identity"];
+    if (rankedHero) base.push("ranked");
+    if (lists.length > 0) base.push("lists");
+    if (activityPost) base.push("activity");
+    base.push("loop");
+    return base.map((k) => ({ key: k }));
+  }, [rankedHero, lists.length, activityPost]);
 
   async function toggleFollow() {
-    if (!sessionToken || !profile || !profile.can_follow || followBusy) return;
-    const currentlyFollowing = profile.is_following;
-    setFollowBusy(true);
+    if (!sessionToken || !profile) return;
+    const next = !profile.is_following;
+    setProfile({ ...profile, is_following: next });
     try {
-      await apiRequest<void>(`/profiles/${profile.user_id}/follow`, {
-        method: currentlyFollowing ? "DELETE" : "POST",
+      await apiRequest(`/profiles/${profile.user_id}/follow`, {
+        method: next ? "POST" : "DELETE",
         token: sessionToken,
       });
-      setProfile((cur) =>
-        cur
-          ? {
-              ...cur,
-              is_following: !currentlyFollowing,
-              follower_count: Math.max(cur.follower_count + (currentlyFollowing ? -1 : 1), 0),
-            }
-          : cur
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update follow");
-    } finally {
-      setFollowBusy(false);
+      trackEvent(next ? "profile_follow" : "profile_unfollow", { target_user_id: profile.user_id });
+    } catch {
+      // Revert on failure.
+      setProfile({ ...profile, is_following: !next });
     }
   }
 
-  const personality = useMemo(() => derivePersonality(profile?.bio), [profile?.bio]);
+  function sharePublic() {
+    if (!profile) return;
+    const url = `https://seensnap.com/profiles/${profile.username}`;
+    void Share.share({ message: `${profile.display_name} on SeenSnap — ${url}` }).catch(() => {});
+  }
 
-  const bannerPosters = useMemo(() => {
-    const fromApi = profile?.top_posters ?? [];
-    if (fromApi.length) return fromApi.slice(0, 4);
-    return posts.filter((p) => p.title_poster_url).slice(0, 4).map((p) => p.title_poster_url!);
-  }, [profile?.top_posters, posts]);
-
-  const obsession = profile?.current_obsessions?.[0] ?? null;
-  const compat = profile?.compatibility ?? null;
+  if (!userId) {
+    return (
+      <SafeAreaView style={styles.root}>
+        <Text style={styles.emptyBody}>Missing profile id.</Text>
+      </SafeAreaView>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+    <SafeAreaView style={styles.root} edges={["top"]}>
+      <View style={styles.topBar} pointerEvents="box-none">
+        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.topBtn}>
+          <Ionicons name="chevron-back" size={22} color={colors.ink} />
+        </Pressable>
+        <View style={{ flex: 1 }} />
+        <Pressable onPress={sharePublic} hitSlop={10} style={styles.topBtn}>
+          <Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} />
+        </Pressable>
+      </View>
 
-        {/* Nav */}
-        <View style={styles.nav}>
-          <Pressable onPress={() => router.back()} style={styles.back}>
-            <Ionicons name="chevron-back" size={18} color={colors.ink} />
-            <Text style={styles.backText}>Back</Text>
-          </Pressable>
+      {loading && !profile ? (
+        <View style={[styles.center, { height: sectionHeight }]}>
+          <ActivityIndicator color={colors.accent} />
         </View>
-
-        {error ? <Text style={styles.error}>{error}</Text> : null}
-
-        {isLoading ? (
-          <ActivityIndicator color={colors.accent} style={{ marginTop: 60 }} size="large" />
-        ) : null}
-
-        {profile ? (
-          <>
-            {/* ── Cinematic Hero Banner ──
-                Renders the full poster-mosaic hero only when we have real
-                artwork to fill it. New / low-post profiles show a compact
-                variant so the avatar isn't left floating in a dark void
-                below a giant empty rectangle. */}
-            {bannerPosters.length > 0 ? (
-              <View style={styles.heroBanner}>
-                <View style={StyleSheet.absoluteFill}>
-                  {bannerPosters.map((uri, i) => (
+      ) : !profile ? (
+        <View style={[styles.center, { height: sectionHeight }]}>
+          <Text style={styles.emptyTitle}>Profile not found.</Text>
+        </View>
+      ) : (
+        <FlatList
+          ref={listRef}
+          data={pages}
+          keyExtractor={(p) => p.key}
+          snapToInterval={sectionHeight}
+          decelerationRate="fast"
+          showsVerticalScrollIndicator={false}
+          renderItem={({ item, index }) => {
+            if (item.key === "identity" || item.key === "loop") {
+              return (
+                <IdentityPage
+                  height={sectionHeight}
+                  profile={profile}
+                  topFour={topFour}
+                  isOwnProfile={profile.user_id === user?.user_id}
+                  onToggleFollow={toggleFollow}
+                  onOpenTitle={openTitle}
+                  onEditProfile={() => router.push("/(tabs)/settings")}
+                  onLoop={() => {
+                    if (item.key === "loop") {
+                      listRef.current?.scrollToIndex({ index: 0, animated: true });
+                    }
+                  }}
+                />
+              );
+            }
+            if (item.key === "ranked" && rankedHero) {
+              return (
+                <View style={{ height: sectionHeight }}>
+                  <FullBleedPosterSection
+                    heroHeight={sectionHeight}
+                    sectionKicker="RANKED FAVORITES"
+                    hero={rankedToFullBleed(rankedHero)}
+                    four={rankedFour.map(rankedToFullBleed)}
+                    onPressHero={() => void openTitle(rankedHero.title_id)}
+                    onPressContinuation={(t) => void openTitle(t.id)}
+                    railActions={[]}
+                  />
+                </View>
+              );
+            }
+            if (item.key === "lists") {
+              const hero = lists[0];
+              const four = lists.slice(1, 5);
+              return (
+                <View style={{ height: sectionHeight }}>
+                  <View style={styles.listHeroWrap}>
                     <Image
-                      key={uri + String(i)}
-                      source={{ uri: resolveMediaUrl(uri) ?? uri }}
-                      style={[
-                        styles.bannerPoster,
-                        i === 0 && { top: -10, right: -20, width: 160, height: 240, transform: [{ rotate: "7deg" }] },
-                        i === 1 && { top: 20, right: 110, width: 120, height: 178, transform: [{ rotate: "-4deg" }] },
-                        i === 2 && { top: -5, left: -10, width: 130, height: 194, transform: [{ rotate: "-6deg" }] },
-                        i === 3 && { top: 40, left: 90, width: 100, height: 148, transform: [{ rotate: "5deg" }] },
-                      ]}
+                      source={{ uri: hero.preview_posters[0] }}
+                      style={StyleSheet.absoluteFillObject}
                       resizeMode="cover"
                     />
-                  ))}
-                </View>
-                <View style={[styles.bannerShade, { backgroundColor: `${colors.background}cc` }]} />
-
-                {compat?.compatibility ? (
-                  <View style={styles.compatBadge}>
-                    <Text style={[styles.compatScore, { color: personality.accentColor }]}>
-                      {compat.compatibility}%
-                    </Text>
-                    <Text style={styles.compatLabel}>match</Text>
-                  </View>
-                ) : null}
-
-                <View style={styles.bannerAvatarWrap}>
-                  {/* Flatten the float-animation transform onto the ring
-                      itself — a nested Animated.View wrapper with its
-                      own alignItems can compute a full-width box on
-                      react-native-web and defeat the parent's
-                      justifyContent centering. */}
-                  <Animated.View
-                    style={[
-                      styles.bannerAvatarRing,
-                      {
-                        borderColor: personality.accentColor,
-                        shadowColor: personality.accentColor,
-                        transform: [{ translateY: floatAnim }],
-                      },
-                    ]}
-                  >
-                    <Avatar uri={profile.avatar_url} label={profile.display_name} size={96} />
-                  </Animated.View>
-                </View>
-              </View>
-            ) : (
-              <View style={styles.heroCompact}>
-                {compat?.compatibility ? (
-                  <View style={styles.compatBadgeCompact}>
-                    <Text style={[styles.compatScore, { color: personality.accentColor }]}>
-                      {compat.compatibility}%
-                    </Text>
-                    <Text style={styles.compatLabel}>match</Text>
-                  </View>
-                ) : null}
-                <View
-                  style={[
-                    styles.bannerAvatarRing,
-                    {
-                      borderColor: personality.accentColor,
-                      shadowColor: personality.accentColor,
-                    },
-                  ]}
-                >
-                  <Avatar uri={profile.avatar_url} label={profile.display_name} size={96} />
-                </View>
-              </View>
-            )}
-
-            {/* ── Identity Block ── */}
-            <View style={styles.identityBlock}>
-              <Text style={styles.displayName}>{profile.display_name}</Text>
-              <Text style={styles.username}>@{profile.username}</Text>
-
-              <View
-                style={[
-                  styles.archetypePill,
-                  { backgroundColor: `${personality.accentColor}22`, borderColor: `${personality.accentColor}55` },
-                ]}
-              >
-                <Text style={[styles.archetypeText, { color: personality.accentColor }]}>
-                  {personality.archetype}
-                </Text>
-              </View>
-
-              {profile.bio?.trim() ? <Text style={styles.bio}>{profile.bio}</Text> : null}
-              <Text style={[styles.tagline, { color: personality.accentColor }]}>{personality.tagline}</Text>
-
-              {/* Favorite genres */}
-              {profile.favorite_genres.length > 0 ? (
-                <View style={styles.genreRow}>
-                  {profile.favorite_genres.slice(0, 5).map(({ genre }) => (
-                    <View key={genre} style={styles.genreChip}>
-                      <Text style={styles.genreChipText}>{genre}</Text>
-                    </View>
-                  ))}
-                </View>
-              ) : null}
-
-              {/* Shared taste callout */}
-              {compat?.top_shared_genres?.length ? (
-                <Text style={styles.compatShared}>
-                  Shared taste · {compat.top_shared_genres.slice(0, 3).join(" · ")}
-                </Text>
-              ) : null}
-            </View>
-
-            {/* ── Stats Row ── Followers and Following are tappable and
-                 route into the shared Follows screen for this user. */}
-            <View style={styles.statsRow}>
-              <Pressable
-                style={styles.statItem}
-                onPress={() => router.push(`/follows/${userId}?mode=followers`)}
-                accessibilityRole="button"
-                accessibilityLabel="View followers"
-              >
-                <Text style={styles.statNumber}>{profile.follower_count}</Text>
-                <Text style={styles.statLabel}>Followers</Text>
-              </Pressable>
-              <View style={styles.statDivider} />
-              <Pressable
-                style={styles.statItem}
-                onPress={() => router.push(`/follows/${userId}?mode=following`)}
-                accessibilityRole="button"
-                accessibilityLabel="View following"
-              >
-                <Text style={styles.statNumber}>{profile.following_count}</Text>
-                <Text style={styles.statLabel}>Following</Text>
-              </Pressable>
-              <View style={styles.statDivider} />
-              <View style={styles.statItem}>
-                <Text style={styles.statNumber}>{profile.post_count}</Text>
-                <Text style={styles.statLabel}>Posts</Text>
-              </View>
-            </View>
-
-            {/* ── Follow Button ── */}
-            {profile.can_follow ? (
-              <Pressable
-                style={[
-                  styles.followButton,
-                  profile.is_following && styles.followingButton,
-                  followBusy && styles.followDisabled,
-                ]}
-                onPress={() => void toggleFollow()}
-                disabled={followBusy}
-              >
-                {!profile.is_following ? (
-                  <Ionicons name="person-add-outline" size={14} color={colors.background} />
-                ) : null}
-                <Text style={[styles.followButtonText, profile.is_following && styles.followingButtonText]}>
-                  {followBusy ? "..." : profile.is_following ? "Following" : "Follow"}
-                </Text>
-              </Pressable>
-            ) : null}
-
-            {/* ── Current Obsession ── */}
-            {obsession ? (
-              <View style={styles.obsessionCard}>
-                <Text style={[styles.sectionKicker, { color: personality.accentColor }]}>
-                  Current Obsession
-                </Text>
-                <View style={styles.obsessionRow}>
-                  {obsession.poster_url ? (
-                    <Image
-                      source={{ uri: resolveMediaUrl(obsession.poster_url) ?? obsession.poster_url }}
-                      style={styles.obsessionPoster}
-                      resizeMode="cover"
-                    />
-                  ) : (
-                    <View style={[styles.obsessionPoster, styles.obsessionPosterFallback]}>
-                      <Ionicons name="film" size={18} color={colors.muted} />
-                    </View>
-                  )}
-                  <View style={styles.obsessionMeta}>
-                    <Text style={styles.obsessionTitle} numberOfLines={2}>
-                      {obsession.title_name}
-                    </Text>
-                    {profile.profile_summary ? (
-                      <Text style={styles.obsessionCaption} numberOfLines={3}>
-                        {profile.profile_summary}
+                    <View style={styles.listHeroShade} />
+                    <View style={styles.listHeroBody}>
+                      <Text style={styles.sectionKicker}>PUBLIC LISTS</Text>
+                      <Text style={styles.listHeroName}>{hero.name}</Text>
+                      <Text style={styles.listHeroMeta}>
+                        {hero.item_count} title{hero.item_count === 1 ? "" : "s"}
                       </Text>
+                    </View>
+                    {four.length > 0 ? (
+                      <View style={styles.listsRow}>
+                        {four.map((l) => (
+                          <Pressable
+                            key={l.list_id}
+                            style={styles.listTile}
+                            onPress={() => router.push(`/collections/${l.list_id}`)}
+                          >
+                            {l.preview_posters[0] ? (
+                              <Image source={{ uri: l.preview_posters[0] }} style={styles.listTilePoster} />
+                            ) : (
+                              <View style={[styles.listTilePoster, styles.listTileFallback]}>
+                                <Ionicons name="library-outline" size={14} color={colors.muted2} />
+                              </View>
+                            )}
+                            <Text style={styles.listTileName} numberOfLines={1}>{l.name}</Text>
+                          </Pressable>
+                        ))}
+                      </View>
                     ) : null}
                   </View>
                 </View>
-              </View>
-            ) : null}
-
-            {/* ── Public Lists ── */}
-            <View style={styles.listsSection}>
-              <View style={styles.sectionHeaderRow}>
-                <Text style={styles.sectionKicker}>Collections</Text>
-                <Text style={styles.sectionTitle}>Public Lists</Text>
-                {publicLists.length > 0 ? (
-                  <Text style={styles.feedCount}>{publicLists.length}</Text>
-                ) : null}
-              </View>
-              {publicLists.length === 0 ? (
-                <View style={styles.listsEmpty}>
-                  <Ionicons name="albums-outline" size={26} color={colors.muted} />
-                  <Text style={styles.listsEmptyTitle}>No public lists yet</Text>
-                  <Text style={styles.listsEmptyBody}>
-                    Public collections will appear here when {profile.display_name} shares one.
-                  </Text>
+              );
+            }
+            if (item.key === "activity" && activityPost) {
+              return (
+                <View style={{ height: sectionHeight }}>
+                  <ActivityPage
+                    height={sectionHeight}
+                    post={activityPost}
+                    profile={profile}
+                    onOpenTitle={(id) => void openTitle(id)}
+                  />
                 </View>
-              ) : (
-                <View style={styles.publicListCol}>
-                  {publicLists.map((list) => (
-                    <Pressable
-                      key={list.list_id}
-                      style={styles.publicListRow}
-                      onPress={() => router.push(`/lists/${list.share_token}`)}
-                    >
-                      <View style={styles.publicListPosters}>
-                        {list.preview_posters.slice(0, 4).map((uri, i) => (
-                          <Image
-                            key={uri + String(i)}
-                            source={{ uri: resolveMediaUrl(uri) ?? uri }}
-                            style={styles.publicListPoster}
-                            resizeMode="cover"
-                          />
-                        ))}
-                        {list.preview_posters.length === 0 ? (
-                          <View style={[styles.publicListPoster, styles.publicListPosterEmpty]}>
-                            <Ionicons name="albums-outline" size={18} color={colors.muted} />
-                          </View>
-                        ) : null}
-                      </View>
-                      <View style={{ flex: 1, gap: 4 }}>
-                        <Text style={styles.publicListName} numberOfLines={1}>{list.name}</Text>
-                        <Text style={styles.publicListMeta}>
-                          {list.item_count} {list.item_count === 1 ? "title" : "titles"}
-                        </Text>
-                        {list.description ? (
-                          <Text style={styles.publicListDesc} numberOfLines={2}>{list.description}</Text>
-                        ) : null}
-                      </View>
-                      <Ionicons name="chevron-forward" size={16} color={colors.muted} />
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-            </View>
-
-            {/* ── Activity Feed ── */}
-            <View style={styles.feedSection}>
-              <View style={styles.sectionHeaderRow}>
-                <Text style={styles.sectionKicker}>Activity</Text>
-                <Text style={styles.sectionTitle}>Posts</Text>
-                {posts.length > 0 ? (
-                  <Text style={styles.feedCount}>{posts.length}</Text>
-                ) : null}
-              </View>
-
-              {posts.length === 0 ? (
-                <View style={styles.empty}>
-                  <Ionicons name="film-outline" size={28} color={colors.muted} />
-                  <Text style={styles.emptyTitle}>No public posts yet</Text>
-                  <Text style={styles.emptyBody}>
-                    When {profile.display_name} posts, it'll show up here.
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.postList}>
-                  {posts.map((post) => (
-                    <Pressable
-                      key={post.id}
-                      style={styles.postCard}
-                      onPress={() => void openDetails(post)}
-                    >
-                      {post.title_poster_url ? (
-                        <Image
-                          source={{ uri: resolveMediaUrl(post.title_poster_url) ?? post.title_poster_url }}
-                          style={StyleSheet.absoluteFill}
-                          resizeMode="cover"
-                        />
-                      ) : null}
-                      <View style={styles.postCardShade} />
-                      <View style={styles.postCardBody}>
-                        {post.title_name ? (
-                          <Text style={styles.postCardTitle} numberOfLines={1}>
-                            {post.title_name}
-                          </Text>
-                        ) : null}
-                        {post.caption ? (
-                          <Text style={styles.postCardCaption} numberOfLines={2}>
-                            {post.caption}
-                          </Text>
-                        ) : null}
-                        <View style={styles.postCardMeta}>
-                          {typeof post.rating === "number" ? (
-                            <View style={styles.ratingPill}>
-                              <Text style={styles.ratingText}>{post.rating}/10</Text>
-                            </View>
-                          ) : null}
-                          <Text style={styles.postTime}>{relativeTime(post.created_at)} ago</Text>
-                        </View>
-                      </View>
-                    </Pressable>
-                  ))}
-                </View>
-              )}
-            </View>
-          </>
-        ) : null}
-      </ScrollView>
+              );
+            }
+            return null;
+          }}
+        />
+      )}
 
       <UniversalTitleModal
-        visible={showDetails}
-        loading={detailLoading}
-        title={detailTitle}
-        onClose={() => setShowDetails(false)}
-        onSaveTitle={(detail) => {
-          setSaveTitleId(detail.id);
-          setShowSaveSheet(true);
-        }}
-      />
-      <SaveToListSheet
-        visible={showSaveSheet}
-        token={sessionToken}
-        titleId={saveTitleId}
-        source="profile"
+        visible={titleModalId !== null}
+        title={universalTitle}
+        loading={titleLoading}
         onClose={() => {
-          setShowSaveSheet(false);
-          setSaveTitleId(null);
+          setTitleModalId(null);
+          setUniversalTitle(null);
         }}
-        onError={(message) => setError(message)}
       />
     </SafeAreaView>
   );
 }
 
+
+function IdentityPage({
+  height,
+  profile,
+  topFour,
+  isOwnProfile,
+  onToggleFollow,
+  onOpenTitle,
+  onEditProfile,
+  onLoop,
+}: {
+  height: number;
+  profile: PublicProfile;
+  topFour: RankedRow[];
+  isOwnProfile: boolean;
+  onToggleFollow: () => void;
+  onOpenTitle: (id: string) => void;
+  onEditProfile: () => void;
+  onLoop: () => void;
+}) {
+  // Hero backdrop from top poster or avatar — avoids a blank header
+  // when no cover image is present. Spec image 1 shows a cinematic
+  // environmental photo; we approximate by using the first ranked
+  // poster or the user's avatar at wide crop.
+  const heroImage = profile.top_posters?.[0] || profile.avatar_url;
+  return (
+    <View style={{ height, backgroundColor: "#000" }}>
+      {heroImage ? (
+        <Image
+          source={{ uri: resolveMediaUrl(heroImage) ?? heroImage }}
+          style={[StyleSheet.absoluteFillObject, { height: height * 0.55 }]}
+          resizeMode="cover"
+        />
+      ) : null}
+      <View style={[styles.identityShade, { height: height * 0.55 }]} />
+
+      <ScrollView contentContainerStyle={{ paddingTop: height * 0.44 }}>
+        <View style={styles.identityCard}>
+          <Avatar uri={profile.avatar_url ?? null} label={profile.display_name} size={64} />
+          <View style={styles.identityNameRow}>
+            <Text style={styles.identityName}>{profile.display_name}</Text>
+            <Ionicons name="checkmark-circle" size={16} color={colors.accent} />
+          </View>
+          <Text style={styles.identityHandle}>@{profile.username}</Text>
+          {profile.bio ? (
+            <Text style={styles.identityBio} numberOfLines={3}>{profile.bio}</Text>
+          ) : null}
+
+          <View style={styles.counterRow}>
+            <View style={styles.counterCol}>
+              <Text style={styles.counterValue}>{formatCount(profile.follower_count)}</Text>
+              <Text style={styles.counterLabel}>Followers</Text>
+            </View>
+            <View style={styles.counterCol}>
+              <Text style={styles.counterValue}>{formatCount(profile.following_count)}</Text>
+              <Text style={styles.counterLabel}>Following</Text>
+            </View>
+            {profile.compatibility ? (
+              <View style={styles.counterCol}>
+                <Text style={[styles.counterValue, { color: colors.accent }]}>
+                  {Math.round(profile.compatibility.compatibility * 100)}%
+                </Text>
+                <Text style={styles.counterLabel}>SceneDNA with you</Text>
+              </View>
+            ) : null}
+          </View>
+
+          {isOwnProfile ? (
+            <Pressable style={styles.identityCta} onPress={onEditProfile}>
+              <Text style={styles.identityCtaLabel}>Edit Profile</Text>
+            </Pressable>
+          ) : profile.can_follow ? (
+            <Pressable
+              style={[styles.identityCta, profile.is_following && styles.identityCtaFollowing]}
+              onPress={onToggleFollow}
+            >
+              <Text style={[styles.identityCtaLabel, profile.is_following && { color: colors.ink }]}>
+                {profile.is_following ? "Following" : "+ Follow"}
+              </Text>
+            </Pressable>
+          ) : null}
+
+          {topFour.length > 0 ? (
+            <>
+              <Text style={styles.topFourKicker}>MY TOP 4</Text>
+              <View style={styles.topFourRow}>
+                {topFour.map((t) => (
+                  <Pressable
+                    key={t.title_id}
+                    style={styles.topFourTile}
+                    onPress={() => onOpenTitle(t.title_id)}
+                  >
+                    {t.poster_url ? (
+                      <Image source={{ uri: t.poster_url }} style={styles.topFourPoster} />
+                    ) : (
+                      <View style={[styles.topFourPoster, styles.topFourFallback]}>
+                        <Ionicons name="film-outline" size={14} color={colors.muted2} />
+                      </View>
+                    )}
+                    <View style={styles.topFourRankBadge}>
+                      <Text style={styles.topFourRankLabel}>{t.position}</Text>
+                    </View>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          ) : null}
+
+          <Pressable onPress={onLoop} style={styles.loopCta}>
+            <Ionicons name="chevron-down" size={18} color={colors.muted} />
+          </Pressable>
+        </View>
+      </ScrollView>
+    </View>
+  );
+}
+
+
+function ActivityPage({
+  height,
+  post,
+  profile,
+  onOpenTitle,
+}: {
+  height: number;
+  post: PublicPost;
+  profile: PublicProfile;
+  onOpenTitle: (id: string) => void;
+}) {
+  const image = post.title_poster_url;
+  return (
+    <View style={{ height, backgroundColor: "#000" }}>
+      {image ? (
+        <Image source={{ uri: image }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
+      ) : null}
+      <View style={styles.activityShade} />
+      <View style={styles.activityHeader}>
+        <Avatar uri={profile.avatar_url ?? null} label={profile.display_name} size={28} />
+        <View>
+          <Text style={styles.activityActor}>{profile.display_name} rated {post.title_name}</Text>
+          <Text style={styles.activityTime}>{relativeTime(post.created_at)}</Text>
+        </View>
+      </View>
+
+      <View style={styles.activityCenter}>
+        {post.rating != null ? (
+          <View style={styles.activityRatingRow}>
+            <Ionicons name="star" size={32} color={colors.accent} />
+            <Text style={styles.activityRating}>{post.rating}<Text style={styles.activityRatingOutOf}>/10</Text></Text>
+          </View>
+        ) : null}
+        {post.caption ? (
+          <Text style={styles.activityCaption} numberOfLines={5}>“{post.caption}”</Text>
+        ) : null}
+      </View>
+
+      <View style={styles.activityRail}>
+        <View style={styles.activityRailBtn}>
+          <Ionicons name="heart-outline" size={26} color={colors.ink} />
+          <Text style={styles.activityRailCount}>—</Text>
+        </View>
+        <View style={styles.activityRailBtn}>
+          <Ionicons name="chatbubble-outline" size={26} color={colors.ink} />
+          <Text style={styles.activityRailCount}>—</Text>
+        </View>
+        <Pressable
+          style={styles.activityRailBtn}
+          onPress={() => post.title_id && onOpenTitle(post.title_id)}
+          hitSlop={10}
+        >
+          <Ionicons name="paper-plane-outline" size={26} color={colors.ink} />
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+
+function formatCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  if (n < 1_000_000) return `${Math.round(n / 1000)}k`;
+  return `${(n / 1_000_000).toFixed(1)}m`;
+}
+
+function relativeTime(iso: string): string {
+  const ms = Date.now() - new Date(iso).getTime();
+  const h = Math.floor(ms / 3_600_000);
+  if (h < 1) return "now";
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d < 7) return `${d}d ago`;
+  const w = Math.floor(d / 7);
+  if (w < 5) return `${w}w ago`;
+  const mo = Math.floor(d / 30);
+  return `${mo}mo ago`;
+}
+
+
 const styles = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: colors.background },
-  content: { paddingBottom: spacing.xxl, gap: spacing.lg },
-
-  nav: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-    paddingBottom: 4,
+  root: {
+    flex: 1,
+    backgroundColor: "#000",
   },
-  back: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    borderWidth: 1,
-    borderColor: colors.border,
-    borderRadius: radii.pill,
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  backText: { color: colors.ink, fontWeight: "700", fontSize: 12 },
-  error: { color: colors.danger, fontSize: 13, paddingHorizontal: spacing.lg },
-
-  // ── Hero banner ──────────────────────────────────────────────────────────
-  heroBanner: {
-    height: 268,
-    marginHorizontal: spacing.lg,
-    borderRadius: 32,
-    overflow: "hidden",
-    backgroundColor: "#080e1a",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.09)",
-  },
-  bannerPoster: {
-    position: "absolute",
-    borderRadius: 16,
-    opacity: 0.48,
-  },
-  bannerShade: { ...StyleSheet.absoluteFillObject },
-  bannerGlow: {
-    position: "absolute",
-    bottom: -80,
-    left: "20%",
-    width: 240,
-    height: 240,
-    borderRadius: 120,
-    opacity: 0.14,
-  },
-  bannerAvatarWrap: {
+  topBar: {
     position: "absolute",
     top: 0,
-    bottom: 0,
     left: 0,
     right: 0,
-    // Centers the avatar inside the banner on both axes so it reads as
-    // the focal point (previous version sat half-outside via bottom:-52
-    // which felt disconnected — the small circle was floating between
-    // the banner and the identity block below).
     flexDirection: "row",
-    justifyContent: "center",
-    alignItems: "center",
+    paddingHorizontal: spacing.md,
+    paddingTop: 8,
+    zIndex: 20,
   },
-  heroCompact: {
-    marginHorizontal: spacing.lg,
-    paddingVertical: spacing.lg,
+  topBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     alignItems: "center",
     justifyContent: "center",
-    position: "relative",
+    backgroundColor: "rgba(0,0,0,0.45)",
   },
-  compatBadgeCompact: {
-    position: "absolute",
-    top: 0,
-    right: 0,
+  center: {
     alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.52)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    borderRadius: 14,
-    paddingVertical: 7,
-    paddingHorizontal: 13,
-  },
-  bannerAvatarRing: {
-    width: 104,
-    height: 104,
-    borderRadius: 52,
-    borderWidth: 3,
-    overflow: "hidden",
-    backgroundColor: colors.backgroundElevated,
-    shadowOpacity: 0.55,
-    shadowRadius: 20,
-    shadowOffset: { width: 0, height: 0 },
-  },
-  compatBadge: {
-    position: "absolute",
-    top: 16,
-    right: 16,
-    alignItems: "center",
-    backgroundColor: "rgba(0,0,0,0.52)",
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.14)",
-    borderRadius: 14,
-    paddingVertical: 7,
-    paddingHorizontal: 13,
-  },
-  compatScore: { fontWeight: "900", fontSize: 20, lineHeight: 22 },
-  compatLabel: {
-    color: "rgba(255,255,255,0.65)",
-    fontWeight: "700",
-    fontSize: 10,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-
-  // ── Identity ─────────────────────────────────────────────────────────────
-  identityBlock: {
-    alignItems: "center",
-    // paddingTop 62 was compensating for an avatar that hung half-outside
-    // the banner. Avatar now sits inside the banner center → no overlap,
-    // just standard spacing.
-    paddingTop: spacing.md,
-    paddingHorizontal: spacing.lg,
-    gap: 6,
-  },
-  displayName: { color: colors.ink, fontSize: 27, fontWeight: "900", letterSpacing: -0.4 },
-  username: { color: colors.muted, fontSize: 14, fontWeight: "700" },
-  archetypePill: {
-    marginTop: 4,
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: radii.pill,
-    borderWidth: 1,
-  },
-  archetypeText: { fontSize: 12, fontWeight: "900", textTransform: "uppercase", letterSpacing: 1 },
-  bio: {
-    color: "rgba(242,244,248,0.82)",
-    fontSize: 14,
-    lineHeight: 20,
-    textAlign: "center",
-    marginTop: 4,
-    maxWidth: 290,
-  },
-  tagline: { fontSize: 12, fontWeight: "700", fontStyle: "italic", marginTop: 2 },
-  genreRow: { flexDirection: "row", flexWrap: "wrap", gap: 6, justifyContent: "center", marginTop: 8 },
-  genreChip: {
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: radii.pill,
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  genreChipText: { color: colors.ink, fontWeight: "700", fontSize: 12 },
-  compatShared: {
-    color: colors.muted,
-    fontSize: 12,
-    fontWeight: "700",
-    marginTop: 4,
-    textAlign: "center",
-  },
-
-  // ── Stats ─────────────────────────────────────────────────────────────────
-  statsRow: {
-    flexDirection: "row",
     justifyContent: "center",
-    alignItems: "center",
-    gap: spacing.xl,
-    paddingVertical: spacing.md,
-    marginHorizontal: spacing.lg,
-    borderRadius: 20,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  statItem: { alignItems: "center", gap: 3 },
-  statNumber: { color: colors.ink, fontSize: 22, fontWeight: "900" },
-  statLabel: {
-    color: colors.muted,
-    fontSize: 11,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-  },
-  statDivider: { width: 1, height: 36, backgroundColor: colors.border },
-
-  // ── Follow ────────────────────────────────────────────────────────────────
-  followButton: {
-    alignSelf: "center",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    borderRadius: radii.pill,
-    backgroundColor: colors.accent,
-    paddingHorizontal: 28,
-    paddingVertical: 13,
-  },
-  followingButton: {
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.accent,
-  },
-  followButtonText: { color: colors.background, fontWeight: "900", fontSize: 13 },
-  followingButtonText: { color: colors.accent },
-  followDisabled: { opacity: 0.55 },
-
-  // ── Section chrome ────────────────────────────────────────────────────────
-  sectionHeaderRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    gap: spacing.sm,
-    paddingHorizontal: spacing.lg,
-  },
-  sectionKicker: {
-    color: colors.accent,
-    fontSize: 11,
-    fontWeight: "900",
-    textTransform: "uppercase",
-    letterSpacing: 1.3,
-    flex: 1,
-  },
-  sectionTitle: { color: colors.ink, fontSize: 20, fontWeight: "900" },
-  feedCount: { color: colors.muted, fontSize: 14, fontWeight: "800" },
-
-  // ── Obsession card ────────────────────────────────────────────────────────
-  obsessionCard: {
-    marginHorizontal: spacing.lg,
-    borderRadius: 24,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.lg,
-    gap: spacing.sm,
-  },
-  obsessionRow: { flexDirection: "row", gap: spacing.md },
-  obsessionPoster: { width: 72, height: 108, borderRadius: 12, backgroundColor: colors.surfaceSoft },
-  obsessionPosterFallback: { alignItems: "center", justifyContent: "center" },
-  obsessionMeta: { flex: 1, gap: 6, justifyContent: "center" },
-  obsessionTitle: { color: colors.ink, fontSize: 18, fontWeight: "900", lineHeight: 22 },
-  obsessionCaption: { color: colors.muted, fontSize: 13, lineHeight: 18 },
-
-  // ── Public lists ──────────────────────────────────────────────────────────
-  listsSection: { gap: spacing.md },
-  listsEmpty: {
-    marginHorizontal: spacing.lg,
-    borderRadius: 20,
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.xl,
-    alignItems: "center",
     gap: 8,
   },
-  listsEmptyTitle: { color: colors.ink, fontWeight: "800", fontSize: 14 },
-  listsEmptyBody: { color: colors.muted, fontSize: 13, lineHeight: 18, textAlign: "center" },
-  publicListCol: { marginHorizontal: spacing.lg, gap: spacing.sm },
-  publicListRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: spacing.md,
-    padding: spacing.md,
-    borderRadius: 14,
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  publicListPosters: {
-    flexDirection: "row",
-    gap: 3,
-  },
-  publicListPoster: {
-    width: 28,
-    height: 42,
-    borderRadius: 3,
-    backgroundColor: colors.surface,
-  },
-  publicListPosterEmpty: {
-    alignItems: "center",
-    justifyContent: "center",
-    width: 42,
-  },
-  publicListName: {
+  emptyTitle: {
     fontFamily: fonts.serifBold,
     color: colors.ink,
-    fontSize: 16,
-    letterSpacing: -0.2,
+    fontSize: 18,
   },
-  publicListMeta: {
-    fontFamily: fonts.mono,
-    color: colors.muted,
-    fontSize: 11,
-    letterSpacing: 0.5,
-  },
-  publicListDesc: {
+  emptyBody: {
     fontFamily: fonts.sans,
     color: colors.muted,
-    fontSize: 12,
-    lineHeight: 16,
+    fontSize: 13,
   },
 
-  // ── Feed section ──────────────────────────────────────────────────────────
-  feedSection: { gap: spacing.md },
-  empty: {
-    marginHorizontal: spacing.lg,
-    borderRadius: 20,
-    backgroundColor: colors.surfaceMuted,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.xl,
-    alignItems: "center",
-    gap: 8,
-  },
-  emptyTitle: { color: colors.ink, fontWeight: "800", fontSize: 15 },
-  emptyBody: { color: colors.muted, fontSize: 13, lineHeight: 18, textAlign: "center" },
-
-  // ── Cinematic post cards ───────────────────────────────────────────────────
-  postList: { gap: spacing.md, paddingHorizontal: spacing.lg },
-  postCard: {
-    height: 210,
-    borderRadius: 22,
-    overflow: "hidden",
-    backgroundColor: colors.surfaceSoft,
-    borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
-  },
-  postCardShade: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(7,11,19,0.55)",
-  },
-  postCardBody: {
+  identityShade: {
     position: "absolute",
     left: 0,
     right: 0,
-    bottom: 0,
-    padding: 18,
-    gap: 4,
+    top: 0,
+    backgroundColor: "rgba(0,0,0,0.42)",
   },
-  postCardTitle: { color: colors.accent, fontWeight: "800", fontSize: 15 },
-  postCardCaption: { color: "rgba(242,244,248,0.88)", fontSize: 13, lineHeight: 17 },
-  postCardMeta: { flexDirection: "row", alignItems: "center", gap: 8, marginTop: 5 },
-  postTime: { color: "rgba(242,244,248,0.5)", fontWeight: "700", fontSize: 11 },
-
-  // ── Rating pill ───────────────────────────────────────────────────────────
-  ratingPill: {
+  identityCard: {
+    marginHorizontal: spacing.lg,
+    padding: spacing.lg,
+    borderRadius: radii.lg,
+    backgroundColor: "rgba(13,19,30,0.9)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+    alignItems: "center",
+  },
+  identityNameRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 10,
+  },
+  identityName: {
+    fontFamily: fonts.serifBold,
+    color: colors.ink,
+    fontSize: 26,
+    letterSpacing: -0.3,
+  },
+  identityHandle: {
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 13,
+    marginTop: 2,
+  },
+  identityBio: {
+    marginTop: 8,
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 13,
+    textAlign: "center",
+  },
+  counterRow: {
+    flexDirection: "row",
+    gap: spacing.lg,
+    marginTop: spacing.md,
+  },
+  counterCol: {
+    alignItems: "center",
+  },
+  counterValue: {
+    fontFamily: fonts.serifBold,
+    color: colors.ink,
+    fontSize: 18,
+  },
+  counterLabel: {
+    fontFamily: fonts.monoMedium,
+    color: colors.muted2,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    marginTop: 2,
+  },
+  identityCta: {
+    marginTop: spacing.md,
+    paddingHorizontal: 24,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  identityCtaFollowing: {
+    backgroundColor: "transparent",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.3)",
+  },
+  identityCtaLabel: {
+    fontFamily: fonts.sansSemiBold,
+    color: "#0b0f17",
+    fontSize: 13,
+    letterSpacing: 0.4,
+  },
+  topFourKicker: {
+    marginTop: spacing.lg,
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 11,
+    letterSpacing: 1.3,
     alignSelf: "flex-start",
-    borderWidth: 1,
-    borderColor: colors.accent,
-    borderRadius: radii.pill,
-    paddingVertical: 3,
-    paddingHorizontal: 9,
-    backgroundColor: "rgba(244,196,48,0.12)",
   },
-  ratingText: { color: colors.accent, fontWeight: "800", fontSize: 11 },
+  topFourRow: {
+    flexDirection: "row",
+    gap: 8,
+    marginTop: 8,
+    alignSelf: "stretch",
+  },
+  topFourTile: {
+    flex: 1,
+    aspectRatio: 2 / 3,
+    borderRadius: radii.sm,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceMuted,
+    position: "relative",
+  },
+  topFourPoster: {
+    width: "100%",
+    height: "100%",
+  },
+  topFourFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  topFourRankBadge: {
+    position: "absolute",
+    top: 4,
+    left: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    backgroundColor: "rgba(0,0,0,0.72)",
+    borderRadius: radii.sm,
+  },
+  topFourRankLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 12,
+  },
+  loopCta: {
+    marginTop: spacing.md,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+
+  listHeroWrap: {
+    flex: 1,
+    position: "relative",
+  },
+  listHeroShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  listHeroBody: {
+    position: "absolute",
+    left: spacing.lg,
+    right: spacing.lg,
+    bottom: 180,
+  },
+  sectionKicker: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 11,
+    letterSpacing: 1.4,
+  },
+  listHeroName: {
+    marginTop: 10,
+    fontFamily: fonts.serifBold,
+    color: colors.ink,
+    fontSize: 42,
+    lineHeight: 44,
+  },
+  listHeroMeta: {
+    marginTop: 6,
+    fontFamily: fonts.monoMedium,
+    color: colors.muted,
+    fontSize: 12,
+    letterSpacing: 0.5,
+  },
+  listsRow: {
+    position: "absolute",
+    left: spacing.lg,
+    right: spacing.lg,
+    bottom: spacing.sm,
+    flexDirection: "row",
+    gap: 8,
+  },
+  listTile: {
+    flex: 1,
+  },
+  listTilePoster: {
+    width: "100%",
+    aspectRatio: 2 / 3,
+    borderRadius: radii.sm,
+    backgroundColor: colors.surfaceMuted,
+  },
+  listTileFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  listTileName: {
+    marginTop: 4,
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 10,
+    letterSpacing: 0.3,
+    textTransform: "uppercase",
+    textAlign: "center",
+  },
+
+  activityShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.55)",
+  },
+  activityHeader: {
+    position: "absolute",
+    top: 60,
+    left: spacing.lg,
+    right: spacing.lg,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  activityActor: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 14,
+  },
+  activityTime: {
+    fontFamily: fonts.monoMedium,
+    color: colors.muted,
+    fontSize: 10,
+    letterSpacing: 0.4,
+    marginTop: 2,
+  },
+  activityCenter: {
+    position: "absolute",
+    left: spacing.lg,
+    right: 80,
+    bottom: 140,
+  },
+  activityRatingRow: {
+    flexDirection: "row",
+    alignItems: "flex-end",
+    gap: 6,
+    marginBottom: spacing.sm,
+  },
+  activityRating: {
+    fontFamily: fonts.serifBold,
+    color: colors.ink,
+    fontSize: 54,
+    lineHeight: 54,
+  },
+  activityRatingOutOf: {
+    fontFamily: fonts.serif,
+    color: colors.muted,
+    fontSize: 24,
+  },
+  activityCaption: {
+    fontFamily: fonts.serif,
+    color: colors.ink,
+    fontSize: 18,
+    lineHeight: 24,
+  },
+  activityRail: {
+    position: "absolute",
+    right: spacing.md,
+    bottom: 160,
+    gap: spacing.md,
+  },
+  activityRailBtn: {
+    alignItems: "center",
+  },
+  activityRailCount: {
+    marginTop: 2,
+    fontFamily: fonts.monoMedium,
+    color: colors.ink,
+    fontSize: 11,
+  },
 });

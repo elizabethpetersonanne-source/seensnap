@@ -139,6 +139,15 @@ function AuthGate() {
         <Stack.Screen name="teams/join" />
         <Stack.Screen name="notifications" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="publish/[titleId]" options={{ animation: "slide_from_bottom", presentation: "modal" }} />
+        <Stack.Screen name="teams/[teamId]/home" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="scene-dna" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="settings/edit-profile" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="settings/notifications" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="settings/streaming" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="settings/privacy" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="settings/blocked" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="settings/account" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="settings/help" options={{ animation: "slide_from_right" }} />
       </Stack>
       {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
       <DidYouWatchPrompt />

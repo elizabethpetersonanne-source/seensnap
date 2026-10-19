@@ -56,6 +56,10 @@ function TabItem({
     iconFocused: "ellipse" as keyof typeof Ionicons.glyphMap,
   };
 
+  // Swipe is the primary action — rendered as a large filled accent
+  // disc that lifts above the other tabs (Instagram story-circle style).
+  const isPrimary = routeName === "swipe";
+
   const focusAnim = useRef(new Animated.Value(isFocused ? 1 : 0)).current;
 
   useEffect(() => {
@@ -76,6 +80,26 @@ function TabItem({
     inputRange: [0, 1],
     outputRange: [0, 1],
   });
+
+  if (isPrimary) {
+    return (
+      <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.primaryTab}>
+        <View style={[styles.primaryDisc, isFocused && styles.primaryDiscFocused]}>
+          <Ionicons
+            name={isFocused ? config.iconFocused : config.icon}
+            size={30}
+            color={colors.background}
+          />
+        </View>
+        <Animated.Text
+          style={[styles.primaryLabel, { color: labelColor }]}
+          numberOfLines={1}
+        >
+          {config.label}
+        </Animated.Text>
+      </Pressable>
+    );
+  }
 
   return (
     <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.tab}>
@@ -174,7 +198,10 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: rules.default,
     flexDirection: "row",
+    alignItems: "flex-end",
     paddingTop: 0,
+    // Give the primary disc headroom to lift above the top border.
+    overflow: "visible",
     ...Platform.select({
       ios: {
         shadowColor: colors.shadow,
@@ -189,6 +216,41 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     paddingTop: 0,
+  },
+  primaryTab: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "flex-end",
+    marginTop: -20,
+  },
+  primaryDisc: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+    borderWidth: 4,
+    borderColor: colors.backgroundElevated,
+    ...Platform.select({
+      ios: {
+        shadowColor: "#000",
+        shadowOpacity: 0.35,
+        shadowRadius: 10,
+        shadowOffset: { width: 0, height: 4 },
+      },
+      android: { elevation: 10 },
+    }),
+  },
+  primaryDiscFocused: {
+    backgroundColor: colors.accent,
+  },
+  primaryLabel: {
+    marginTop: 4,
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 8,
+    letterSpacing: 0.6,
+    textTransform: "uppercase",
   },
   activeRule: {
     height: 2,

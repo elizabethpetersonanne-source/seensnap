@@ -904,7 +904,12 @@ export default function TeamsScreen() {
                 <Pressable
                   key={team.id}
                   style={[styles.teamCard, isActive && styles.teamCardActive]}
-                  onPress={() => setSelectedTeamId(team.id)}
+                  onPress={() => {
+                    // Oct-18 UI/UX rebuild: open the immersive Team
+                    // Home instead of the legacy tabbed detail view.
+                    router.push({ pathname: "/teams/[teamId]/home", params: { teamId: team.id } });
+                  }}
+                  onLongPress={() => setSelectedTeamId(team.id)}
                 >
                   <View style={styles.teamRow}>
                     <View style={styles.teamRowThumb}>
