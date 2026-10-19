@@ -821,7 +821,10 @@ export default function SwipeTab() {
         <View style={styles.detailsReasonBlock}>
           <View style={styles.detailsReasonRule} />
           <View style={{ flex: 1 }}>
-            <Text style={styles.detailsReasonLabel}>WHY IT'S HERE</Text>
+            <View style={styles.detailsReasonLabelRow}>
+              <Ionicons name="albums" size={11} color={colors.accent} />
+              <Text style={styles.detailsReasonLabel}>WHY IT'S HERE</Text>
+            </View>
             <Text
               style={styles.detailsReasonText}
               numberOfLines={layoutMode === "narrow_short" ? 2 : 3}
@@ -832,62 +835,76 @@ export default function SwipeTab() {
         </View>
       ) : null}
       {activeStreaming.length > 0 ? (
-        <Text style={styles.detailsStreaming}>
-          Streaming on {activeStreaming.map((s) => getStreamingServiceMeta(s.service)?.name ?? s.serviceName).join(" · ")}
-        </Text>
+        <View style={styles.providerStrip}>
+          {activeStreaming.slice(0, 3).map((s) => {
+            const meta = getStreamingServiceMeta(s.service);
+            return (
+              <View
+                key={s.service}
+                style={[styles.providerPill, meta ? { backgroundColor: meta.color } : null]}
+              >
+                <Text style={[styles.providerPillLabel, meta ? { color: meta.textColor } : null]} numberOfLines={1}>
+                  {(meta?.shortName || s.serviceName || "").toUpperCase()}
+                </Text>
+              </View>
+            );
+          })}
+          {activeStreaming.length > 3 ? (
+            <View style={styles.providerMore}>
+              <Text style={styles.providerMoreLabel}>+{activeStreaming.length - 3} more</Text>
+              <Ionicons name="chevron-forward" size={11} color={colors.muted} />
+            </View>
+          ) : null}
+        </View>
       ) : null}
 
-      {/* Decision controls — grouped near the title (spec §6.6). Pass +
-          More Like This + Save are visually cohesive; Watch Now is a
-          separate secondary CTA below. */}
-      <View style={styles.controlRow}>
-        <Pressable
-          style={({ pressed }) => [styles.controlBtn, styles.controlBtnNeutral, pressed && { opacity: 0.7 }]}
-          onPress={() => void animateSwipe("left")}
-          accessibilityRole="button"
-          accessibilityLabel={`Pass on ${activeCard.title.title}`}
-        >
-          <Ionicons name="close" size={18} color={colors.muted} />
-          <Text style={styles.controlBtnNeutralText}>Pass</Text>
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [styles.controlBtn, styles.controlBtnPrimary, pressed && { opacity: 0.85 }]}
-          onPress={() => void animateSwipe("right")}
-          accessibilityRole="button"
-          accessibilityLabel={`More like ${activeCard.title.title}`}
-        >
-          <Ionicons name="heart" size={16} color={colors.background} />
-          <Text style={styles.controlBtnPrimaryText}>More Like This</Text>
-        </Pressable>
-        <Pressable
-          style={({ pressed }) => [styles.controlBtn, styles.controlBtnNeutral, pressed && { opacity: 0.7 }]}
-          onPress={() => {
-            if (!activeCard) return;
-            setSaveTitleId(activeCard.title.id);
-            setShowSaveSheet(true);
-          }}
-          accessibilityRole="button"
-          accessibilityLabel={`Save ${activeCard.title.title}`}
-        >
-          <Ionicons name="bookmark-outline" size={16} color={colors.muted} />
-          <Text style={styles.controlBtnNeutralText}>Save</Text>
-        </Pressable>
+      {/* Vision-mock decision dock: three big circular controls below
+          the card. PASS and SAVE are outlined; MORE LIKE THIS is the
+          filled yellow primary. Labels sit underneath in uppercase
+          mono — matches the vision mock exactly. */}
+      <View style={styles.decisionDock}>
+        <View style={styles.decisionCell}>
+          <Pressable
+            onPress={() => void animateSwipe("left")}
+            accessibilityRole="button"
+            accessibilityLabel={`Pass on ${activeCard.title.title}`}
+            style={({ pressed }) => [styles.decisionCircle, styles.decisionCircleNeutral, pressed && { opacity: 0.72 }]}
+          >
+            <Ionicons name="close" size={28} color={colors.ink} />
+          </Pressable>
+          <Text style={styles.decisionLabel}>PASS</Text>
+        </View>
+        <View style={styles.decisionCell}>
+          <Pressable
+            onPress={() => void animateSwipe("right")}
+            accessibilityRole="button"
+            accessibilityLabel={`More like ${activeCard.title.title}`}
+            style={({ pressed }) => [styles.decisionCircle, styles.decisionCirclePrimary, pressed && { opacity: 0.88 }]}
+          >
+            <Ionicons name="heart" size={28} color={colors.background} />
+          </Pressable>
+          <Text style={[styles.decisionLabel, styles.decisionLabelPrimary]}>MORE LIKE THIS</Text>
+        </View>
+        <View style={styles.decisionCell}>
+          <Pressable
+            onPress={() => {
+              if (!activeCard) return;
+              setSaveTitleId(activeCard.title.id);
+              setShowSaveSheet(true);
+            }}
+            accessibilityRole="button"
+            accessibilityLabel={`Save ${activeCard.title.title}`}
+            style={({ pressed }) => [styles.decisionCircle, styles.decisionCircleNeutral, pressed && { opacity: 0.72 }]}
+          >
+            <Ionicons name="bookmark-outline" size={26} color={colors.ink} />
+          </Pressable>
+          <Text style={styles.decisionLabel}>SAVE</Text>
+        </View>
       </View>
-
-      {activeStreaming.length > 0 ? (
-        <Pressable
-          style={({ pressed }) => [styles.watchNowCta, pressed && { opacity: 0.85 }]}
-          onPress={() => void animateSwipe("up")}
-          accessibilityRole="button"
-        >
-          <Ionicons name="play" size={14} color={colors.background} />
-          <Text style={styles.watchNowCtaText}>Watch Now</Text>
-        </Pressable>
-      ) : null}
 
       {Platform.OS !== "web" ? (
         <Text style={styles.swipeHint}>
-          Swipe left to pass · right for more like this
+          Swipe up to Watch Now · tap PREVIEWS for trailers
         </Text>
       ) : null}
     </View>
@@ -938,20 +955,28 @@ export default function SwipeTab() {
               toggle back. Independent queues + positions per mode are
               preserved by leaving each screen mounted through the tabs
               layout — switching modes never resets the other's queue. */}
-          <View style={styles.modeToggleRow}>
-            <View style={[styles.modeChip, styles.modeChipActive]}>
-              <Ionicons name="layers" size={14} color={colors.background} />
-              <Text style={styles.modeChipTextActive}>Swipe</Text>
+          {/* Vision-mock centered SWIPE | PREVIEWS selector per
+              Visual Design brief §8. Gold underline on active, no
+              background chip. Spans the top of the workspace. */}
+          <View style={styles.modeSelectorRow}>
+            <View style={styles.modeSelector}>
+              <Pressable
+                style={styles.modeOption}
+                accessibilityRole="button"
+                accessibilityLabel="Swipe is active"
+              >
+                <Text style={styles.modeOptionLabelActive}>SWIPE</Text>
+                <View style={styles.modeOptionUnderline} />
+              </Pressable>
+              <Pressable
+                style={styles.modeOption}
+                onPress={() => router.push("/previews")}
+                accessibilityRole="button"
+                accessibilityLabel="Switch to Previews"
+              >
+                <Text style={styles.modeOptionLabel}>PREVIEWS</Text>
+              </Pressable>
             </View>
-            <Pressable
-              style={styles.modeChip}
-              onPress={() => router.push("/previews")}
-              accessibilityRole="button"
-              accessibilityLabel="Switch to Previews"
-            >
-              <Ionicons name="play-circle-outline" size={14} color={colors.ink} />
-              <Text style={styles.modeChipText}>Previews</Text>
-            </Pressable>
           </View>
           <CategoryChips
             value={categoryFilter}
@@ -967,12 +992,11 @@ export default function SwipeTab() {
           />
           <View style={styles.featureHeader}>
             <View style={{ flex: 1, gap: 4 }}>
-              <Text style={styles.featureEyebrow}>TODAY&apos;S PICKS</Text>
               <Text style={styles.featureTitle}>What&apos;s Next?</Text>
-              {/* Hide the secondary SceneDNA sentence on the shortest
-                  narrow mode to reclaim vertical space (spec §8). */}
+              {/* Hide the secondary line on the shortest narrow mode
+                  to reclaim vertical space. */}
               {layoutMode !== "narrow_short" ? (
-                <Text style={styles.featureSubtitle}>Swipe to shape your SceneDNA.</Text>
+                <Text style={styles.featureSubtitle}>Discover picks tailored to your taste.</Text>
               ) : null}
             </View>
             <Text style={styles.featureProgress}>
@@ -1982,6 +2006,8 @@ const styles = StyleSheet.create({
     alignSelf: "center",
     gap: spacing.md,
   },
+  // Legacy chip-style mode toggle — kept so other callers referencing
+  // these style keys don't break during the staged rebuild.
   modeToggleRow: {
     flexDirection: "row",
     gap: 8,
@@ -2015,6 +2041,44 @@ const styles = StyleSheet.create({
     letterSpacing: 0.8,
     color: colors.background,
     textTransform: "uppercase",
+  },
+
+  // Vision-mock centered SWIPE | PREVIEWS selector per Visual Design
+  // brief §8. Uppercase mono labels, gold underline on active, no
+  // background chip.
+  modeSelectorRow: {
+    paddingTop: spacing.md,
+    alignItems: "center",
+  },
+  modeSelector: {
+    flexDirection: "row",
+    gap: 28,
+    alignItems: "center",
+  },
+  modeOption: {
+    alignItems: "center",
+    paddingVertical: 6,
+  },
+  modeOptionLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 13,
+    letterSpacing: 1.6,
+    color: colors.muted,
+    textTransform: "uppercase",
+  },
+  modeOptionLabelActive: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 13,
+    letterSpacing: 1.6,
+    color: colors.accent,
+    textTransform: "uppercase",
+  },
+  modeOptionUnderline: {
+    marginTop: 4,
+    height: 2,
+    width: 36,
+    backgroundColor: colors.accent,
+    borderRadius: 1,
   },
   featureHeader: {
     flexDirection: "row",
@@ -2248,12 +2312,53 @@ const styles = StyleSheet.create({
     width: 2,
     backgroundColor: rules.gold,
   },
+  detailsReasonLabelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginBottom: 4,
+  },
   detailsReasonLabel: {
     fontFamily: fonts.monoSemiBold,
     color: colors.accent,
     fontSize: 10,
     letterSpacing: 1.4,
-    marginBottom: 4,
+  },
+  providerStrip: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    marginTop: 10,
+    padding: 6,
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.12)",
+    backgroundColor: "rgba(255,255,255,0.03)",
+  },
+  providerPill: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: "rgba(255,255,255,0.1)",
+  },
+  providerPillLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 0.8,
+    color: colors.ink,
+  },
+  providerMore: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 2,
+    marginLeft: "auto",
+    paddingRight: 6,
+  },
+  providerMoreLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 0.6,
+    color: colors.muted,
   },
   detailsReasonText: {
     fontFamily: fonts.sans,
@@ -2333,5 +2438,46 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: colors.muted,
     textAlign: "center",
+  },
+
+  // Vision-mock decision dock. Three circular controls, centered,
+  // with uppercase mono labels under each.
+  decisionDock: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "flex-start",
+    gap: 32,
+    marginTop: spacing.lg,
+  },
+  decisionCell: {
+    alignItems: "center",
+    gap: 8,
+    width: 92,
+  },
+  decisionCircle: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  decisionCircleNeutral: {
+    backgroundColor: "transparent",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.22)",
+  },
+  decisionCirclePrimary: {
+    backgroundColor: colors.accent,
+  },
+  decisionLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.1,
+    color: colors.muted,
+    textAlign: "center",
+    textTransform: "uppercase",
+  },
+  decisionLabelPrimary: {
+    color: colors.ink,
   },
 });
