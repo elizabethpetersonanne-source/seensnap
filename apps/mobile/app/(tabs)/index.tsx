@@ -24,6 +24,7 @@ import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { ConciergeAura } from "@/components/concierge-aura";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
+import { ConciergeResult } from "@/components/concierge-result";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
@@ -780,23 +781,20 @@ export default function DiscoverScreen() {
             </View>
           ) : null}
 
-          {/* Concierge result as hero-plus-four. Visual Design brief
-              §7 — soft peripheral aura around the leading result,
-              low-opacity and slow. Breathes under normal motion,
-              static under reduced motion. */}
+          {/* Concierge result — Visual Design brief §7. Serif
+              pullquote rationale + horizontal strip of options. Soft
+              peripheral aura behind the block (low-opacity, slow,
+              reduced-motion aware). */}
           {conciergeDecision && conciergeDecision.status === "ready" && conciergeDecision.titles.length > 0 ? (
             <View style={styles.conciergeResultWrap}>
               <ConciergeAura width={360} height={420} intensity={1} />
-              <HeroFourSection
-                sectionLabel="CONCIERGE PICK"
-                sectionTitle={conciergeDecision.rationale ? "Based on your ask" : "Suggestions"}
-                hero={conciergeTitleToHero(conciergeDecision.titles[0])}
-                four={conciergeDecision.titles.slice(1, 5).map(conciergeTitleToHero)}
+              <ConciergeResult
+                rationale={conciergeDecision.rationale}
+                titles={conciergeDecision.titles}
                 onPressTitle={(t) => {
-                  trackEvent("concierge_title_opened", { title_id: t.id, decision_id: conciergeDecision.decision_id });
-                  void openTitleModal(t.id);
+                  trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
+                  void openTitleModal(t.title_id);
                 }}
-                emptyMessage={null}
               />
             </View>
           ) : null}

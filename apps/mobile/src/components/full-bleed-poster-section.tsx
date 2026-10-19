@@ -182,20 +182,22 @@ export function FullBleedPosterSection({
               <Pressable
                 key={t.id}
                 onPress={() => onPressContinuation?.(t, idx)}
-                style={[styles.continuationCard, { width: smallWidth, height: smallHeight }]}
+                style={[styles.continuationCard, { width: smallWidth }]}
               >
-                {t.poster_url ? (
-                  <Image source={{ uri: t.poster_url }} style={styles.continuationPoster} resizeMode="cover" />
-                ) : (
-                  <View style={[styles.continuationPoster, styles.continuationFallback]}>
-                    <Ionicons name="film-outline" size={16} color={colors.muted2} />
-                  </View>
-                )}
                 {t.rank_label ? (
-                  <View style={styles.continuationRankBadge}>
-                    <Text style={styles.continuationRankText}>{t.rank_label}</Text>
-                  </View>
+                  <Text style={styles.continuationRankAbove} numberOfLines={1}>
+                    {t.rank_label.replace(/^#/, "")}
+                  </Text>
                 ) : null}
+                <View style={{ width: smallWidth, height: smallHeight }}>
+                  {t.poster_url ? (
+                    <Image source={{ uri: t.poster_url }} style={styles.continuationPoster} resizeMode="cover" />
+                  ) : (
+                    <View style={[styles.continuationPoster, styles.continuationFallback]}>
+                      <Ionicons name="film-outline" size={16} color={colors.muted2} />
+                    </View>
+                  )}
+                </View>
                 <Text style={styles.continuationCaption} numberOfLines={1}>{t.title}</Text>
               </Pressable>
             ))}
@@ -206,20 +208,22 @@ export function FullBleedPosterSection({
               <Pressable
                 key={t.id}
                 onPress={() => onPressContinuation?.(t, idx)}
-                style={[styles.continuationCard, { width: smallWidth, height: smallHeight }]}
+                style={[styles.continuationCard, { width: smallWidth }]}
               >
-                {t.poster_url ? (
-                  <Image source={{ uri: t.poster_url }} style={styles.continuationPoster} resizeMode="cover" />
-                ) : (
-                  <View style={[styles.continuationPoster, styles.continuationFallback]}>
-                    <Ionicons name="film-outline" size={16} color={colors.muted2} />
-                  </View>
-                )}
                 {t.rank_label ? (
-                  <View style={styles.continuationRankBadge}>
-                    <Text style={styles.continuationRankText}>{t.rank_label}</Text>
-                  </View>
+                  <Text style={styles.continuationRankAbove} numberOfLines={1}>
+                    {t.rank_label.replace(/^#/, "")}
+                  </Text>
                 ) : null}
+                <View style={{ width: smallWidth, height: smallHeight }}>
+                  {t.poster_url ? (
+                    <Image source={{ uri: t.poster_url }} style={styles.continuationPoster} resizeMode="cover" />
+                  ) : (
+                    <View style={[styles.continuationPoster, styles.continuationFallback]}>
+                      <Ionicons name="film-outline" size={16} color={colors.muted2} />
+                    </View>
+                  )}
+                </View>
                 <Text style={styles.continuationCaption} numberOfLines={1}>{t.title}</Text>
               </Pressable>
             ))}
@@ -361,6 +365,14 @@ const styles = StyleSheet.create({
   },
   continuationCard: {
     position: "relative",
+    alignItems: "center",
+  },
+  continuationRankAbove: {
+    fontFamily: fonts.sansBold,
+    color: colors.ink,
+    fontSize: 15,
+    letterSpacing: -0.2,
+    marginBottom: 2,
   },
   continuationPoster: {
     width: "100%",

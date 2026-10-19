@@ -28,6 +28,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
+import { EmptyView, LoadingView } from "@/components/state-views";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, spacing } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
@@ -248,25 +249,30 @@ export default function MyPicksScreen() {
       </View>
 
       {loading && !data ? (
-        <View style={[styles.center, { height: sectionHeight }]}>
-          <ActivityIndicator color={colors.accent} />
-        </View>
+        <LoadingView height={sectionHeight} />
       ) : sections.length === 0 ? (
-        <View style={[styles.center, { height: sectionHeight }]}>
-          <Ionicons name="bookmark-outline" size={28} color={colors.muted} />
-          <Text style={styles.emptyTitle}>Nothing here yet.</Text>
-          <Text style={styles.emptyBody}>
-            {activeCategory === "ranked_favorites"
-              ? "Rank your Top 20 to see them here."
+        <EmptyView
+          height={sectionHeight}
+          icon="bookmark-outline"
+          title="Nothing here yet."
+          body={
+            activeCategory === "ranked_favorites"
+              ? "Rank your Top 20 and they'll appear in order."
               : activeCategory === "my_next_watch"
-              ? "Save a title to your Next Watch list."
+              ? "Save a title to your Next Watch list to plan what you'll watch next."
               : activeCategory === "favorites"
-              ? "Rate titles 8 or higher and they'll land here."
+              ? "Rate titles 8 or higher and they'll land here automatically."
               : activeCategory === "watched"
               ? "Mark titles watched and they'll appear here."
-              : "Create a list and add titles."}
-          </Text>
-        </View>
+              : "Create a list to start organizing titles you love."
+          }
+          actionLabel={activeCategory === "ranked_favorites" ? "Rank favorites" : activeCategory === "my_lists" ? "Create a list" : "Start swiping"}
+          onAction={() => {
+            if (activeCategory === "ranked_favorites") router.push("/favorites/ranked");
+            else if (activeCategory === "my_lists") router.push("/(tabs)/my-picks");
+            else router.push("/(tabs)/swipe");
+          }}
+        />
       ) : (
         <FlatList
           data={sections}

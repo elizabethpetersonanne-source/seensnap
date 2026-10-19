@@ -24,6 +24,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
+import { EmptyView, LoadingView } from "@/components/state-views";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, spacing } from "@/constants/theme";
 import { trackEvent } from "@/lib/analytics";
@@ -187,15 +188,16 @@ export default function TeamHomeScreen() {
       </View>
 
       {loading && !data ? (
-        <View style={[styles.center, { height: sectionHeight }]}>
-          <ActivityIndicator color={colors.accent} />
-        </View>
+        <LoadingView height={sectionHeight} />
       ) : pages.length === 0 ? (
-        <View style={[styles.center, { height: sectionHeight }]}>
-          <Ionicons name="people-outline" size={28} color={colors.muted} />
-          <Text style={styles.emptyTitle}>Nothing here yet.</Text>
-          <Text style={styles.emptyBody}>Add titles to this team to see them show up as sections here.</Text>
-        </View>
+        <EmptyView
+          height={sectionHeight}
+          icon="people-outline"
+          title="Nothing here yet."
+          body="Add titles to this team to see them show up as Top Picks, Recently Added, and more."
+          actionLabel="Add a title"
+          onAction={() => router.push("/(tabs)/swipe")}
+        />
       ) : (
         <FlatList
           data={pages}

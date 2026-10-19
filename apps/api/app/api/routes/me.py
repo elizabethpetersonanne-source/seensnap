@@ -225,6 +225,20 @@ def delete_avatar(current_user: CurrentUser, db: DbSession) -> ProfileResponse:
     )
 
 
+def _to_prefs_response(preferences: UserPreferences) -> PreferencesResponse:
+    return PreferencesResponse(
+        notifications_enabled=preferences.notifications_enabled,
+        preferred_regions=preferences.preferred_regions,
+        connected_streaming_services=preferences.connected_streaming_services,
+        instagram_share_default=preferences.instagram_share_default,
+        onboarding_completed=preferences.onboarding_completed,
+        profile_visibility=preferences.profile_visibility,
+        show_activity=preferences.show_activity,
+        show_teams=preferences.show_teams,
+        show_public_lists=preferences.show_public_lists,
+    )
+
+
 @router.get("/preferences", response_model=PreferencesResponse)
 def get_preferences(current_user: CurrentUser, db: DbSession) -> PreferencesResponse:
     preferences = db.scalar(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
@@ -235,13 +249,7 @@ def get_preferences(current_user: CurrentUser, db: DbSession) -> PreferencesResp
             connected_streaming_services=[],
             instagram_share_default=True,
         )
-    return PreferencesResponse(
-        notifications_enabled=preferences.notifications_enabled,
-        preferred_regions=preferences.preferred_regions,
-        connected_streaming_services=preferences.connected_streaming_services,
-        instagram_share_default=preferences.instagram_share_default,
-        onboarding_completed=preferences.onboarding_completed,
-    )
+    return _to_prefs_response(preferences)
 
 
 @router.patch("/preferences", response_model=PreferencesResponse)
@@ -274,16 +282,20 @@ def patch_preferences(
 
     if payload.onboarding_completed is not None:
         preferences.onboarding_completed = payload.onboarding_completed
+    if payload.notifications_enabled is not None:
+        preferences.notifications_enabled = payload.notifications_enabled
+    if payload.profile_visibility is not None:
+        preferences.profile_visibility = payload.profile_visibility
+    if payload.show_activity is not None:
+        preferences.show_activity = payload.show_activity
+    if payload.show_teams is not None:
+        preferences.show_teams = payload.show_teams
+    if payload.show_public_lists is not None:
+        preferences.show_public_lists = payload.show_public_lists
 
     db.commit()
     db.refresh(preferences)
-    return PreferencesResponse(
-        notifications_enabled=preferences.notifications_enabled,
-        preferred_regions=preferences.preferred_regions,
-        connected_streaming_services=preferences.connected_streaming_services,
-        instagram_share_default=preferences.instagram_share_default,
-        onboarding_completed=preferences.onboarding_completed,
-    )
+    return _to_prefs_response(preferences)
 
 
 @router.get("/onboarding-progress", response_model=OnboardingProgressResponse)

@@ -23,11 +23,21 @@ class PreferencesResponse(BaseModel):
     connected_streaming_services: list[str]
     instagram_share_default: bool
     onboarding_completed: bool = False
+    # Oct-19 privacy prefs. "public" | "followers".
+    profile_visibility: str = "public"
+    show_activity: bool = True
+    show_teams: bool = True
+    show_public_lists: bool = True
 
 
 class PreferencesUpdateRequest(BaseModel):
     connected_streaming_services: list[str] | None = None
     onboarding_completed: bool | None = None
+    notifications_enabled: bool | None = None
+    profile_visibility: str | None = Field(default=None, pattern="^(public|followers)$")
+    show_activity: bool | None = None
+    show_teams: bool | None = None
+    show_public_lists: bool | None = None
 
 
 class ProfileUpdateRequest(BaseModel):

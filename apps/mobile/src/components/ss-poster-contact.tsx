@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import { Animated, Image, StyleSheet, View } from "react-native";
 
+import { useReduceMotion } from "@/lib/motion";
+
 type SSPosterContactProps = {
   posters: string[];
   active?: boolean;
@@ -13,6 +15,7 @@ const POSTER_H = 120;
 export function SSPosterContact({ posters, active = true, style }: SSPosterContactProps) {
   const translateX = useRef(new Animated.Value(0)).current;
   const animRef = useRef<Animated.CompositeAnimation | null>(null);
+  const reduce = useReduceMotion();
 
   function startLoop() {
     animRef.current = Animated.loop(
@@ -38,6 +41,13 @@ export function SSPosterContact({ posters, active = true, style }: SSPosterConta
   }
 
   useEffect(() => {
+    // Visual Design brief §12: hold the final frame under reduced motion
+    // rather than running the drift loop.
+    if (reduce) {
+      stopLoop();
+      translateX.setValue(0);
+      return;
+    }
     if (active) {
       startLoop();
     } else {
@@ -47,7 +57,7 @@ export function SSPosterContact({ posters, active = true, style }: SSPosterConta
       stopLoop();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [active]);
+  }, [active, reduce]);
 
   const visible = posters.slice(0, 4);
 

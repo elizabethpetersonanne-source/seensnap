@@ -9,8 +9,9 @@
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
+  ActivityIndicator,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -21,16 +22,73 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { colors, fonts, radii, spacing } from "@/constants/theme";
+import { apiRequest } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 
 
 type Visibility = "public" | "followers";
 
+type Prefs = {
+  profile_visibility: Visibility;
+  show_activity: boolean;
+  show_teams: boolean;
+  show_public_lists: boolean;
+};
+
 
 export default function PrivacySettingsScreen() {
+  const { sessionToken } = useAuth();
+  const [loading, setLoading] = useState(true);
   const [visibility, setVisibility] = useState<Visibility>("public");
   const [showActivity, setShowActivity] = useState(true);
   const [showTeams, setShowTeams] = useState(true);
   const [showLists, setShowLists] = useState(true);
+
+  useEffect(() => {
+    if (!sessionToken) return;
+    let cancelled = false;
+    apiRequest<Prefs>("/me/preferences", { token: sessionToken })
+      .then((res) => {
+        if (cancelled) return;
+        setVisibility(res.profile_visibility === "followers" ? "followers" : "public");
+        setShowActivity(res.show_activity ?? true);
+        setShowTeams(res.show_teams ?? true);
+        setShowLists(res.show_public_lists ?? true);
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, [sessionToken]);
+
+  async function persist(update: Partial<Prefs>) {
+    if (!sessionToken) return;
+    try {
+      await apiRequest("/me/preferences", {
+        method: "PATCH",
+        token: sessionToken,
+        body: JSON.stringify(update),
+      });
+    } catch {
+      // Keep the local optimistic state; silent failure beats stranding the user.
+    }
+  }
+
+  function updateVisibility(next: Visibility) {
+    setVisibility(next);
+    void persist({ profile_visibility: next });
+  }
+  function updateActivity(v: boolean) {
+    setShowActivity(v);
+    void persist({ show_activity: v });
+  }
+  function updateTeams(v: boolean) {
+    setShowTeams(v);
+    void persist({ show_teams: v });
+  }
+  function updateLists(v: boolean) {
+    setShowLists(v);
+    void persist({ show_public_lists: v });
+  }
 
   return (
     <SafeAreaView style={styles.root}>
@@ -42,45 +100,49 @@ export default function PrivacySettingsScreen() {
         <View style={{ width: 36 }} />
       </View>
 
-      <ScrollView contentContainerStyle={styles.body}>
-        <Text style={styles.groupTitle}>Profile visibility</Text>
+      {loading ? (
+        <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
+      ) : (
+        <ScrollView contentContainerStyle={styles.body}>
+          <Text style={styles.groupTitle}>Profile visibility</Text>
 
-        <Pressable style={styles.option} onPress={() => setVisibility("public")}>
-          <View style={styles.optionIcon}>
-            <Ionicons name="earth-outline" size={18} color={colors.ink} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.optionTitle}>Public profile</Text>
-            <Text style={styles.optionBody}>Anyone can find and view your profile.</Text>
-          </View>
-          {visibility === "public" ? (
-            <Ionicons name="checkmark-circle" size={18} color={colors.accent} />
-          ) : (
-            <View style={styles.optionCircle} />
-          )}
-        </Pressable>
+          <Pressable style={styles.option} onPress={() => updateVisibility("public")}>
+            <View style={styles.optionIcon}>
+              <Ionicons name="earth-outline" size={18} color={colors.ink} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.optionTitle}>Public profile</Text>
+              <Text style={styles.optionBody}>Anyone can find and view your profile.</Text>
+            </View>
+            {visibility === "public" ? (
+              <Ionicons name="checkmark-circle" size={18} color={colors.accent} />
+            ) : (
+              <View style={styles.optionCircle} />
+            )}
+          </Pressable>
 
-        <Pressable style={styles.option} onPress={() => setVisibility("followers")}>
-          <View style={styles.optionIcon}>
-            <Ionicons name="people-outline" size={18} color={colors.ink} />
-          </View>
-          <View style={{ flex: 1 }}>
-            <Text style={styles.optionTitle}>Followers only</Text>
-            <Text style={styles.optionBody}>Only approved followers can see your profile.</Text>
-          </View>
-          {visibility === "followers" ? (
-            <Ionicons name="checkmark-circle" size={18} color={colors.accent} />
-          ) : (
-            <View style={styles.optionCircle} />
-          )}
-        </Pressable>
+          <Pressable style={styles.option} onPress={() => updateVisibility("followers")}>
+            <View style={styles.optionIcon}>
+              <Ionicons name="people-outline" size={18} color={colors.ink} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.optionTitle}>Followers only</Text>
+              <Text style={styles.optionBody}>Only approved followers can see your profile.</Text>
+            </View>
+            {visibility === "followers" ? (
+              <Ionicons name="checkmark-circle" size={18} color={colors.accent} />
+            ) : (
+              <View style={styles.optionCircle} />
+            )}
+          </Pressable>
 
-        <Text style={styles.groupTitle}>Activity to show</Text>
+          <Text style={styles.groupTitle}>Activity to show</Text>
 
-        <ToggleRow icon="pulse-outline" label="Show my activity" body="Ratings, lists and activity in feed" value={showActivity} onToggle={setShowActivity} />
-        <ToggleRow icon="people" label="Show my Watch Teams" body="Keep your teams private" value={showTeams} onToggle={setShowTeams} />
-        <ToggleRow icon="list" label="Show my public lists" body="Allow others to discover your lists" value={showLists} onToggle={setShowLists} />
-      </ScrollView>
+          <ToggleRow icon="pulse-outline" label="Show my activity" body="Ratings, lists and activity in feed" value={showActivity} onToggle={updateActivity} />
+          <ToggleRow icon="people" label="Show my Watch Teams" body="Keep your teams private" value={showTeams} onToggle={updateTeams} />
+          <ToggleRow icon="list" label="Show my public lists" body="Allow others to discover your lists" value={showLists} onToggle={updateLists} />
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
@@ -132,6 +194,7 @@ const styles = StyleSheet.create({
   closeBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
   headerTitle: { flex: 1, textAlign: "center", fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 15 },
   body: { padding: spacing.lg, gap: 8 },
+  center: { flex: 1, alignItems: "center", justifyContent: "center" },
   groupTitle: {
     fontFamily: fonts.monoSemiBold,
     color: colors.muted,

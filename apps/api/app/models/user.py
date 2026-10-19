@@ -75,5 +75,11 @@ class UserPreferences(Base):
     connected_streaming_services: Mapped[list[str]] = mapped_column(JSONB, default=list)
     instagram_share_default: Mapped[bool] = mapped_column(Boolean, default=True)
     onboarding_completed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Oct-18 Visual Design brief §10 + Settings §4: profile visibility
+    # and per-area activity toggles. "public" | "followers".
+    profile_visibility: Mapped[str] = mapped_column(String(16), default="public")
+    show_activity: Mapped[bool] = mapped_column(Boolean, default=True)
+    show_teams: Mapped[bool] = mapped_column(Boolean, default=True)
+    show_public_lists: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

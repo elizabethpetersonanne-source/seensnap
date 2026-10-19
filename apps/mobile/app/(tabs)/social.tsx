@@ -912,10 +912,9 @@ function FeedCard({
         </View>
       </Pressable>
 
-      {post.caption ? (
-        <Text style={styles.cardCaption}>{post.caption}</Text>
-      ) : null}
-
+      {/* Artwork hero first — brief §9 "artwork/video as the dominant
+          area." Caption sits below so the composition reads title →
+          Take, not Take → title. */}
       {post.title ? (
         <Pressable
           style={styles.cardTitleBlock}
@@ -937,6 +936,10 @@ function FeedCard({
             ) : null}
           </View>
         </Pressable>
+      ) : null}
+
+      {post.caption ? (
+        <Text style={styles.cardCaption}>{post.caption}</Text>
       ) : null}
 
       {post.list ? (
@@ -1354,19 +1357,20 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
   },
   followBtnText: { color: colors.background, fontFamily: fonts.monoSemiBold, fontSize: 11, letterSpacing: 0.4 },
-  // Feed card
+  // Feed card — Visual Design brief §9: cinematic, artwork-dominant.
+  // No border, no backplate card — the title artwork IS the card. The
+  // author row floats above and the caption/Take sits below, close to
+  // the artwork so the composition reads as one unit.
   card: {
-    borderRadius: radii.md,
-    borderWidth: 1,
-    borderColor: rules.default,
-    backgroundColor: colors.surface,
-    overflow: "hidden",
+    marginBottom: spacing.lg,
+    overflow: "visible",
   },
   cardAuthorRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 10,
-    padding: spacing.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
   },
   cardAuthorName: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 14 },
   cardAuthorMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 11, marginTop: 2 },
@@ -1375,26 +1379,29 @@ const styles = StyleSheet.create({
     fontFamily: fonts.serif,
     fontStyle: "italic",
     fontSize: 15,
-    lineHeight: 20,
+    lineHeight: 21,
     paddingHorizontal: spacing.md,
-    paddingBottom: spacing.sm,
+    paddingTop: spacing.sm,
   },
   cardTitleBlock: {
-    height: 180,
+    // Taller hero so artwork dominates per brief §9. 16:9 is close to
+    // most TMDB backdrop aspect ratios; the overlay places title +
+    // rating inside the lower-left region so faces aren't obscured.
+    aspectRatio: 16 / 9,
     marginHorizontal: spacing.md,
-    borderRadius: radii.sm,
+    borderRadius: radii.lg,
     overflow: "hidden",
     backgroundColor: colors.background,
   },
   cardTitleShade: {
     ...StyleSheet.absoluteFillObject,
-    backgroundColor: "rgba(4,8,14,0.55)",
+    backgroundColor: "rgba(4,8,14,0.42)",
   },
   cardTitleBody: {
     position: "absolute",
-    left: 14,
-    right: 14,
-    bottom: 14,
+    left: spacing.md,
+    right: spacing.md,
+    bottom: spacing.md,
     flexDirection: "row",
     alignItems: "flex-end",
     justifyContent: "space-between",
@@ -1402,9 +1409,9 @@ const styles = StyleSheet.create({
   },
   cardTitleName: {
     color: colors.ink,
-    fontFamily: fonts.serifBold,
-    fontSize: 22,
-    lineHeight: 26,
+    fontFamily: fonts.sansBold,
+    fontSize: 24,
+    lineHeight: 28,
     letterSpacing: -0.3,
     flex: 1,
   },
