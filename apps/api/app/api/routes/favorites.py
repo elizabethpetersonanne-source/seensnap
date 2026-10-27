@@ -28,7 +28,7 @@ from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
-from app.models.social import RankedFavorite, Rating
+from app.models.social import FeedEvent, RankedFavorite, Rating
 
 
 router = APIRouter()
@@ -224,6 +224,15 @@ class MoveRequest(BaseModel):
     to_position: int = Field(ge=1, le=100)
 
 
+class PublishRankChangeRequest(BaseModel):
+    """Oct-27 spec SOC-01: a Social post representing a deliberate
+    rank move. The viewer passes the previous_rank they saw in the UI;
+    the server reads the current (post-move) rank from RankedFavorite.
+    `visibility` matches the author's publishing default."""
+    previous_rank: int | None = Field(default=None, ge=1, le=100)
+    visibility: str = Field(default="followers", pattern="^(public|followers|private)$")
+
+
 @router.post("/ranked/{title_id}/move", response_model=RankedFavoritesResponse)
 def move_ranked_favorite(
     title_id: UUID,
@@ -257,6 +266,55 @@ def move_ranked_favorite(
             f.version += 1
     db.commit()
     return RankedFavoritesResponse(items=_hydrate(db, current_user.id, ordered), total=len(ordered))
+
+
+@router.post("/ranked/{title_id}/publish-rank-change")
+def publish_rank_change(
+    title_id: UUID,
+    payload: PublishRankChangeRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> dict:
+    """SOC-01: emit a Social feed event capturing a deliberate rank
+    move. previous_rank + new_rank are snapshotted on the event payload
+    so the historical label never recomputes from the author's current
+    ranking."""
+    target = db.scalar(
+        select(RankedFavorite).where(
+            RankedFavorite.user_id == current_user.id,
+            RankedFavorite.content_title_id == title_id,
+        )
+    )
+    if target is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not in your ranked favorites")
+    title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
+    if title is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
+
+    event_payload = {
+        "previous_rank": payload.previous_rank,
+        "new_rank": target.position,
+        "title_name_at_share": title.title,
+        "poster_url_at_share": title.poster_url,
+    }
+    event = FeedEvent(
+        id=uuid4(),
+        actor_user_id=current_user.id,
+        team_id=None,
+        content_title_id=title_id,
+        event_type="rank_change",
+        source_type="social_post",
+        source_id=None,
+        visibility=payload.visibility,
+        rating_id=None,
+        list_id=None,
+        payload=event_payload,
+    )
+    db.add(event)
+    db.commit()
+    db.refresh(event)
+    from app.services.social_feed import hydrate_feed_event
+    return hydrate_feed_event(db, event, current_user.id)
 
 
 @router.delete("/ranked/{title_id}", response_model=RankedFavoritesResponse)

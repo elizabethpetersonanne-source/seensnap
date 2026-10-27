@@ -881,6 +881,12 @@ function FeedCard({
     (typeof item.payload.body === "string" ? item.payload.body : null);
   const ratingValue = typeof item.payload.rating === "number" ? item.payload.rating : null;
   const isOwnPost = Boolean(item.can_delete);
+  // SOC-01: rank-change posts carry a historical label snapshot. Trust
+  // what the server computed from the stored previous/new ranks — do
+  // not recompute from the author's current ranking.
+  const rankChange = item.event_type === "rank_change"
+    ? (item as unknown as { rank_change?: { label?: string; accessibility_label?: string; direction?: string } }).rank_change ?? null
+    : null;
 
   const topLevel = useMemo(() => comments.filter((comment) => !comment.parent_comment_id), [comments]);
   const visibleTop = expanded ? topLevel : topLevel.slice(0, 2);
@@ -967,6 +973,14 @@ function FeedCard({
               ) : null}
             </View>
             <View style={styles.heroCopy}>
+              {rankChange?.label ? (
+                <View
+                  style={styles.rankChangePill}
+                  accessibilityLabel={rankChange.accessibility_label ?? rankChange.label}
+                >
+                  <Text style={styles.rankChangePillText}>{rankChange.label}</Text>
+                </View>
+              ) : null}
               <Text style={styles.heroTitle} numberOfLines={2}>
                 {item.title.title}
               </Text>
@@ -1340,6 +1354,8 @@ function typeLabel(type: string) {
       return "recommended to Watch Team";
     case "wall_post":
       return "posted to Social Feed";
+    case "rank_change":
+      return "moved a ranked favorite";
     default:
       return type.replaceAll("_", " ");
   }
@@ -1676,6 +1692,19 @@ const styles = StyleSheet.create({
     fontWeight: "900",
     fontSize: 18,
     letterSpacing: -0.3,
+  },
+  rankChangePill: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  rankChangePillText: {
+    color: colors.background,
+    fontSize: 11,
+    letterSpacing: 1,
+    fontWeight: "700",
   },
   textOnlyPost: {
     backgroundColor: colors.backgroundElevated,

@@ -48,6 +48,10 @@ SOCIAL_POST_TYPES: set[str] = {
     # They were being created but never surfaced in the Following feed
     # because the type wasn't in the allowed set.
     "wall_post",
+    # Oct-27 spec SOC-01: deliberately published ranking changes
+    # (NEW #N / ↑ #N / ↓ #N). Only emitted when the viewer explicitly
+    # publishes a move; routine reshuffling does not create a post.
+    "rank_change",
 }
 
 # Visibility levels for social posts. `team` is used only by team activity
@@ -696,4 +700,48 @@ def hydrate_feed_event(
             "following_author": viewer_following_author,
             "is_author": viewer_user_id == event.actor_user_id if viewer_user_id else False,
         },
+        # Oct-27 SOC-01: rank_change posts carry previous_rank + new_rank
+        # in payload. Keep the historical snapshot — do not recompute
+        # from the author's current ranking.
+        "rank_change": _rank_change_payload(event),
+    }
+
+
+def _rank_change_payload(event: FeedEvent) -> dict | None:
+    if event.event_type != "rank_change":
+        return None
+    p = event.payload if isinstance(event.payload, dict) else {}
+    prev = p.get("previous_rank")
+    nxt = p.get("new_rank")
+    prev_int = int(prev) if isinstance(prev, (int, float)) else None
+    nxt_int = int(nxt) if isinstance(nxt, (int, float)) else None
+    label = None
+    direction: str | None = None
+    accessible: str | None = None
+    if nxt_int is not None:
+        if prev_int is None:
+            label = f"NEW #{nxt_int}"
+            direction = "new"
+            accessible = f"New in ranked favorites at number {nxt_int}"
+        elif prev_int > nxt_int:
+            label = f"↑ #{nxt_int}"
+            direction = "up"
+            accessible = f"Moved up to number {nxt_int}"
+        elif prev_int < nxt_int:
+            label = f"↓ #{nxt_int}"
+            direction = "down"
+            accessible = f"Moved down to number {nxt_int}"
+        else:
+            # Same rank — the author shouldn't be able to publish this
+            # per the write path, but render honestly if it slipped
+            # through.
+            label = f"#{nxt_int}"
+            direction = "same"
+            accessible = f"Stayed at number {nxt_int}"
+    return {
+        "previous_rank": prev_int,
+        "new_rank": nxt_int,
+        "label": label,
+        "direction": direction,
+        "accessibility_label": accessible,
     }

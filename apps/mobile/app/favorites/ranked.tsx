@@ -50,6 +50,15 @@ export default function RankedFavoritesScreen() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmRebuild, setConfirmRebuild] = useState<Row[] | null>(null);
+  // SOC-01: after a deliberate move, offer a Publish chip so the move
+  // becomes a Social post. previous_rank is captured BEFORE the move
+  // so the historical label stays accurate even if the author keeps
+  // reshuffling after publishing.
+  const [publishable, setPublishable] = useState<
+    { titleId: string; title: string; previousRank: number | null; newRank: number } | null
+  >(null);
+  const [publishBusy, setPublishBusy] = useState(false);
+  const [publishedTitleIds, setPublishedTitleIds] = useState<Set<string>>(new Set());
 
   const visibleRows = view === "top20" ? rows.slice(0, 20) : rows;
 
@@ -76,6 +85,7 @@ export default function RankedFavoritesScreen() {
     const target = direction === "up" ? currentIndex - 1 : currentIndex + 1;
     if (target < 0 || target >= rows.length) return;
     const toPosition = target + 1;
+    const previousRank = row.position;
     setBusyId(row.title_id);
     // Optimistic reorder
     const next = [...rows];
@@ -92,11 +102,48 @@ export default function RankedFavoritesScreen() {
         },
       );
       setRows(data.items);
+      // Offer a Publish chip for this move. New rank is read from the
+      // server response so we never surface a stale optimistic value.
+      const current = data.items.find((r) => r.title_id === row.title_id);
+      if (current && current.position !== previousRank) {
+        setPublishable({
+          titleId: row.title_id,
+          title: row.title,
+          previousRank,
+          newRank: current.position,
+        });
+      }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't reorder.");
       void load();
     } finally {
       setBusyId(null);
+    }
+  }
+
+
+  async function publishRankChange() {
+    if (!sessionToken || !publishable || publishBusy) return;
+    setPublishBusy(true);
+    try {
+      await apiRequest(`/me/favorites/ranked/${publishable.titleId}/publish-rank-change`, {
+        method: "POST",
+        token: sessionToken,
+        body: JSON.stringify({
+          previous_rank: publishable.previousRank,
+          visibility: "followers",
+        }),
+      });
+      setPublishedTitleIds((s) => {
+        const next = new Set(s);
+        next.add(publishable.titleId);
+        return next;
+      });
+      setPublishable(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Couldn't publish.");
+    } finally {
+      setPublishBusy(false);
     }
   }
 
@@ -207,6 +254,66 @@ export default function RankedFavoritesScreen() {
           </Text>
         </View>
       ) : (
+        <>
+        {publishable ? (() => {
+          const direction =
+            publishable.previousRank === null
+              ? "new"
+              : publishable.previousRank > publishable.newRank
+              ? "up"
+              : publishable.previousRank < publishable.newRank
+              ? "down"
+              : "same";
+          const chip =
+            direction === "up"
+              ? `↑ #${publishable.newRank}`
+              : direction === "down"
+              ? `↓ #${publishable.newRank}`
+              : direction === "new"
+              ? `NEW #${publishable.newRank}`
+              : `#${publishable.newRank}`;
+          const published = publishedTitleIds.has(publishable.titleId);
+          return (
+            <View style={styles.publishBar}>
+              <View style={styles.publishPill}>
+                <Text style={styles.publishPillText}>{chip}</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={styles.publishTitle} numberOfLines={1}>{publishable.title}</Text>
+                <Text style={styles.publishBody}>
+                  {published ? "Posted to your followers." : "Share this move with your followers?"}
+                </Text>
+              </View>
+              {!published ? (
+                <>
+                  <Pressable
+                    onPress={() => setPublishable(null)}
+                    hitSlop={6}
+                    style={styles.publishDismiss}
+                    accessibilityRole="button"
+                    accessibilityLabel="Don't post this move"
+                  >
+                    <Text style={styles.publishDismissLabel}>Not now</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={publishRankChange}
+                    disabled={publishBusy}
+                    hitSlop={6}
+                    style={({ pressed }) => [styles.publishBtn, (publishBusy || pressed) && { opacity: 0.65 }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Publish this rank change to Social"
+                  >
+                    <Text style={styles.publishBtnLabel}>{publishBusy ? "…" : "Publish"}</Text>
+                  </Pressable>
+                </>
+              ) : (
+                <Pressable onPress={() => setPublishable(null)} hitSlop={6} style={styles.publishDismiss}>
+                  <Ionicons name="close" size={14} color={colors.muted} />
+                </Pressable>
+              )}
+            </View>
+          );
+        })() : null}
         <FlatList
           data={visibleRows}
           keyExtractor={(item) => item.title_id}
@@ -258,6 +365,7 @@ export default function RankedFavoritesScreen() {
             </View>
           )}
         />
+        </>
       )}
 
       {/* Rebuild-from-ratings confirmation preview. */}
@@ -301,6 +409,46 @@ export default function RankedFavoritesScreen() {
 
 const styles = StyleSheet.create({
   safeArea: { flex: 1, backgroundColor: colors.background },
+  publishBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: spacing.lg,
+    marginBottom: 10,
+    padding: 10,
+    borderRadius: radii.md,
+    backgroundColor: "rgba(255,255,255,0.04)",
+    borderWidth: 1,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  publishPill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  publishPillText: {
+    color: colors.background,
+    fontSize: 11,
+    letterSpacing: 1,
+    fontWeight: "700",
+  },
+  publishTitle: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 13 },
+  publishBody: { fontFamily: fonts.sans, color: colors.muted, fontSize: 11, marginTop: 2 },
+  publishDismiss: { paddingHorizontal: 8, paddingVertical: 6 },
+  publishDismissLabel: { fontFamily: fonts.sansSemiBold, color: colors.muted, fontSize: 12 },
+  publishBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  publishBtnLabel: {
+    color: colors.background,
+    fontSize: 12,
+    letterSpacing: 0.5,
+    fontWeight: "700",
+  },
   header: {
     flexDirection: "row",
     alignItems: "center",
