@@ -38,6 +38,9 @@ export function OutlineActionRail({
   onComment,
   onSend,
   onTeam,
+  // Oct-27 spec SOC-02: Post to Social sits alongside Save / Send / Rate.
+  // Opens a composer with the exact TitleRef; does not publish immediately.
+  onPostToSocial,
   // Rating state passed through to InlineRatingRail
   ratingSnapshot,
   onRatingChanged,
@@ -54,6 +57,7 @@ export function OutlineActionRail({
   onComment?: () => void;
   onSend: () => void;
   onTeam?: () => void;
+  onPostToSocial?: () => void;
   ratingSnapshot: RatingSnapshot | null;
   onRatingChanged?: (next: RatingSnapshot) => void;
   size?: "sm" | "md" | "lg";
@@ -96,6 +100,14 @@ export function OutlineActionRail({
           icon="people-outline"
           label="Add to a Watch Team"
           onPress={onTeam}
+          size={iconSize}
+        />
+      ) : null}
+      {onPostToSocial ? (
+        <RailButton
+          icon="megaphone-outline"
+          label="Post to Social"
+          onPress={onPostToSocial}
           size={iconSize}
         />
       ) : null}

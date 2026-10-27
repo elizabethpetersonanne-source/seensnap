@@ -624,6 +624,10 @@ export function UniversalTitleModal({
                       setShowSendSheet(true);
                     }}
                     onTeam={openAddToTeamFlow}
+                    onPostToSocial={() => {
+                      if (!currentTitle) return;
+                      setShowShareToFeed(true);
+                    }}
                     ratingSnapshot={ratingSnapshot}
                     onRatingChanged={setRatingSnapshot}
                   />
