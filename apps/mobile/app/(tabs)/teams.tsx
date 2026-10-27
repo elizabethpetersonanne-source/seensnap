@@ -885,49 +885,48 @@ export default function TeamsScreen() {
               const fallbackAvatarUri = !coverUri && team.recent_member_avatars.length > 0
                 ? resolveMediaUrl(team.recent_member_avatars[0])
                 : null;
+              const unread = team.unread_activity_count ?? 0;
+              const latest = team.latest_activity ?? null;
               return (
                 <Pressable
                   key={team.id}
-                  style={({ pressed }) => [styles.cinematicTeamCard, pressed && { opacity: 0.88 }]}
+                  style={({ pressed }) => [styles.compactTeamRow, pressed && { opacity: 0.75 }]}
                   onPress={() => {
                     router.push({ pathname: "/teams/[teamId]/home", params: { teamId: team.id } });
                   }}
                   onLongPress={() => setSelectedTeamId(team.id)}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Open ${team.name} — ${team.member_count} members`}
                 >
-                  {coverUri ? (
-                    <Image source={{ uri: coverUri }} style={StyleSheet.absoluteFill} resizeMode="cover" />
-                  ) : fallbackAvatarUri ? (
-                    <Image
-                      source={{ uri: fallbackAvatarUri }}
-                      style={StyleSheet.absoluteFill}
-                      resizeMode="cover"
-                      blurRadius={16}
-                    />
-                  ) : (
-                    <View style={[StyleSheet.absoluteFill, styles.cinematicTeamFallback]}>
-                      <Text style={styles.cinematicTeamFallbackEmoji}>{team.icon || "🍿"}</Text>
-                    </View>
-                  )}
-                  <View style={styles.cinematicTeamShade} />
-                  <View style={styles.cinematicTeamBody}>
-                    <Text numberOfLines={1} style={styles.cinematicTeamName}>{team.name}</Text>
-                    <View style={styles.cinematicTeamMetaRow}>
-                      {team.recent_member_avatars.slice(0, 4).map((uri, idx) => (
-                        <Image
-                          key={`${team.id}-av-${idx}`}
-                          source={{ uri: resolveMediaUrl(uri) ?? uri }}
-                          style={[
-                            styles.cinematicTeamAvatar,
-                            { marginLeft: idx === 0 ? 0 : -8, zIndex: 4 - idx },
-                          ]}
-                        />
-                      ))}
-                      <Text style={styles.cinematicTeamMemberCount}>
-                        {team.member_count} member{team.member_count === 1 ? "" : "s"}
-                      </Text>
-                    </View>
+                  <View style={styles.compactTeamArtWrap}>
+                    {coverUri ? (
+                      <Image source={{ uri: coverUri }} style={styles.compactTeamArt} resizeMode="cover" />
+                    ) : fallbackAvatarUri ? (
+                      <Image
+                        source={{ uri: fallbackAvatarUri }}
+                        style={styles.compactTeamArt}
+                        resizeMode="cover"
+                        blurRadius={8}
+                      />
+                    ) : (
+                      <View style={[styles.compactTeamArt, styles.compactTeamArtFallback]}>
+                        <Text style={styles.compactTeamIcon}>{team.icon || "🍿"}</Text>
+                      </View>
+                    )}
                   </View>
-                  <Ionicons name="chevron-forward" size={18} color={colors.ink} style={styles.cinematicTeamChevron} />
+                  <View style={styles.compactTeamBody}>
+                    <Text numberOfLines={1} style={styles.compactTeamName}>{team.name}</Text>
+                    <Text numberOfLines={1} style={styles.compactTeamMeta}>
+                      {team.member_count} {team.member_count === 1 ? "member" : "members"}
+                      {unread > 0 ? `  ·  ${unread} new` : latest ? `  ·  ${latest}` : ""}
+                    </Text>
+                  </View>
+                  <View style={styles.compactTeamRight}>
+                    {unread > 0 ? (
+                      <View style={styles.compactTeamUnreadDot} />
+                    ) : null}
+                    <Ionicons name="chevron-forward" size={16} color={colors.muted2} />
+                  </View>
                 </Pressable>
               );
             })}
@@ -1906,6 +1905,65 @@ const styles = StyleSheet.create({
     position: "relative",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.14)",
+  },
+  // Oct-27 spec TEAM-01: compact entries ~100pt tall with real
+  // artwork, team name + member count + relevant activity cue.
+  compactTeamRow: {
+    width: "100%",
+    minHeight: 96,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.md,
+    padding: spacing.sm,
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.08)",
+  },
+  compactTeamArtWrap: {
+    width: 72,
+    height: 72,
+    borderRadius: radii.sm,
+    overflow: "hidden",
+    backgroundColor: colors.surfaceMuted,
+  },
+  compactTeamArt: {
+    width: 72,
+    height: 72,
+  },
+  compactTeamArtFallback: {
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  compactTeamIcon: {
+    fontSize: 28,
+    opacity: 0.7,
+  },
+  compactTeamBody: {
+    flex: 1,
+    gap: 4,
+  },
+  compactTeamName: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 15,
+  },
+  compactTeamMeta: {
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 12,
+  },
+  compactTeamRight: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 8,
+    paddingRight: 4,
+  },
+  compactTeamUnreadDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: colors.accent,
   },
   cinematicTeamFallback: {
     backgroundColor: colors.surfaceMuted,

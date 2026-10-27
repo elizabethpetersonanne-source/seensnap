@@ -99,12 +99,15 @@ export default function TeamHomeScreen() {
     for (const section of SECTIONS) {
       const items = data[section.key] ?? [];
       if (items.length === 0) continue;
-      // One hero + up to 4 continuation per section (first group of 5).
+      // Oct-27 spec TEAM-03: browse titles horizontally with complete
+      // pagination. Pass the full remainder (not just the first 4) so
+      // the continuation strip reaches every eligible title in the
+      // section. True server-side cursor pagination can land later.
       result.push({
         key: `${section.key}-${items[0].id}`,
         sectionLabel: section.label,
         hero: items[0],
-        four: items.slice(1, 5),
+        four: items.slice(1),
       });
     }
     return result;
