@@ -829,44 +829,10 @@ export default function DiscoverScreen() {
             />
           ) : null}
 
-          {/* Oct-19 Discover simplified mock: three horizontal shortcut
-              tiles (Swipe · My Picks · Watch Team). First one filled
-              yellow as the primary action; the other two outlined. */}
-          <View style={styles.shortcutRow}>
-            {[
-              { key: "swipe", label: "Swipe", icon: "layers" as const, route: "/(tabs)/swipe" as const, primary: true },
-              { key: "my-picks", label: "My Picks", icon: "heart-outline" as const, route: "/(tabs)/my-picks" as const, primary: false },
-              { key: "teams", label: "Watch Team", icon: "people-outline" as const, route: "/(tabs)/teams" as const, primary: false },
-            ].map((tile) => (
-              <Pressable
-                key={tile.key}
-                style={({ pressed }) => [
-                  styles.shortcutTile,
-                  tile.primary ? styles.shortcutTilePrimary : styles.shortcutTileOutline,
-                  pressed && { opacity: 0.78 },
-                ]}
-                onPress={() => {
-                  trackEvent("discover_quick_nav", { destination: tile.key });
-                  router.push(tile.route);
-                }}
-              >
-                <Ionicons
-                  name={tile.icon}
-                  size={22}
-                  color={tile.primary ? colors.background : colors.ink}
-                />
-                <Text
-                  style={[
-                    styles.shortcutTileLabel,
-                    tile.primary ? styles.shortcutTileLabelPrimary : styles.shortcutTileLabelOutline,
-                  ]}
-                  numberOfLines={1}
-                >
-                  {tile.label}
-                </Text>
-              </Pressable>
-            ))}
-          </View>
+          {/* Oct-27 spec DISC-01: shortcut row removed. Concierge
+              input + For You / Trending / Now in Theaters sections
+              are the only landing content. Swipe, My Picks and Watch
+              Teams remain accessible via the tab bar. */}
 
           {/* Oct-19 Discover simplified mock A: three cinematic
               sections — For You, Trending, Now in Theaters. Each one
@@ -1239,46 +1205,9 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.18)",
   },
 
-  // Primary nav row (Swipe / My Picks / Watch Teams)
   conciergeResultWrap: {
     position: "relative",
     overflow: "hidden",
-  },
-  shortcutRow: {
-    flexDirection: "row",
-    gap: 8,
-    paddingHorizontal: spacing.lg,
-    paddingTop: 4,
-    paddingBottom: spacing.sm,
-  },
-  shortcutTile: {
-    flex: 1,
-    aspectRatio: 1.05,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    gap: 8,
-  },
-  shortcutTilePrimary: {
-    backgroundColor: colors.accent,
-    borderWidth: 1.5,
-    borderColor: colors.accent,
-  },
-  shortcutTileOutline: {
-    backgroundColor: "transparent",
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.14)",
-  },
-  shortcutTileLabel: {
-    fontFamily: fonts.sansSemiBold,
-    fontSize: 13,
-    letterSpacing: 0.1,
-  },
-  shortcutTileLabelPrimary: {
-    color: colors.background,
-  },
-  shortcutTileLabelOutline: {
-    color: colors.ink,
   },
   conciergeLandingPremium: {
     paddingTop: 8,
