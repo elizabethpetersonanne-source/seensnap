@@ -482,6 +482,27 @@ export default function WhatNextScreen() {
         />
       </View>
 
+      {/* Oct-27 brief: compact swipe cheat sheet so the four
+          directions are legible without having to discover them. */}
+      <View style={styles.howToRow}>
+        <View style={styles.howToPill}>
+          <Ionicons name="arrow-back" size={11} color={colors.muted} />
+          <Text style={styles.howToLabel}>Pass</Text>
+        </View>
+        <View style={styles.howToPill}>
+          <Ionicons name="arrow-forward" size={11} color={colors.muted} />
+          <Text style={styles.howToLabel}>Save</Text>
+        </View>
+        <View style={styles.howToPill}>
+          <Ionicons name="arrow-up" size={11} color={colors.accent} />
+          <Text style={[styles.howToLabel, { color: colors.accent }]}>Watched + rate</Text>
+        </View>
+        <View style={styles.howToPill}>
+          <Ionicons name="arrow-down" size={11} color={colors.muted} />
+          <Text style={styles.howToLabel}>Watched · didn't like</Text>
+        </View>
+      </View>
+
       {loading ? <WhatNextSkeleton /> : null}
 
       {!loading && error ? (
@@ -967,6 +988,30 @@ const styles = StyleSheet.create({
     marginHorizontal: spacing.lg,
     marginTop: 10,
     overflow: "hidden",
+  },
+  howToRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  howToPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  howToLabel: {
+    fontSize: 10,
+    letterSpacing: 0.5,
+    color: colors.muted,
   },
   progressBarFill: {
     height: 3,

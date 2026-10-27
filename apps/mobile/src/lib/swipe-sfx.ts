@@ -38,7 +38,7 @@ function getContext(): AudioContext | null {
   return audioCtx;
 }
 
-export type SwipeSoundDirection = "left" | "right" | "up";
+export type SwipeSoundDirection = "left" | "right" | "up" | "down";
 
 /**
  * Fire the swipe sound. Different tonal profile per direction so the
@@ -66,13 +66,13 @@ export function playSwipeSound(direction: SwipeSoundDirection = "right"): void {
     gain.gain.exponentialRampToValueAtTime(0.14, now + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.12);
 
-    if (direction === "left") {
-      // Pass: single low sine that DROPS in pitch. Reads as a soft
-      // "no" thud without being harsh — feedback should nudge, not scold.
+    if (direction === "left" || direction === "down") {
+      // Pass / Watched-didn't-like: single low sine that DROPS in
+      // pitch. Soft "no" feedback without being harsh.
       const osc = ctx.createOscillator();
       osc.type = "sine";
-      osc.frequency.setValueAtTime(280, now);
-      osc.frequency.exponentialRampToValueAtTime(160, now + 0.11);
+      osc.frequency.setValueAtTime(direction === "down" ? 240 : 280, now);
+      osc.frequency.exponentialRampToValueAtTime(140, now + 0.11);
       osc.connect(gain);
       osc.start(now);
       osc.stop(now + 0.13);

@@ -94,20 +94,30 @@ export default function CollectionSeeAllScreen() {
       } else if (validKey === "now-in-theaters") {
         path = `/discover/now-in-theaters?limit=40`;
       }
-      const result = await apiRequest<{ items?: unknown[] }>(path, {
+      const result = await apiRequest<unknown>(path, {
         token: sessionToken,
       });
-      // For-you's /titles/recommendations/for-me returns [{title: ..., reason: ...}]
-      // Trending/Now in Theaters return [{...TitleItem}]
-      const rawItems = (result as unknown as { items?: unknown[] }).items ?? [];
-      const normalized: CollectionTitle[] = rawItems.map((item: unknown) => {
-        const anyItem = item as Record<string, unknown>;
-        const nested = (anyItem.title ?? null) as Record<string, unknown> | null;
-        if (nested && typeof nested === "object" && "id" in nested) {
-          return normalizeTitle(nested);
-        }
-        return normalizeTitle(anyItem);
-      });
+      // /titles/recommendations/for-me returns a BARE ARRAY of
+      // RecommendationResponse: [{title: ContentTitle, reason: ...}, ...]
+      // /discover/trending + /discover/now-in-theaters return
+      // TrendingResponse: {items: [...TitleItem]}. Accept either shape.
+      const rawItems: unknown[] = Array.isArray(result)
+        ? result
+        : (result as { items?: unknown[] })?.items ?? [];
+      const normalized: CollectionTitle[] = rawItems
+        .map((item: unknown): CollectionTitle | null => {
+          if (!item || typeof item !== "object") return null;
+          const anyItem = item as Record<string, unknown>;
+          const nested = (anyItem.title ?? null) as Record<string, unknown> | null;
+          if (nested && typeof nested === "object" && "id" in nested) {
+            return normalizeTitle(nested);
+          }
+          if ("id" in anyItem || "title_id" in anyItem) {
+            return normalizeTitle(anyItem);
+          }
+          return null;
+        })
+        .filter((t): t is CollectionTitle => t !== null && !!t.id);
       const filtered = normalized.filter((t) => {
         if (mediaFilter === "movie") return t.content_type === "movie";
         return t.content_type !== "movie";

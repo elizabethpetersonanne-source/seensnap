@@ -21,6 +21,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
 import { AppHeader } from "@/components/headers/app-header";
+import { RatingEditor, type RatingSnapshot } from "@/components/rating-editor";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { selectSafeBackdrop } from "@/lib/backdrop";
 import { useFallbackBackdrop } from "@/lib/backdrop-pool";
@@ -51,7 +52,12 @@ type RecommendationItem = {
   seed_title_id?: string | null;
 };
 
-type SwipeDirection = "left" | "right" | "up";
+// Oct-27 Swipe semantics:
+//   left  — Pass (not interested)
+//   right — Save to My Next Watch
+//   up    — Already watched + liked → force a rating
+//   down  — Already watched + didn't like → mark watched, score 2/10
+type SwipeDirection = "left" | "right" | "up" | "down";
 
 type SwipeEvent = {
   item: RecommendationItem;
@@ -101,6 +107,8 @@ export default function SwipeTab() {
   const [error, setError] = useState<string | null>(null);
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  // Oct-27 Swipe semantics: up-swipe opens the rating editor.
+  const [ratingTarget, setRatingTarget] = useState<{ titleId: string; titleName: string } | null>(null);
   const [showDetails, setShowDetails] = useState(false);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
@@ -443,6 +451,10 @@ export default function SwipeTab() {
           void animateSwipeRef.current("up");
           return;
         }
+        if (gesture.dy > SWIPE_UP_THRESHOLD) {
+          void animateSwipeRef.current("down");
+          return;
+        }
         if (Math.abs(gesture.dx) < 8 && Math.abs(gesture.dy) < 8) {
           openDetailsForActiveRef.current();
           return;
@@ -469,7 +481,9 @@ export default function SwipeTab() {
         ? { x: -420, y: 30 }
         : direction === "right"
           ? { x: 420, y: 30 }
-          : { x: 0, y: -420 };
+          : direction === "up"
+            ? { x: 0, y: -420 }
+            : { x: 0, y: 420 };
 
     await new Promise<void>((resolve) => {
       Animated.timing(pan, {
@@ -498,38 +512,22 @@ export default function SwipeTab() {
       void saveToNextWatch(item.title.id, item.title.title);
     }
     if (direction === "up") {
-      // "Watch Now" — save to Next Watch AND open the primary
-      // streaming destination if we have one on hand from the
-      // prefetched detail cache. Previously up-swipe only recorded
-      // the signal, so the button did nothing observable except
-      // advance the deck — user reported "Watch Now doesn't take
-      // you to stream, it just saves the title".
-      void saveToNextWatch(item.title.id, item.title.title);
-      const detail = detailCache[item.title.id];
-      const primary = detail
-        ? rankStreamingOptions(detail.streamingAvailability ?? [], preferredServices)[0]
-        : undefined;
-      const target = primary?.appUrl || primary?.webUrl;
-      if (target) {
-        trackEvent("recommendation_accept", {
-          title_id: item.title.id,
-          session_id: sessionId,
-          source: "swipe_watch_now",
-        });
-        if (sessionToken) {
-          void recordWatchHandoff(sessionToken, {
-            titleId: item.title.id,
-            providerCode: primary?.service ?? "unknown",
-            outboundUrl: target,
-            originSurface: "swipe_watch_now",
-          });
-        }
-        void Linking.openURL(target).catch(() => {});
-      } else {
-        // No streaming URL — fall back to opening the title detail
-        // sheet so the user can pick from all providers there.
-        void openDetails(item);
-      }
+      // Oct-27 Swipe semantics: UP means "already watched + liked".
+      // Open the rating editor so the user commits a specific score.
+      // Submitting any rating implicitly marks the title watched
+      // server-side; this surface never writes a watched event without
+      // a user action.
+      setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
+    }
+    if (direction === "down") {
+      // Oct-27 Swipe semantics: DOWN means "already watched + didn't
+      // like". Submit a low score (2/10) directly. The rating service
+      // marks the title watched; the viewer never has to confirm.
+      void apiRequest(`/me/ratings/${item.title.id}`, {
+        method: "PUT",
+        token: sessionToken,
+        body: JSON.stringify({ score: 2 }),
+      }).catch(() => {});
     }
     trackEvent(`swipe_${direction}`, {
       title_id: item.title.id,
@@ -1466,6 +1464,19 @@ export default function SwipeTab() {
           setAddToTeamTitle(null);
         }}
         onError={(message) => setError(message)}
+      />
+      {/* Oct-27 Swipe semantics: UP = already watched + liked → the
+          user must commit a specific 1–10 score before the deck
+          advances past this prompt. Dismissing is also allowed; the
+          swipe still counts as the watched signal. */}
+      <RatingEditor
+        visible={ratingTarget !== null}
+        token={sessionToken}
+        titleId={ratingTarget?.titleId ?? null}
+        titleName={ratingTarget?.titleName ?? null}
+        initial={null}
+        onClose={() => setRatingTarget(null)}
+        onChanged={(_: RatingSnapshot) => setRatingTarget(null)}
       />
 
       {toastVisible ? (
