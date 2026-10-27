@@ -55,7 +55,7 @@ type PublicProfile = {
   profile_summary?: string | null;
   current_obsessions: Array<{ title_name: string; poster_url?: string | null }>;
   top_posters: string[];
-  compatibility?: { compatibility: number; top_shared_genres: string[]; summary?: string | null } | null;
+  compatibility?: { compatibility: number | null; top_shared_genres: string[]; summary?: string | null } | null;
 };
 
 type RankedRow = {
@@ -412,10 +412,21 @@ function IdentityPage({
             </View>
             {profile.compatibility ? (
               <View style={styles.counterCol}>
-                <Text style={[styles.counterValue, { color: colors.accent }]}>
-                  {Math.round(profile.compatibility.compatibility)}%
-                </Text>
-                <Text style={styles.counterLabel}>SceneDNA with you</Text>
+                {profile.compatibility.compatibility != null ? (
+                  <>
+                    <Text style={[styles.counterValue, { color: colors.accent }]}>
+                      {Math.round(profile.compatibility.compatibility)}%
+                    </Text>
+                    <Text style={styles.counterLabel}>SceneDNA with you</Text>
+                  </>
+                ) : (
+                  <>
+                    <Text style={[styles.counterValue, { color: colors.muted, fontSize: 14 }]} numberOfLines={1}>
+                      Learning
+                    </Text>
+                    <Text style={styles.counterLabel}>Still learning your taste</Text>
+                  </>
+                )}
               </View>
             ) : null}
           </View>

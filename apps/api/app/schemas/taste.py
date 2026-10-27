@@ -37,7 +37,10 @@ class TasteProfileResponse(BaseModel):
 class CompatibilityResponse(BaseModel):
     user_a: UUID
     user_b: UUID
-    compatibility: int
+    # Oct-27 spec DNA-01: 0-100 units. Null when the model has no
+    # evidence to defensibly score the pair — the client shows
+    # "Still learning your taste" instead of a fabricated number.
+    compatibility: int | None = None
     top_shared_genres: list[str] = Field(default_factory=list)
     top_shared_titles: list[TasteTitleReferenceResponse] = Field(default_factory=list)
     shared_labels: list[str] = Field(default_factory=list)

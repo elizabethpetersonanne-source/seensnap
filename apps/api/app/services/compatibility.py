@@ -47,7 +47,11 @@ def refresh_compatibility(db: Session, user_a: UUID, user_b: UUID) -> Compatibil
     title_score = min(len(shared_titles) * 18, 36)
     label_score = min(len(shared_labels) * 12, 24)
     platform_score = min(len(shared_platforms) * 6, 12)
-    compatibility = max(8, min(99, int(round(genre_score * 0.35 + title_score + label_score + platform_score))))
+    # Oct-27 spec DNA-01: no arbitrary positive floor when evidence is
+    # absent. Clamp only on the upper end; let a thin-evidence pair
+    # read 0, and let the response serializer decide to show the
+    # number vs the "Still learning your taste" state.
+    compatibility = min(99, int(round(genre_score * 0.35 + title_score + label_score + platform_score)))
 
     record.compatibility = compatibility
     record.shared_genres = shared_genres[:3]
@@ -72,10 +76,21 @@ def get_compatibility(db: Session, user_a: UUID, user_b: UUID, *, force_refresh:
 
 
 def to_compatibility_response(record: CompatibilityScore, viewer_user_id: UUID, other_user_id: UUID) -> CompatibilityResponse:
+    # Oct-27 spec DNA-01: return null when evidence is absent so the
+    # client can show "Still learning your taste" instead of a
+    # fabricated number. Evidence = at least one shared genre, title,
+    # label or platform.
+    has_evidence = bool(
+        (record.shared_genres or [])
+        or (record.shared_titles or [])
+        or (record.shared_labels or [])
+        or (record.shared_platforms or [])
+    )
+    compat: int | None = record.compatibility if has_evidence else None
     return CompatibilityResponse(
         user_a=viewer_user_id,
         user_b=other_user_id,
-        compatibility=record.compatibility,
+        compatibility=compat,
         top_shared_genres=record.shared_genres or [],
         top_shared_titles=[TasteTitleReferenceResponse(**item) for item in (record.shared_titles or [])],
         shared_labels=record.shared_labels or [],
