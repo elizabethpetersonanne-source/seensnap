@@ -88,6 +88,10 @@ export function SaveToListSheet({ visible, token, titleId, source, onClose, onSa
           added_via: source,
         }),
       });
+      // STATE-02: broadcast save transition so every mounted
+      // surface showing this title updates immediately.
+      const { patchTitleState } = await import("@/lib/title-state");
+      patchTitleState(titleId, { saved: true, updated_at: new Date().toISOString() });
       onSaved?.(selectedList.name, already);
       onClose();
     } catch (error) {
@@ -120,6 +124,8 @@ export function SaveToListSheet({ visible, token, titleId, source, onClose, onSa
           added_via: source,
         }),
       });
+      const { patchTitleState } = await import("@/lib/title-state");
+      patchTitleState(titleId, { saved: true, updated_at: new Date().toISOString() });
       onSaved?.(created.name, false);
       setCreating(false);
       setNewName("");

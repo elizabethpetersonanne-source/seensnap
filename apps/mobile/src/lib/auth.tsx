@@ -364,6 +364,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
       clearRecentSearches(),
       SessionStorage.setItem(EXPLICIT_SIGN_OUT_KEY, "1"),
     ]);
+    // STATE-02: drop viewer-scoped title state so the next account that
+    // signs in on this device starts with a cold cache.
+    const { clearTitleStateCache } = await import("@/lib/title-state");
+    clearTitleStateCache();
     setSessionToken(null);
     setUser(null);
   };
