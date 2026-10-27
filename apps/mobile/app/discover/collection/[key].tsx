@@ -86,13 +86,14 @@ export default function CollectionSeeAllScreen() {
     try {
       let path = "";
       if (validKey === "for-you") {
-        // Pulls the For Your Scene rail at a wider limit so the See
-        // all page actually shows "more than four posters."
+        // Backend caps limit at 60 for this endpoint.
         path = `/titles/recommendations/for-me?limit=40`;
       } else if (validKey === "trending") {
-        path = `/discover/trending?limit=40`;
+        // Backend caps limit at 20 for trending until the next deploy
+        // raises it; staying under the cap avoids a 422.
+        path = `/discover/trending?limit=20`;
       } else if (validKey === "now-in-theaters") {
-        path = `/discover/now-in-theaters?limit=40`;
+        path = `/discover/now-in-theaters?limit=20`;
       }
       const result = await apiRequest<unknown>(path, {
         token: sessionToken,

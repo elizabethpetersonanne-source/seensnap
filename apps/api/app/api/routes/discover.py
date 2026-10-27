@@ -88,7 +88,7 @@ def _to_title_response(t: ContentTitle) -> TitleResponse:
 def discover_trending(
     db: DbSession,
     _user: CurrentUser,
-    limit: int = Query(default=12, ge=4, le=20),
+    limit: int = Query(default=12, ge=4, le=60),
 ) -> TrendingResponse:
     result = get_trending(db, limit=limit)
     return TrendingResponse(
@@ -103,7 +103,7 @@ def discover_trending(
 def discover_now_in_theaters(
     db: DbSession,
     _user: CurrentUser,
-    limit: int = Query(default=12, ge=4, le=20),
+    limit: int = Query(default=12, ge=4, le=60),
     region: str = Query(default="US", min_length=2, max_length=2),
 ) -> TrendingResponse:
     """Oct-19 Discover rebrief: TMDB movie/now_playing for the user's

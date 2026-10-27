@@ -64,6 +64,10 @@ export function FullBleedPosterSection({
   // callers that need a hand-crafted treatment (e.g. Social post with
   // actor avatar + big rating).
   overlay,
+  // Extra bottom gap for the continuation strip — used by My Picks so
+  // the horizontal strip doesn't hide behind the pill nav floating
+  // over the hero.
+  continuationBottomOffset,
 }: {
   hero: FullBleedTitle | null;
   four: FullBleedTitle[];
@@ -73,6 +77,7 @@ export function FullBleedPosterSection({
   onPressContinuation?: (title: FullBleedTitle, index: number) => void;
   railActions: VerticalRailAction[];
   overlay?: React.ReactNode;
+  continuationBottomOffset?: number;
 }) {
   const { width, height } = useWindowDimensions();
   const resolvedHeroHeight = heroHeight ?? Math.min(height * 0.78, 820);
@@ -172,7 +177,7 @@ export function FullBleedPosterSection({
           interaction is identical. Brief §5: "Horizontal movement
           continues the smaller-poster sequence." */}
       {smallList.length > 0 ? (
-        <View style={[styles.continuationScrollWrap, { height: smallHeight + 40, bottom: spacing.sm }]}>
+        <View style={[styles.continuationScrollWrap, { height: smallHeight + 40, bottom: (continuationBottomOffset ?? 0) + spacing.sm }]}>
           <ScrollView
             horizontal
             showsHorizontalScrollIndicator={false}

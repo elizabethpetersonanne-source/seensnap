@@ -16,6 +16,7 @@ import {
   ActivityIndicator,
   FlatList,
   Pressable,
+  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -322,14 +323,22 @@ export default function MyPicksScreen() {
                 onPressHero={() => void openTitle(item.hero.id)}
                 onPressContinuation={(t) => void openTitle(t.id)}
                 railActions={buildRail(item.hero)}
+                // Push the continuation strip above the pill nav so
+                // posters past the first few aren't hidden behind it.
+                continuationBottomOffset={56 + 20}
               />
             </View>
           )}
         />
       )}
 
-      <View style={[styles.pillNav, { bottom: insets.bottom + 56 }]}>
-        {CATEGORIES.map((cat, idx) => {
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.pillNavContent}
+        style={[styles.pillNav, { bottom: insets.bottom + 56 }]}
+      >
+        {CATEGORIES.map((cat) => {
           const active = cat.key === activeCategory;
           return (
             <Pressable
@@ -339,19 +348,15 @@ export default function MyPicksScreen() {
                 trackEvent("my_picks_category_changed", { category: cat.key });
               }}
               hitSlop={6}
-              style={styles.pillBtn}
+              style={[styles.pillBtn, active && styles.pillBtnActive]}
             >
-              <View style={[styles.pillDot, active && styles.pillDotActive]} />
               <Text style={[styles.pillLabel, active && styles.pillLabelActive]} numberOfLines={1}>
                 {cat.label}
               </Text>
-              {idx < CATEGORIES.length - 1 ? (
-                <Ionicons name="chevron-forward" size={11} color={colors.muted2} style={{ marginHorizontal: 2 }} />
-              ) : null}
             </Pressable>
           );
         })}
-      </View>
+      </ScrollView>
 
       <UniversalTitleModal
         visible={titleModalId !== null}
@@ -451,45 +456,39 @@ const styles = StyleSheet.create({
     textAlign: "center",
     maxWidth: 280,
   },
+  // Oct-27 user ask: pill nav is bigger and left-aligned (not spread
+  // across the whole width). Horizontal scroll keeps all five pills
+  // reachable without squeezing.
   pillNav: {
     position: "absolute",
-    left: spacing.sm,
-    right: spacing.sm,
-    flexDirection: "row",
+    left: 0,
+    right: 0,
+    maxHeight: 56,
+  },
+  pillNavContent: {
+    paddingHorizontal: spacing.lg,
+    gap: 8,
     alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: 10,
-    paddingVertical: 8,
+  },
+  pillBtn: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
     borderRadius: 999,
     backgroundColor: "rgba(0,0,0,0.72)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.12)",
   },
-  pillBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    flexShrink: 1,
-  },
-  pillDot: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: "rgba(255,255,255,0.3)",
-    marginRight: 5,
-  },
-  pillDotActive: {
+  pillBtnActive: {
     backgroundColor: colors.accent,
     borderColor: colors.accent,
   },
   pillLabel: {
-    fontFamily: fonts.sansMedium,
-    color: colors.muted,
-    fontSize: 10,
-    letterSpacing: 0.3,
-    flexShrink: 1,
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 13,
+    letterSpacing: 0.2,
   },
   pillLabelActive: {
-    color: colors.ink,
+    color: colors.background,
   },
 });

@@ -834,6 +834,31 @@ export default function DiscoverScreen() {
               are the only landing content. Swipe, My Picks and Watch
               Teams remain accessible via the tab bar. */}
 
+          {/* Oct-27 user ask: single accent CTA that opens the full
+              SceneDNA panel. Premium star indicates deeper analysis
+              lives behind the panel. */}
+          <Pressable
+            style={({ pressed }) => [styles.sceneDnaCta, pressed && { opacity: 0.78 }]}
+            onPress={() => {
+              trackEvent("discover_scene_dna_cta");
+              router.push("/scene-dna");
+            }}
+            accessibilityRole="button"
+            accessibilityLabel="View your SceneDNA — premium analysis"
+          >
+            <Ionicons name="sparkles" size={18} color={colors.accent} />
+            <View style={{ flex: 1 }}>
+              <Text style={styles.sceneDnaCtaTitle}>View your SceneDNA</Text>
+              <Text style={styles.sceneDnaCtaBody}>
+                Signals, evidence and the taste model behind your recs.
+              </Text>
+            </View>
+            <View style={styles.sceneDnaCtaPremium}>
+              <Ionicons name="star" size={11} color={colors.background} />
+              <Text style={styles.sceneDnaCtaPremiumLabel}>PREMIUM</Text>
+            </View>
+          </Pressable>
+
           {/* Oct-19 Discover simplified mock A: three cinematic
               sections — For You, Trending, Now in Theaters. Each one
               is a section header + hero backdrop with title overlay +
@@ -1205,6 +1230,46 @@ const styles = StyleSheet.create({
     borderColor: "rgba(255,255,255,0.18)",
   },
 
+  sceneDnaCta: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    marginHorizontal: spacing.lg,
+    marginTop: spacing.sm,
+    marginBottom: spacing.md,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255, 220, 90, 0.3)",
+  },
+  sceneDnaCtaTitle: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 14,
+  },
+  sceneDnaCtaBody: {
+    marginTop: 2,
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 11,
+    lineHeight: 15,
+  },
+  sceneDnaCtaPremium: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  sceneDnaCtaPremiumLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.background,
+    fontSize: 9,
+    letterSpacing: 1,
+  },
   conciergeResultWrap: {
     position: "relative",
     overflow: "hidden",
