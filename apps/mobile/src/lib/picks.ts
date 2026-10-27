@@ -18,6 +18,7 @@ export type PickList = {
   description: string | null;
   is_default: boolean;
   titles: PickTitle[];
+  total_count?: number;
 };
 
 export type PicksCollections = {
@@ -26,6 +27,10 @@ export type PicksCollections = {
   favorites: PickTitle[];
   watched: PickTitle[];
   my_lists: PickList[];
+  ranked_favorites_count?: number;
+  my_next_watch_count?: number;
+  favorites_count?: number;
+  watched_count?: number;
 };
 
 

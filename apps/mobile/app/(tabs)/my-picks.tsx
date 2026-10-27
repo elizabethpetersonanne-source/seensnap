@@ -129,6 +129,20 @@ export default function MyPicksScreen() {
     listMeta: PickList | null;
   };
 
+  // Oct-27 spec PICKS-01: display count must match the eligible
+  // collection, not just the loaded page.
+  const categoryTotalCount = useMemo(() => {
+    if (!data) return 0;
+    switch (activeCategory) {
+      case "ranked_favorites": return data.ranked_favorites_count ?? data.ranked_favorites.length;
+      case "my_next_watch": return data.my_next_watch_count ?? data.my_next_watch.length;
+      case "favorites": return data.favorites_count ?? data.favorites.length;
+      case "watched": return data.watched_count ?? data.watched.length;
+      case "my_lists": return data.my_lists.length;
+      default: return 0;
+    }
+  }, [data, activeCategory]);
+
   const sections = useMemo<Section[]>(() => {
     if (activeCategory !== "my_lists") {
       // One section per category. The hero is the top item; the
@@ -152,13 +166,16 @@ export default function MyPicksScreen() {
     if (!data) return [];
     return data.my_lists
       .filter((l) => l.titles.length > 0)
-      .map((l) => ({
-        key: `list-${l.id}`,
-        hero: l.titles[0],
-        four: l.titles.slice(1),
-        kicker: `${l.name.toUpperCase()} · ${l.titles.length} TITLE${l.titles.length === 1 ? "" : "S"}`,
-        listMeta: l,
-      }));
+      .map((l) => {
+        const count = l.total_count ?? l.titles.length;
+        return {
+          key: `list-${l.id}`,
+          hero: l.titles[0],
+          four: l.titles.slice(1),
+          kicker: `${l.name.toUpperCase()} · ${count} TITLE${count === 1 ? "" : "S"}`,
+          listMeta: l,
+        };
+      });
   }, [data, activeCategory, items]);
 
   async function openTitle(titleId: string) {
@@ -243,7 +260,24 @@ export default function MyPicksScreen() {
       <AppHeader variant="primary" title="My Picks" />
       <View style={styles.sectionKicker}>
         <Text style={styles.sectionKickerLabel}>{activeCategoryLabel.toUpperCase()}</Text>
-        <Ionicons name="chevron-forward" size={14} color={colors.accent} style={{ marginLeft: 4 }} />
+        {categoryTotalCount > 0 ? (
+          <Text style={styles.sectionKickerCount}>
+            {"  ·  "}{categoryTotalCount} {activeCategory === "my_lists" ? "LISTS" : "TITLES"}
+          </Text>
+        ) : null}
+        <View style={{ flex: 1 }} />
+        {activeCategory === "my_lists" ? (
+          <Pressable
+            onPress={() => router.push("/favorites/new-list" as never)}
+            hitSlop={6}
+            style={styles.newListBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Create a new list"
+          >
+            <Ionicons name="add" size={14} color={colors.background} />
+            <Text style={styles.newListBtnLabel}>NEW LIST</Text>
+          </Pressable>
+        ) : null}
       </View>
 
       {loading && !data ? (
@@ -376,6 +410,27 @@ const styles = StyleSheet.create({
     fontSize: 11,
     letterSpacing: 1.4,
     textTransform: "uppercase",
+  },
+  sectionKickerCount: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.muted,
+    fontSize: 11,
+    letterSpacing: 1.2,
+  },
+  newListBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  newListBtnLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.background,
+    fontSize: 10,
+    letterSpacing: 1.2,
   },
   center: {
     alignItems: "center",

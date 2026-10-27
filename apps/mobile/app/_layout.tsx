@@ -154,6 +154,8 @@ function AuthGate() {
         <Stack.Screen name="settings/report-a-problem" options={{ animation: "slide_from_right" }} />
         {/* LINK-01: title share resolver — see app/share/t/[kind]/[id].tsx */}
         <Stack.Screen name="share/t/[kind]/[id]" options={{ headerShown: false, animation: "fade" }} />
+        {/* PICKS-01: dedicated New List surface for My Picks → My Lists. */}
+        <Stack.Screen name="favorites/new-list" options={{ animation: "slide_from_bottom" }} />
       </Stack>
       {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
       <DidYouWatchPrompt />
