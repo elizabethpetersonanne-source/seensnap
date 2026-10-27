@@ -152,6 +152,8 @@ function AuthGate() {
         <Stack.Screen name="settings/account" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/help" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/report-a-problem" options={{ animation: "slide_from_right" }} />
+        {/* LINK-01: title share resolver — see app/share/t/[kind]/[id].tsx */}
+        <Stack.Screen name="share/t/[kind]/[id]" options={{ headerShown: false, animation: "fade" }} />
       </Stack>
       {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
       <DidYouWatchPrompt />
