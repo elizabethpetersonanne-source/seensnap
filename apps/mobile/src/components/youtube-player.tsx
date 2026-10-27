@@ -15,6 +15,15 @@ export type YoutubePlayerProps = {
   muted: boolean;
   width: number;
   height: number;
+  // Native-only, declared here so the shared type stays in sync.
+  showControls?: boolean;
+  onFullScreenChange?: (isFull: boolean) => void;
+};
+
+
+export type YoutubePlayerHandle = {
+  getCurrentTime: () => Promise<number>;
+  seekTo: (seconds: number, allowSeekAhead?: boolean) => void;
 };
 
 

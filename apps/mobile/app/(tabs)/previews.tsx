@@ -359,6 +359,10 @@ export default function PreviewsScreen() {
                       muted={muted}
                       width={videoWidth}
                       height={videoHeight}
+                      // PRE-01: native YT controls are the fullscreen
+                      // entry point — iOS presents a landscape-capable
+                      // player when the user taps the FS icon.
+                      showControls={isActive}
                     />
                   </View>
                   <View style={styles.meta}>
