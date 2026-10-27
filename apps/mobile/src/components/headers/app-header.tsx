@@ -113,23 +113,33 @@ export function AppHeader({
   const { user } = useAuth();
   const hz = width < 380 ? 16 : 20;
 
-  // Default right slot: profile avatar that routes to the user's own
-  // profile. Shown on primary tabs so profile is one tap from anywhere.
-  // Immersive (Swipe/Preview) and detail routes opt out so the right
-  // slot stays clear for the destination-specific action.
+  // Default right slot: Chat icon + profile avatar. Oct-27 spec
+  // CHAT-01: chat must be accessible from every primary surface so
+  // profile is still one tap away.
   const defaultRight = !hideProfileAvatar && variant === "primary" && user?.user_id ? (
-    <Pressable
-      onPress={() => router.push(`/profile/${user.user_id}`)}
-      hitSlop={10}
-      accessibilityRole="button"
-      accessibilityLabel="Open your profile"
-    >
-      <Avatar
-        uri={user.avatar_url ?? null}
-        label={user.display_name ?? user.email ?? ""}
-        size={30}
-      />
-    </Pressable>
+    <View style={styles.rightCluster}>
+      <Pressable
+        onPress={() => router.push("/messages")}
+        hitSlop={10}
+        accessibilityRole="button"
+        accessibilityLabel="Open messages"
+        style={styles.chatBtn}
+      >
+        <Ionicons name="chatbubble-outline" size={20} color={colors.ink} />
+      </Pressable>
+      <Pressable
+        onPress={() => router.push(`/profile/${user.user_id}`)}
+        hitSlop={10}
+        accessibilityRole="button"
+        accessibilityLabel="Open your profile"
+      >
+        <Avatar
+          uri={user.avatar_url ?? null}
+          label={user.display_name ?? user.email ?? ""}
+          size={30}
+        />
+      </Pressable>
+    </View>
   ) : null;
 
   const resolvedRight = rightSlot !== undefined ? rightSlot : (
@@ -138,7 +148,9 @@ export function AppHeader({
         {rightExtras}
         {defaultRight}
       </View>
-    ) : defaultRight
+    ) : (
+      defaultRight
+    )
   );
 
   function handleLeft() {
@@ -308,5 +320,11 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     gap: 12,
+  },
+  chatBtn: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });

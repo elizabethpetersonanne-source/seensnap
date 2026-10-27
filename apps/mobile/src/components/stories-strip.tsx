@@ -22,7 +22,8 @@ import {
 import { Avatar } from "@/components/avatar";
 import { colors, fonts, spacing } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
-import { fetchStoriesFeed, type StoriesFeedResponse, type StoryActorGroup } from "@/lib/stories";
+import { deleteStory, fetchStoriesFeed, type StoriesFeedResponse, type StoryActorGroup } from "@/lib/stories";
+import { Alert } from "react-native";
 
 
 export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
@@ -101,21 +102,60 @@ export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
                   </Pressable>
                 </View>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-                  {viewing.stories.map((s) => (
-                    <View key={s.story_id} style={styles.storyCard}>
-                      {s.poster_url ? (
-                        <Image source={{ uri: s.poster_url }} style={styles.storyPoster} resizeMode="cover" />
-                      ) : (
-                        <View style={[styles.storyPoster, { alignItems: "center", justifyContent: "center" }]}>
-                          <Ionicons name="film-outline" size={28} color={colors.muted2} />
-                        </View>
-                      )}
-                      <Text style={styles.storyTitle} numberOfLines={2}>{s.title}</Text>
-                      {s.caption ? (
-                        <Text style={styles.storyCaption} numberOfLines={3}>“{s.caption}”</Text>
-                      ) : null}
-                    </View>
-                  ))}
+                  {viewing.stories.map((s) => {
+                    const isMine = viewing.user_id === user?.user_id;
+                    return (
+                      <View key={s.story_id} style={styles.storyCard}>
+                        {s.poster_url ? (
+                          <Image source={{ uri: s.poster_url }} style={styles.storyPoster} resizeMode="cover" />
+                        ) : (
+                          <View style={[styles.storyPoster, { alignItems: "center", justifyContent: "center" }]}>
+                            <Ionicons name="film-outline" size={28} color={colors.muted2} />
+                          </View>
+                        )}
+                        <Text style={styles.storyTitle} numberOfLines={2}>{s.title}</Text>
+                        {s.caption ? (
+                          <Text style={styles.storyCaption} numberOfLines={3}>"{s.caption}"</Text>
+                        ) : null}
+                        {isMine ? (
+                          <Pressable
+                            onPress={() => {
+                              Alert.alert(
+                                "Delete this story?",
+                                "This can't be undone.",
+                                [
+                                  { text: "Cancel", style: "cancel" },
+                                  {
+                                    text: "Delete",
+                                    style: "destructive",
+                                    onPress: async () => {
+                                      if (!sessionToken) return;
+                                      try {
+                                        await deleteStory(sessionToken, s.story_id);
+                                        // Remove from local view; reload the strip.
+                                        setViewing(null);
+                                        await load();
+                                      } catch {
+                                        // Non-fatal; refresh anyway.
+                                        await load();
+                                      }
+                                    },
+                                  },
+                                ],
+                              );
+                            }}
+                            hitSlop={6}
+                            style={styles.deleteStoryBtn}
+                            accessibilityRole="button"
+                            accessibilityLabel="Delete this story"
+                          >
+                            <Ionicons name="trash-outline" size={13} color={colors.danger} />
+                            <Text style={styles.deleteStoryLabel}>Delete</Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    );
+                  })}
                 </ScrollView>
               </>
             ) : null}
@@ -222,5 +262,19 @@ const styles = StyleSheet.create({
     fontSize: 12,
     lineHeight: 16,
     fontStyle: "italic",
+  },
+  deleteStoryBtn: {
+    marginTop: 6,
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingVertical: 4,
+    alignSelf: "flex-start",
+  },
+  deleteStoryLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.danger,
+    fontSize: 10,
+    letterSpacing: 0.5,
   },
 });

@@ -39,3 +39,18 @@ export async function postStory(token: string, titleId: string, caption?: string
 export async function deleteStory(token: string, storyId: string): Promise<void> {
   await apiRequest(`/me/stories/${storyId}`, { method: "DELETE", token });
 }
+
+export async function editStory(
+  token: string,
+  storyId: string,
+  changes: { title_id?: string | null; caption?: string | null },
+): Promise<StoryTitleCard> {
+  const body: Record<string, unknown> = {};
+  if (changes.title_id !== undefined) body.title_id = changes.title_id;
+  if (changes.caption !== undefined) body.caption = changes.caption;
+  return apiRequest<StoryTitleCard>(`/me/stories/${storyId}`, {
+    method: "PATCH",
+    token,
+    body: JSON.stringify(body),
+  });
+}

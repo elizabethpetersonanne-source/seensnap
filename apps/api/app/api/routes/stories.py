@@ -98,6 +98,59 @@ def delete_story(story_id: UUID, current_user: CurrentUser, db: DbSession) -> No
     db.commit()
 
 
+class EditStoryRequest(BaseModel):
+    """Oct-27 spec EDIT-01/02: owner can correct the title and caption
+    on an active story. Expiry is NEVER extended — expired stories
+    reject the edit rather than resurrecting."""
+    title_id: UUID | None = None
+    caption: str | None = Field(default=None, max_length=280)
+
+
+@router.patch("/{story_id}", response_model=StoryTitleCard)
+def edit_story(
+    story_id: UUID,
+    payload: EditStoryRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> StoryTitleCard:
+    story = db.scalar(select(SocialStory).where(SocialStory.id == story_id))
+    if story is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Story not found")
+    if story.user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not your story")
+    now = datetime.now(timezone.utc)
+    expires = story.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=timezone.utc)
+    if expires <= now:
+        raise HTTPException(status_code=status.HTTP_410_GONE, detail="This story has expired")
+
+    if payload.title_id is not None and payload.title_id != story.content_title_id:
+        new_title = db.scalar(select(ContentTitle).where(ContentTitle.id == payload.title_id))
+        if new_title is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
+        story.content_title_id = new_title.id
+    # Caption can be set to null explicitly or trimmed to None if empty.
+    if payload.caption is not None:
+        trimmed = payload.caption.strip()
+        story.caption = trimmed or None
+    db.commit()
+    db.refresh(story)
+
+    title = db.scalar(select(ContentTitle).where(ContentTitle.id == story.content_title_id))
+    assert title is not None  # just resolved above
+    return StoryTitleCard(
+        story_id=story.id,
+        title_id=title.id,
+        title=title.title,
+        poster_url=title.poster_url,
+        backdrop_url=title.backdrop_url,
+        caption=story.caption,
+        created_at=story.created_at,
+        expires_at=story.expires_at,
+    )
+
+
 def _group(stories: list[tuple[SocialStory, ContentTitle, UserProfile | None, User]]) -> list[StoryActorGroup]:
     """Group story rows by actor, preserving order (most recent first per actor)."""
     buckets: dict[UUID, StoryActorGroup] = {}

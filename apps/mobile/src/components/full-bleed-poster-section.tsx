@@ -290,12 +290,15 @@ const styles = StyleSheet.create({
     zIndex: 1,
   },
   rankOverlayText: {
-    fontFamily: fonts.serifBold,
+    // Oct-27 spec VIS-01: cut rank numerals to 65% of the prior
+    // measured size (180 → 117) to satisfy the 30-40% reduction
+    // request without rescaling the whole poster.
+    fontFamily: fonts.sansBold,
     color: colors.ink,
-    fontSize: 180,
-    lineHeight: 180,
-    letterSpacing: -4,
-    opacity: 0.92,
+    fontSize: 117,
+    lineHeight: 120,
+    letterSpacing: -3,
+    opacity: 0.9,
   },
   railWrap: {
     position: "absolute",

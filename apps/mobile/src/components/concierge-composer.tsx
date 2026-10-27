@@ -1,5 +1,5 @@
 /**
- * Oct-19 Discover simplified mock: AI Concierge entry card.
+ * Oct-19 Discover simplified mock: SeenSnap Concierge entry card.
  *
  * Dark cinematic backdrop (no purple aura). Eyebrow + big serif
  * headline + subtitle. "TRY ASKING" label with a single rounded
@@ -120,7 +120,7 @@ export function ConciergeComposer({
       <View style={styles.body}>
         <View style={styles.kickerRow}>
           <Ionicons name="sparkles" size={11} color={colors.accent} />
-          <Text style={styles.kicker}>AI CONCIERGE</Text>
+          <Text style={styles.kicker}>SEENSNAP CONCIERGE</Text>
         </View>
 
         <Text style={styles.headline}>Find your next{"\n"}great watch.</Text>
@@ -154,7 +154,7 @@ export function ConciergeComposer({
               pressed && !busy && styles.goBtnPressed,
             ]}
             accessibilityRole="button"
-            accessibilityLabel="Ask Concierge"
+            accessibilityLabel="Ask SeenSnap Concierge"
           >
             {busy ? (
               <ActivityIndicator size="small" color="#0b0f17" />

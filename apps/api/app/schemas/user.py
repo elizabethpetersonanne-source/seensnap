@@ -28,6 +28,9 @@ class PreferencesResponse(BaseModel):
     show_activity: bool = True
     show_teams: bool = True
     show_public_lists: bool = True
+    # Oct-27 SET-02: per-channel notification toggles. Missing keys
+    # default True on read. Groups: direct_* | team_* | social_*.
+    notification_channels: dict[str, bool] = Field(default_factory=dict)
 
 
 class PreferencesUpdateRequest(BaseModel):
@@ -38,6 +41,7 @@ class PreferencesUpdateRequest(BaseModel):
     show_activity: bool | None = None
     show_teams: bool | None = None
     show_public_lists: bool | None = None
+    notification_channels: dict[str, bool] | None = None
 
 
 class ProfileUpdateRequest(BaseModel):

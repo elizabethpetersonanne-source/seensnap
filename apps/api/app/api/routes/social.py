@@ -127,6 +127,48 @@ def delete_post(post_id: UUID, current_user: CurrentUser, db: DbSession) -> None
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the author may delete this post")
 
 
+class EditPostRequest(BaseModel):
+    """Oct-27 spec EDIT-01/02: owner-only edit of caption + audience.
+    Subject TitleRef, historical snapshot, reactions and created_at
+    are preserved — editing a published caption must not rewrite the
+    historical claim others reacted to."""
+    caption: str | None = Field(default=None, max_length=1000)
+    visibility: str | None = Field(default=None, pattern="^(public|followers|private)$")
+
+
+@router.patch("/posts/{post_id}")
+def edit_post(
+    post_id: UUID,
+    payload: EditPostRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> dict:
+    from app.models.social import FeedEvent as _FeedEvent
+    event = db.scalar(select(_FeedEvent).where(_FeedEvent.id == post_id))
+    if event is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
+    if event.actor_user_id != current_user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the author may edit this post")
+    changed = False
+    if payload.caption is not None:
+        new_caption = payload.caption.strip()
+        payload_dict = dict(event.payload) if isinstance(event.payload, dict) else {}
+        payload_dict["caption"] = new_caption or None
+        payload_dict["body"] = new_caption or None
+        payload_dict["edited"] = True
+        event.payload = payload_dict
+        changed = True
+    if payload.visibility is not None and payload.visibility != event.visibility:
+        # List-share audience cannot exceed the underlying list's visibility.
+        # For simple posts, store as-is.
+        event.visibility = payload.visibility
+        changed = True
+    if changed:
+        db.commit()
+        db.refresh(event)
+    return hydrate_feed_event(db, event, current_user.id)
+
+
 @router.post("/posts/{post_id}/likes")
 def like_post(post_id: UUID, current_user: CurrentUser, db: DbSession) -> dict:
     liked = toggle_like(db, current_user.id, post_id)

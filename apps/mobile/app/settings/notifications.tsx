@@ -1,11 +1,10 @@
 /**
- * Oct-18 UI/UX rebuild: Notifications sub-screen.
- * Spec image 4 (step 4). Grouped toggles for Social / Teams / Activity.
+ * Oct-27 Stefan/Caroline spec SET-02: Direct / Watch Teams / Social
+ * notification groups, persisted per-channel on the server.
  *
- * Backs onto GET/PATCH /me/preferences for the master notifications
- * switch; per-channel toggles are stored locally for now (the backend
- * only has a single switch, so flipping a per-channel toggle while
- * the master is off is a no-op).
+ * Each toggle writes to /me/preferences.notification_channels; the
+ * master switch continues to flip notifications_enabled. Backend
+ * delivery is expected to AND the two (master && channel).
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -26,32 +25,44 @@ import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 
 
-const GROUPS: { title: string; items: { key: string; icon: keyof typeof Ionicons.glyphMap; label: string }[] }[] = [
+type Channel = { key: string; icon: keyof typeof Ionicons.glyphMap; label: string; body?: string };
+
+const GROUPS: { title: string; description: string; items: Channel[] }[] = [
   {
-    title: "Social",
+    title: "Direct",
+    description: "Someone reaches out to you specifically.",
     items: [
-      { key: "likes_comments", icon: "heart-outline", label: "Likes and comments" },
-      { key: "followers", icon: "person-add-outline", label: "New followers" },
-      { key: "mentions", icon: "at-outline", label: "Mentions" },
-      { key: "messages", icon: "mail-outline", label: "Messages" },
+      { key: "direct_messages", icon: "mail-outline", label: "Messages" },
+      { key: "direct_mentions", icon: "at-outline", label: "Mentions" },
+      { key: "direct_reactions", icon: "heart-outline", label: "Likes and comments on your posts" },
+      { key: "direct_followers", icon: "person-add-outline", label: "New followers" },
     ],
   },
   {
     title: "Watch Teams",
+    description: "Updates from the teams you're part of.",
     items: [
       { key: "team_invites", icon: "people-outline", label: "Team invites" },
       { key: "team_activity", icon: "people", label: "Team activity" },
+      { key: "team_watch_plans", icon: "calendar-outline", label: "Watch plans scheduled" },
     ],
   },
   {
-    title: "Your activity",
+    title: "Social",
+    description: "What's happening in your social circles.",
     items: [
-      { key: "ranking_changes", icon: "stats-chart-outline", label: "Ranking changes" },
-      { key: "list_activity", icon: "list-outline", label: "List activity" },
-      { key: "recommendations", icon: "sparkles-outline", label: "Recommendations" },
+      { key: "social_posts", icon: "newspaper-outline", label: "Posts from people you follow" },
+      { key: "social_lists", icon: "list-outline", label: "List activity" },
+      { key: "social_recommendations", icon: "sparkles-outline", label: "Recommendations" },
     ],
   },
 ];
+
+
+type PrefsResponse = {
+  notifications_enabled: boolean;
+  notification_channels: Record<string, boolean>;
+};
 
 
 export default function NotificationsSettingsScreen() {
@@ -63,13 +74,14 @@ export default function NotificationsSettingsScreen() {
   useEffect(() => {
     if (!sessionToken) return;
     let cancelled = false;
-    apiRequest<{ notifications_enabled: boolean }>("/me/preferences", { token: sessionToken })
-      .then((res) => { if (!cancelled) setMasterOn(res.notifications_enabled); })
+    apiRequest<PrefsResponse>("/me/preferences", { token: sessionToken })
+      .then((res) => {
+        if (cancelled) return;
+        setMasterOn(res.notifications_enabled);
+        setChannels(res.notification_channels ?? {});
+      })
       .catch(() => {})
       .finally(() => { if (!cancelled) setLoading(false); });
-    const initial: Record<string, boolean> = {};
-    GROUPS.forEach((g) => g.items.forEach((i) => (initial[i.key] = true)));
-    setChannels(initial);
     return () => { cancelled = true; };
   }, [sessionToken]);
 
@@ -85,6 +97,25 @@ export default function NotificationsSettingsScreen() {
     } catch {
       setMasterOn(!next);
     }
+  }
+
+  async function toggleChannel(key: string, next: boolean) {
+    const prev = channels[key];
+    setChannels((c) => ({ ...c, [key]: next }));
+    if (!sessionToken) return;
+    try {
+      await apiRequest("/me/preferences", {
+        method: "PATCH",
+        token: sessionToken,
+        body: JSON.stringify({ notification_channels: { [key]: next } }),
+      });
+    } catch {
+      setChannels((c) => ({ ...c, [key]: prev ?? true }));
+    }
+  }
+
+  function isOn(key: string) {
+    return channels[key] ?? true;
   }
 
   return (
@@ -116,14 +147,15 @@ export default function NotificationsSettingsScreen() {
 
           {GROUPS.map((group) => (
             <View key={group.title} style={styles.group}>
-              <Text style={styles.groupTitle}>{group.title}</Text>
+              <Text style={styles.groupTitle}>{group.title.toUpperCase()}</Text>
+              <Text style={styles.groupDesc}>{group.description}</Text>
               {group.items.map((item) => (
                 <View key={item.key} style={styles.row}>
                   <Ionicons name={item.icon} size={18} color={colors.ink} />
                   <Text style={styles.rowLabel}>{item.label}</Text>
                   <Switch
-                    value={masterOn && (channels[item.key] ?? true)}
-                    onValueChange={(v) => setChannels((c) => ({ ...c, [item.key]: v }))}
+                    value={masterOn && isOn(item.key)}
+                    onValueChange={(v) => toggleChannel(item.key, v)}
                     disabled={!masterOn}
                     trackColor={{ false: "rgba(255,255,255,0.1)", true: colors.accent }}
                     thumbColor={colors.ink}
@@ -164,15 +196,16 @@ const styles = StyleSheet.create({
   },
   masterTitle: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 14 },
   masterSub: { marginTop: 2, fontFamily: fonts.sans, color: colors.muted, fontSize: 12 },
-  group: { gap: 2 },
+  group: { gap: 2, marginTop: 8 },
   groupTitle: {
     fontFamily: fonts.monoSemiBold,
     color: colors.muted,
     fontSize: 11,
     letterSpacing: 1.1,
-    marginTop: 8,
-    marginBottom: 4,
+    marginTop: 4,
+    marginBottom: 2,
   },
+  groupDesc: { fontFamily: fonts.sans, color: colors.muted2, fontSize: 11, marginBottom: 6 },
   row: {
     flexDirection: "row",
     alignItems: "center",

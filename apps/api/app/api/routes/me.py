@@ -236,6 +236,7 @@ def _to_prefs_response(preferences: UserPreferences) -> PreferencesResponse:
         show_activity=preferences.show_activity,
         show_teams=preferences.show_teams,
         show_public_lists=preferences.show_public_lists,
+        notification_channels=dict(preferences.notification_channels or {}),
     )
 
 
@@ -292,6 +293,11 @@ def patch_preferences(
         preferences.show_teams = payload.show_teams
     if payload.show_public_lists is not None:
         preferences.show_public_lists = payload.show_public_lists
+    if payload.notification_channels is not None:
+        # Merge into existing dict so partial updates don't drop other keys.
+        merged = dict(preferences.notification_channels or {})
+        merged.update({str(k): bool(v) for k, v in payload.notification_channels.items()})
+        preferences.notification_channels = merged
 
     db.commit()
     db.refresh(preferences)

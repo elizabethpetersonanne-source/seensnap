@@ -75,8 +75,9 @@ export default function StreamingSettingsScreen() {
       ) : (
         <ScrollView contentContainerStyle={styles.body}>
           <Text style={styles.lead}>
-            Tap a service to connect it. We'll surface Where to Watch cards for the
-            services you have — so recommendations stay useful.
+            Pick the services you subscribe to. We'll use this to filter Where to Watch
+            cards so recommendations stay useful. This is a selected subscription — it
+            doesn't log in to the provider for you.
           </Text>
           {STREAMING_SERVICES.map((service) => {
             const on = connected.includes(service.id);
@@ -89,15 +90,20 @@ export default function StreamingSettingsScreen() {
                 <View style={[styles.logo, { backgroundColor: service.color }]}>
                   <Text style={[styles.logoText, { color: service.textColor }]}>{service.shortName}</Text>
                 </View>
-                <Text style={styles.serviceName}>{service.name}</Text>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.serviceName}>{service.name}</Text>
+                  <Text style={styles.serviceSub}>
+                    {on ? "Selected subscription" : "Tap to add"}
+                  </Text>
+                </View>
                 {on ? (
                   <View style={styles.connectedPill}>
                     <Ionicons name="checkmark-circle" size={14} color={colors.success} />
-                    <Text style={styles.connectedLabel}>Connected</Text>
+                    <Text style={styles.connectedLabel}>Selected</Text>
                   </View>
                 ) : (
                   <View style={styles.connectBtn}>
-                    <Text style={styles.connectLabel}>Connect</Text>
+                    <Text style={styles.connectLabel}>Add</Text>
                     <Ionicons name="add" size={14} color={colors.accent} />
                   </View>
                 )}
@@ -148,7 +154,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   logoText: { fontFamily: fonts.sansBold, fontSize: 13 },
-  serviceName: { flex: 1, fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 14 },
+  serviceName: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 14 },
+  serviceSub: { marginTop: 2, fontFamily: fonts.sans, color: colors.muted, fontSize: 11 },
   connectedPill: {
     flexDirection: "row",
     alignItems: "center",

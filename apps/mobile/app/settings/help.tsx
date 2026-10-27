@@ -10,11 +10,20 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 
 
-const OPTIONS: { icon: keyof typeof Ionicons.glyphMap; title: string; body: string; url?: string; email?: string }[] = [
+type HelpOption = {
+  icon: keyof typeof Ionicons.glyphMap;
+  title: string;
+  body: string;
+  url?: string;
+  email?: string;
+  route?: string;
+};
+
+const OPTIONS: HelpOption[] = [
   { icon: "book-outline", title: "Help Center", body: "Browse articles and guides", url: "https://seensnap.com/help" },
   { icon: "mail-outline", title: "Contact Us", body: "Send us a message", email: "support@seensnap.com" },
   { icon: "megaphone-outline", title: "Send Feedback", body: "Help us make SeenSnap better", email: "feedback@seensnap.com" },
-  { icon: "warning-outline", title: "Report a Problem", body: "Something not working?", email: "bugs@seensnap.com" },
+  { icon: "warning-outline", title: "Report a Problem", body: "Describe the issue and attach a screenshot", route: "/settings/report-a-problem" },
 ];
 
 
@@ -35,7 +44,8 @@ export default function HelpSettingsScreen() {
             key={o.title}
             style={({ pressed }) => [styles.row, pressed && { opacity: 0.6 }]}
             onPress={() => {
-              if (o.url) Linking.openURL(o.url).catch(() => {});
+              if (o.route) router.push(o.route as never);
+              else if (o.url) Linking.openURL(o.url).catch(() => {});
               else if (o.email) Linking.openURL(`mailto:${o.email}`).catch(() => {});
             }}
           >

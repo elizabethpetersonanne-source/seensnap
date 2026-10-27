@@ -358,6 +358,10 @@ export default function DiscoverScreen() {
   // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
   const [nowInTheatersItems, setNowInTheatersItems] = useState<TitleItem[]>([]);
   const [nowInTheatersLoading, setNowInTheatersLoading] = useState(true);
+  // Oct-27 spec CON-01: Concierge background = highest-ranked MOVIE
+  // from the viewer's Ranked Favorites. A series ranked above it does
+  // NOT become the background.
+  const [conciergeBackdropUri, setConciergeBackdropUri] = useState<string | null>(null);
   const [nowInTheatersError, setNowInTheatersError] = useState<string | null>(null);
 
   // Media-type toggles for For You + Trending (mock A).
@@ -450,6 +454,29 @@ export default function DiscoverScreen() {
     }
   }
 
+  async function loadConciergeBackdrop() {
+    if (!sessionToken) return;
+    try {
+      // Oct-27 spec CON-01: owner's highest-ranked MOVIE from Ranked
+      // Favorites. Pull up to 20 and walk until we hit a movie — a
+      // series ranked above it does NOT become the background.
+      type RankedResp = { items: { title_id: string; title: string; poster_url: string | null; media_type: string; backdrop_url?: string | null }[] };
+      const res = await apiRequest<RankedResp>("/me/favorites/ranked?limit=20", { token: sessionToken });
+      const topMovie = (res.items ?? []).find((it) => it.media_type === "movie");
+      if (topMovie) {
+        // Prefer high-res backdrop; fall back to poster.
+        setConciergeBackdropUri(topMovie.backdrop_url || topMovie.poster_url || null);
+      } else {
+        // No ranked movie — intentional dark background per spec; do
+        // NOT invent a #1 favorite from Trending.
+        setConciergeBackdropUri(null);
+      }
+    } catch {
+      // Honest unavailable: dark background, no fake backdrop.
+      setConciergeBackdropUri(null);
+    }
+  }
+
   useFocusEffect(
     useCallback(() => {
       setIsFocused(true);
@@ -457,6 +484,7 @@ export default function DiscoverScreen() {
       void loadTrending();       // still fetched for the header backdrop cycling
       void loadCollections();    // editorial collections stay a separate module
       void loadNowInTheaters();
+      void loadConciergeBackdrop();
       // loadRecommendations() removed — it called /titles/recommendations/for-me
       // (the slow SceneDNA-fanout endpoint that spins up 10 TMDB related-titles
       // calls per request) but nothing on Discover actually consumed the
@@ -766,9 +794,11 @@ export default function DiscoverScreen() {
           )}
           scrollEventThrottle={16}
         >
-          {/* Oct-19 Discover simplified mock: cinematic AI Concierge
-              card. Backdrop uses the trending title's artwork so the
-              card feels native to the catalog, not a purple aura. */}
+          {/* Oct-27 spec CON-01: SeenSnap Concierge card.
+              Background is the owner's highest-ranked MOVIE from
+              Ranked Favorites (resolved via /me/favorites/ranked).
+              Falls back to the branded dark background if no ranked
+              movie exists — no invented #1 favorite. */}
           {entitlement ? (
             <ConciergeComposer
               token={sessionToken}
@@ -776,7 +806,7 @@ export default function DiscoverScreen() {
               allowanceRemaining={null}
               allowanceCap={entitlement.concierge_monthly_cap}
               resetsAt={null}
-              backdropUri={trending?.items?.[0]?.backdrop_url ?? trending?.items?.[0]?.poster_url ?? null}
+              backdropUri={conciergeBackdropUri}
               onDecision={(decision) => {
                 setConciergeDecision(decision);
                 trackEvent("concierge_decision", {
@@ -870,7 +900,10 @@ export default function DiscoverScreen() {
                     trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
                     void openTitleModal(t.id);
                   }}
-                  onSeeAll={() => router.push("/(tabs)/for-you")}
+                  onSeeAll={() => router.push({
+                    pathname: "/discover/collection/[key]",
+                    params: { key: "for-you", media: forYouMedia },
+                  })}
                 />
               );
             }
@@ -913,7 +946,10 @@ export default function DiscoverScreen() {
                   trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
                   void openTitleModal(t.id);
                 }}
-                onSeeAll={() => router.push("/(tabs)/for-you")}
+                onSeeAll={() => router.push({
+                  pathname: "/discover/collection/[key]",
+                  params: { key: "trending", media: trendingMedia },
+                })}
               />
             );
           })() : trendingLoading ? (
@@ -933,7 +969,10 @@ export default function DiscoverScreen() {
                 trackEvent("discover_item_clicked", { module: "now_in_theaters", content_id: t.id });
                 void openTitleModal(t.id);
               }}
-              onSeeAll={() => router.push("/(tabs)/for-you")}
+              onSeeAll={() => router.push({
+                pathname: "/discover/collection/[key]",
+                params: { key: "now-in-theaters" },
+              })}
             />
           ) : nowInTheatersLoading ? (
             <View style={styles.moduleLoading}>

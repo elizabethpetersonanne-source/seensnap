@@ -81,5 +81,11 @@ class UserPreferences(Base):
     show_activity: Mapped[bool] = mapped_column(Boolean, default=True)
     show_teams: Mapped[bool] = mapped_column(Boolean, default=True)
     show_public_lists: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Oct-27 Stefan/Caroline spec SET-02: per-channel toggles persisted
+    # as a dict so the shape can evolve. Keys are channel ids
+    # ("direct_messages", "direct_mentions", "team_invites", "team_activity",
+    # "social_likes_comments", "social_followers", …). A missing key
+    # defaults to True on read.
+    notification_channels: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

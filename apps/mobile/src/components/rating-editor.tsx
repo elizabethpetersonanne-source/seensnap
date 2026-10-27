@@ -544,7 +544,8 @@ const styles = StyleSheet.create({
   },
   cell: {
     flex: 1,
-    height: 46,
+    minWidth: 44,
+    height: 48,
     borderRadius: 8,
     borderWidth: 1,
     borderColor: rules.default,
@@ -556,7 +557,7 @@ const styles = StyleSheet.create({
     borderColor: colors.accent,
   },
   cellText: {
-    fontFamily: fonts.serifBold,
+    fontFamily: fonts.sansBold,
     fontSize: 18,
     color: colors.ink,
   },

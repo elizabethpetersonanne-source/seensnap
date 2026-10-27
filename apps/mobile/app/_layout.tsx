@@ -143,6 +143,7 @@ function AuthGate() {
         <Stack.Screen name="teams/[teamId]/home" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="teams/[teamId]/add-title" options={{ animation: "slide_from_bottom", presentation: "modal" }} />
         <Stack.Screen name="scene-dna" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="discover/collection/[key]" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/edit-profile" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/notifications" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/streaming" options={{ animation: "slide_from_right" }} />
@@ -150,6 +151,7 @@ function AuthGate() {
         <Stack.Screen name="settings/blocked" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/account" options={{ animation: "slide_from_right" }} />
         <Stack.Screen name="settings/help" options={{ animation: "slide_from_right" }} />
+        <Stack.Screen name="settings/report-a-problem" options={{ animation: "slide_from_right" }} />
       </Stack>
       {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
       <DidYouWatchPrompt />

@@ -17,7 +17,8 @@ import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { colors } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics";
-import { fetchUniversalTitleByTmdbId, type UniversalTitle } from "@/lib/universal-title";
+import { fetchUniversalTitle, fetchUniversalTitleByTmdbId, type UniversalTitle } from "@/lib/universal-title";
+import { isStrictNumericId, isUuid, normalizeMediaType } from "@/lib/title-ref";
 
 export default function SharedTitleScreen() {
   const { kind, tmdbId } = useLocalSearchParams<{ kind: string; tmdbId: string }>();
@@ -33,13 +34,27 @@ export default function SharedTitleScreen() {
     let cancelled = false;
     async function load() {
       try {
-        const mediaType = kind === "tv" ? "series" : "movie";
-        const numericId = Number.parseInt(tmdbId, 10);
-        if (!Number.isFinite(numericId)) {
+        const mediaType = normalizeMediaType(kind) ?? "movie";
+        // Oct-27 spec ID-01: strict external parse. The {tmdbId} slot
+        // must be either a strictly numeric TMDB id OR an internal
+        // UUID — never a partial numeric parse of a UUID that starts
+        // with digits. The Social → external-route bug was
+        // Number.parseInt("550abc…") → 550, which surfaced the
+        // wrong movie.
+        if (isStrictNumericId(tmdbId)) {
+          const detail = await fetchUniversalTitleByTmdbId(sessionToken ?? "", mediaType, Number(tmdbId));
+          if (!cancelled) setTitle(detail);
           return;
         }
-        const detail = await fetchUniversalTitleByTmdbId(sessionToken ?? "", mediaType, numericId);
-        if (!cancelled) setTitle(detail);
+        if (isUuid(tmdbId)) {
+          // Internal UUID handed to the external route — happens when
+          // an in-app caller doesn't have a TMDB id yet. Resolve via
+          // the UUID endpoint.
+          const detail = await fetchUniversalTitle(sessionToken ?? "", tmdbId);
+          if (!cancelled) setTitle(detail);
+          return;
+        }
+        // Neither numeric nor UUID → modal shows an empty state.
       } catch {
         // Ignore — the modal will show its own empty state; we then bounce back.
       } finally {
