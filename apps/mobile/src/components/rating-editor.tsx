@@ -46,6 +46,17 @@ export function subscribeRatingChanges(listener: Listener): () => void {
 }
 function broadcast(snapshot: RatingSnapshot) {
   listeners.forEach((l) => l(snapshot.title_id, snapshot));
+  // STATE-02: a rating transition also implies watched=true (server
+  // enforces this). Mirror the save/watched state onto the shared
+  // title-state cache so Discover/Picks/Teams cards update too.
+  // Dynamic import keeps the two modules decoupled and avoids a
+  // cycle with the auth logout hook which also imports title-state.
+  void import("@/lib/title-state").then(({ patchTitleState }) => {
+    patchTitleState(snapshot.title_id, {
+      watched: snapshot.watched_state === "watched",
+      updated_at: snapshot.updated_at,
+    });
+  });
 }
 
 const SCORE_LABELS: Record<number, string> = {
