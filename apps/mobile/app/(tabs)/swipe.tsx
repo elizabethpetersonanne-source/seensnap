@@ -109,6 +109,19 @@ export default function SwipeTab() {
   const [detailLoading, setDetailLoading] = useState(false);
   // Oct-27 Swipe semantics: up-swipe opens the rating editor.
   const [ratingTarget, setRatingTarget] = useState<{ titleId: string; titleName: string } | null>(null);
+  // W06: last successful swipe memo so the Undo button can reverse
+  // it. Cleared on a new swipe or on manual undo.
+  const [lastSwipe, setLastSwipe] = useState<{
+    swipeId: string;
+    item: RecommendationItem;
+    direction: SwipeDirection;
+    at: number;
+  } | null>(null);
+  const [undoToast, setUndoToast] = useState<string | null>(null);
+  function showUndoToast(message: string) {
+    setUndoToast(message);
+    setTimeout(() => setUndoToast(null), 3000);
+  }
   const [showDetails, setShowDetails] = useState(false);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
@@ -531,6 +544,7 @@ export default function SwipeTab() {
     });
 
     apiRequest<{
+      swipe_id?: string;
       scene_dna_feedback?: {
         headline: string;
         body: string;
@@ -553,11 +567,71 @@ export default function SwipeTab() {
       }),
     })
       .then((res) => {
+        if (res?.swipe_id) {
+          // W06: remember the last swipe so Undo can reverse it.
+          setLastSwipe({
+            swipeId: res.swipe_id,
+            item,
+            direction,
+            at: Date.now(),
+          });
+        }
         if ((direction === "right" || direction === "up") && res?.scene_dna_feedback) {
           showDnaFeedback(res.scene_dna_feedback);
         }
       })
       .catch(() => {});
+  }
+
+  // Oct-27 W06: Undo the most recent eligible swipe. Reverses the
+  // server-side effect (watched/saved), restores the card to the
+  // deck, and clears the last-swipe memo.
+  async function undoLastSwipe() {
+    if (!sessionToken || !lastSwipe) return;
+    const prev = lastSwipe;
+    setLastSwipe(null);
+    // Optimistic card restore: insert the item ahead of the current
+    // index so the next render shows it again.
+    setDeck((d) => {
+      const next = [...d];
+      next.splice(currentIndexRef.current, 0, prev.item);
+      return next;
+    });
+    setSwipes((s) => {
+      // Drop the matching trailing entry so progress and SceneDNA
+      // snapshots don't double-count.
+      for (let i = s.length - 1; i >= 0; i -= 1) {
+        if (s[i].item.title.id === prev.item.title.id && s[i].direction === prev.direction) {
+          return [...s.slice(0, i), ...s.slice(i + 1)];
+        }
+      }
+      return s;
+    });
+    try {
+      type UndoResp = { ok: boolean; reversed: string[]; partial_reason: string | null };
+      const res = await apiRequest<UndoResp>(`/titles/swipes/${prev.swipeId}`, {
+        method: "DELETE",
+        token: sessionToken,
+      });
+      trackEvent("swipe_undo", {
+        direction: prev.direction,
+        reversed: res.reversed.join(","),
+        partial_reason: res.partial_reason ?? "",
+      });
+      if (res.partial_reason) {
+        // Honest partial-success toast — the card is restored but
+        // the server-side state couldn't be fully reverted.
+        showUndoToast(
+          res.partial_reason === "rating_exists_newer"
+            ? "Watched state was kept — you already rated this title."
+            : "Some state couldn't be reversed.",
+        );
+      }
+    } catch {
+      // On failure, re-apply the swipe locally so state matches
+      // what the server still has recorded.
+      setDeck((d) => d.filter((it) => it.title.id !== prev.item.title.id || d.indexOf(it) !== currentIndexRef.current));
+    }
   }
 
   async function openDetails(item: RecommendationItem | null) {
@@ -993,24 +1067,74 @@ export default function SwipeTab() {
           {/* Oct-27 follow-up: swipe cheat sheet lives on the actual
               Swipe tab (not just What's Next). Compact four-pill legend
               so the directions are discoverable without a tutorial. */}
+          {/* W04: four tappable direction buttons mirror the
+              gestures so there's an equivalent, screen-reader-friendly
+              way to commit every direction. W06: Undo chip appears
+              on the right after a swipe lands. */}
           <View style={styles.swipeLegendRow}>
-            <View style={styles.swipeLegendPill}>
+            <Pressable
+              onPress={() => activeCard && void animateSwipeRef.current("left")}
+              disabled={!activeCard}
+              hitSlop={4}
+              style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Pass this title"
+            >
               <Ionicons name="arrow-back" size={11} color={colors.muted} />
               <Text style={styles.swipeLegendLabel}>Pass</Text>
-            </View>
-            <View style={styles.swipeLegendPill}>
+            </Pressable>
+            <Pressable
+              onPress={() => activeCard && void animateSwipeRef.current("right")}
+              disabled={!activeCard}
+              hitSlop={4}
+              style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Save to My Next Watch"
+            >
               <Ionicons name="arrow-forward" size={11} color={colors.muted} />
               <Text style={styles.swipeLegendLabel}>Save</Text>
-            </View>
-            <View style={styles.swipeLegendPill}>
+            </Pressable>
+            <Pressable
+              onPress={() => activeCard && void animateSwipeRef.current("up")}
+              disabled={!activeCard}
+              hitSlop={4}
+              style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Mark watched and rate"
+            >
               <Ionicons name="arrow-up" size={11} color={colors.accent} />
               <Text style={[styles.swipeLegendLabel, { color: colors.accent }]}>Watched + rate</Text>
-            </View>
-            <View style={styles.swipeLegendPill}>
+            </Pressable>
+            <Pressable
+              onPress={() => activeCard && void animateSwipeRef.current("down")}
+              disabled={!activeCard}
+              hitSlop={4}
+              style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
+              accessibilityRole="button"
+              accessibilityLabel="Mark watched, didn't like"
+            >
               <Ionicons name="arrow-down" size={11} color={colors.muted} />
               <Text style={styles.swipeLegendLabel}>Watched · didn't like</Text>
-            </View>
+            </Pressable>
+            {lastSwipe ? (
+              <Pressable
+                onPress={() => void undoLastSwipe()}
+                hitSlop={4}
+                style={({ pressed }) => [styles.swipeUndoPill, pressed && { opacity: 0.7 }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Undo last swipe: ${lastSwipe.direction}`}
+              >
+                <Ionicons name="arrow-undo-outline" size={11} color={colors.background} />
+                <Text style={styles.swipeUndoLabel}>Undo</Text>
+              </Pressable>
+            ) : null}
           </View>
+
+          {undoToast ? (
+            <View style={styles.undoToast}>
+              <Text style={styles.undoToastLabel}>{undoToast}</Text>
+            </View>
+          ) : null}
 
       {loading ? (
         <View style={styles.loadingState}>
@@ -1702,6 +1826,38 @@ const styles = StyleSheet.create({
     fontSize: 10,
     letterSpacing: 0.5,
     color: colors.muted,
+  },
+  swipeUndoPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+    marginLeft: "auto",
+  },
+  swipeUndoLabel: {
+    fontSize: 10,
+    letterSpacing: 0.5,
+    color: colors.background,
+    fontFamily: fonts.sansSemiBold,
+  },
+  undoToast: {
+    marginHorizontal: spacing.lg,
+    marginTop: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "rgba(0,0,0,0.78)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  undoToastLabel: {
+    fontFamily: fonts.sans,
+    color: colors.ink,
+    fontSize: 11,
+    lineHeight: 15,
   },
 
   // Loading state

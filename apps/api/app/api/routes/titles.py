@@ -1,8 +1,9 @@
-from datetime import date
+from datetime import date, timedelta
 from uuid import UUID
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query, status
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
@@ -300,6 +301,113 @@ def get_my_recommendations(
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
+class SwipeUndoResponse(BaseModel):
+    ok: bool = True
+    # Honest description of what WAS reversed. UI can show
+    # "Removed from My Next Watch" / "Reset to Not watched" / etc.
+    reversed: list[str] = Field(default_factory=list)
+    # When reversal was partial — e.g. the title has a separate
+    # rating since so we can't safely un-watch it. Client surfaces
+    # a specific explanation instead of silently claiming success.
+    partial_reason: str | None = None
+
+
+@router.delete("/swipes/{swipe_id}", response_model=SwipeUndoResponse)
+def undo_title_swipe(
+    swipe_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> SwipeUndoResponse:
+    """Oct-27 followup W06: reverse the most recent swipe's
+    server-side effect — swipe record, Watched state (for up/down),
+    and Save (for right). Only acts if the swipe is the user's most
+    recent action for that title. If a newer rating / watch-status
+    change exists for the title, un-watch is skipped and
+    partial_reason explains why so the client can tell the user
+    rather than silently claiming success.
+    """
+    from datetime import datetime, timezone
+    from app.models.taste import SwipeRecord
+    from app.models.social import Rating, TitleWatchStatus, WatchlistItem
+
+    record = db.scalar(
+        select(SwipeRecord).where(
+            SwipeRecord.id == swipe_id,
+            SwipeRecord.user_id == current_user.id,
+        )
+    )
+    if record is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Swipe not found")
+
+    reversed_bits: list[str] = []
+    partial_reason: str | None = None
+    title_id = record.content_title_id
+    now = datetime.now(timezone.utc)
+
+    if record.direction in ("up", "down"):
+        # Reverse Watched only if no newer independent evidence of
+        # watching exists. A rating created AFTER this swipe is the
+        # authoritative truth and must not be clobbered.
+        rating = db.scalar(select(Rating).where(
+            Rating.user_id == current_user.id,
+            Rating.content_title_id == title_id,
+        ))
+        ws = db.scalar(select(TitleWatchStatus).where(
+            TitleWatchStatus.user_id == current_user.id,
+            TitleWatchStatus.content_title_id == title_id,
+        ))
+        rating_is_newer = rating is not None and rating.updated_at and rating.updated_at > record.created_at
+        if rating_is_newer and rating.score is not None:
+            partial_reason = "rating_exists_newer"
+        else:
+            if rating is not None and rating.score is None:
+                # Rating-row with no score (watched-only). Reset to want_to_watch.
+                rating.watched_state = "want_to_watch"
+                rating.updated_at = now
+                rating.version += 1
+                reversed_bits.append("watched")
+            elif ws is not None:
+                # TitleWatchStatus row — safe to delete; mark_watched
+                # created or flipped this row on the swipe. If it was
+                # flipped from an older want_to_watch, revert.
+                if ws.updated_at and ws.updated_at <= record.created_at + timedelta(seconds=5):
+                    db.delete(ws)
+                else:
+                    ws.watched_state = "want_to_watch"
+                    ws.updated_at = now
+                reversed_bits.append("watched")
+
+    if record.direction == "right":
+        # Un-save: delete the WatchlistItem on the default Next
+        # Watch list for this title ONLY if it exists and was added
+        # around this swipe time.
+        from app.models.social import Watchlist as _Watchlist
+        next_watch_list = db.scalar(
+            select(_Watchlist).where(
+                _Watchlist.owner_user_id == current_user.id,
+                _Watchlist.is_default.is_(True),
+                _Watchlist.name.ilike("next%watch%"),
+            )
+        )
+        if next_watch_list is not None:
+            item = db.scalar(
+                select(WatchlistItem).where(
+                    WatchlistItem.watchlist_id == next_watch_list.id,
+                    WatchlistItem.content_title_id == title_id,
+                )
+            )
+            if item is not None:
+                db.delete(item)
+                reversed_bits.append("saved_to_next_watch")
+
+    # Delete the swipe record itself regardless — the viewer's
+    # intent to undo is the authority on the record. Signals
+    # recompute on next write.
+    db.delete(record)
+    db.commit()
+    return SwipeUndoResponse(reversed=reversed_bits, partial_reason=partial_reason)
+
+
 @router.post("/swipes", response_model=SwipeRecordResponse)
 def record_title_swipe(
     payload: SwipeRecordCreate,
@@ -325,6 +433,7 @@ def record_title_swipe(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     feedback = build_swipe_feedback(db, current_user.id, payload.title_id, payload.direction)
     return SwipeRecordResponse(
+        swipe_id=record.id,
         title_id=payload.title_id,
         direction=payload.direction,
         updated_at=record.created_at,
