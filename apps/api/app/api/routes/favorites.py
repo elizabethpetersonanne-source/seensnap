@@ -24,7 +24,7 @@ from uuid import UUID, uuid4
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
@@ -48,8 +48,13 @@ class RankedFavoriteRow(BaseModel):
 
 class RankedFavoritesResponse(BaseModel):
     items: list[RankedFavoriteRow]
+    # Real count of the user's ranked collection — not the row count
+    # of this page. Oct-27 follow-up explicitly forbids reporting the
+    # loaded page size as the total.
     total: int
-    max_capacity: int = 100
+    # Rendering hint. 500 is a soft limit on the write path; the read
+    # path returns every row regardless.
+    max_capacity: int = 500
 
 
 def _fetch_titles(db, ids: list[UUID]) -> dict[UUID, ContentTitle]:
@@ -97,23 +102,28 @@ def _hydrate(db, user_id: UUID, favorites: list[RankedFavorite]) -> list[RankedF
 def get_ranked_favorites(
     current_user: CurrentUser,
     db: DbSession,
-    limit: int = Query(default=100, ge=1, le=100),
+    limit: int = Query(default=500, ge=1, le=1000),
 ) -> RankedFavoritesResponse:
-    """Return the viewer's ordered favorites list. `limit` selects
-    Top 20 vs Top 100; the underlying rows are identical."""
+    """Return the viewer's ordered favorites list. `limit` is a page
+    size; the response always reports the real `total` from the
+    collection, not the row count on this page."""
     favorites = db.scalars(
         select(RankedFavorite)
         .where(RankedFavorite.user_id == current_user.id)
         .order_by(RankedFavorite.position.asc())
         .limit(limit)
     ).all()
-    return RankedFavoritesResponse(items=_hydrate(db, current_user.id, favorites), total=len(favorites))
+    # Real total of ALL rows for this user — never the page size.
+    total = int(db.scalar(
+        select(func.count()).select_from(RankedFavorite).where(RankedFavorite.user_id == current_user.id)
+    ) or 0)
+    return RankedFavoritesResponse(items=_hydrate(db, current_user.id, favorites), total=total)
 
 
 class ReplaceOrderRequest(BaseModel):
     # Ordered list of title IDs. Position is derived from the index
-    # (i+1). Max 100; duplicates rejected. Passing [] clears the list.
-    title_ids: list[UUID] = Field(default_factory=list, max_length=100)
+    # (i+1). Max 500; duplicates rejected. Passing [] clears the list.
+    title_ids: list[UUID] = Field(default_factory=list, max_length=500)
 
 
 @router.put("/ranked", response_model=RankedFavoritesResponse)
@@ -221,7 +231,7 @@ def rebuild_from_ratings(
 
 
 class MoveRequest(BaseModel):
-    to_position: int = Field(ge=1, le=100)
+    to_position: int = Field(ge=1, le=1000)
 
 
 class PublishRankChangeRequest(BaseModel):
@@ -345,7 +355,7 @@ def remove_ranked_favorite(
 
 class AddRequest(BaseModel):
     title_id: UUID
-    position: int | None = Field(default=None, ge=1, le=100)
+    position: int | None = Field(default=None, ge=1, le=1000)
 
 
 @router.post("/ranked", response_model=RankedFavoritesResponse)
@@ -366,8 +376,8 @@ def add_ranked_favorite(
     ).all()
     if any(f.content_title_id == payload.title_id for f in favorites):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already in ranked favorites")
-    if len(favorites) >= 100:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ranked list is full (100 entries)")
+    if len(favorites) >= 500:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ranked list is full (500 entries)")
 
     insert_position = payload.position if payload.position is not None else len(favorites) + 1
     insert_position = min(insert_position, len(favorites) + 1)

@@ -40,12 +40,15 @@ type Row = {
 type ListResponse = { items: Row[]; total: number; max_capacity: number };
 type DraftResponse = { draft: Row[]; would_replace: number };
 
-type RankedView = "top20" | "top100";
+// Oct-27 follow-up: default view is "All" (every ranked title); the
+// two legacy fixed-window views remain available as filters.
+type RankedView = "top20" | "top100" | "all";
 
 export default function RankedFavoritesScreen() {
   const { sessionToken } = useAuth();
   const [rows, setRows] = useState<Row[]>([]);
-  const [view, setView] = useState<RankedView>("top20");
+  const [view, setView] = useState<RankedView>("all");
+  const [serverTotal, setServerTotal] = useState<number>(0);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -60,15 +63,19 @@ export default function RankedFavoritesScreen() {
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishedTitleIds, setPublishedTitleIds] = useState<Set<string>>(new Set());
 
-  const visibleRows = view === "top20" ? rows.slice(0, 20) : rows;
+  const visibleRows =
+    view === "top20" ? rows.slice(0, 20)
+    : view === "top100" ? rows.slice(0, 100)
+    : rows;
 
   const load = useCallback(async () => {
     if (!sessionToken) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await apiRequest<ListResponse>("/me/favorites/ranked?limit=100", { token: sessionToken });
+      const data = await apiRequest<ListResponse>("/me/favorites/ranked?limit=500", { token: sessionToken });
       setRows(data.items);
+      setServerTotal(data.total ?? data.items.length);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load your ranked favorites.");
     } finally {
@@ -207,19 +214,19 @@ export default function RankedFavoritesScreen() {
       </View>
 
       <View style={styles.viewToggle}>
-        {(["top20", "top100"] as const).map((v) => {
+        {(["all", "top20", "top100"] as const).map((v) => {
           const active = view === v;
           return (
             <Pressable key={v} onPress={() => setView(v)} style={[styles.viewChip, active && styles.viewChipActive]}>
               <Text style={[styles.viewChipText, active && styles.viewChipTextActive]}>
-                {v === "top20" ? "Top 20" : "Top 100"}
+                {v === "all" ? "All" : v === "top20" ? "Top 20" : "Top 100"}
               </Text>
             </Pressable>
           );
         })}
         <View style={{ flex: 1 }} />
         <Text style={styles.countText}>
-          {visibleRows.length} of {view === "top20" ? Math.min(rows.length, 20) : rows.length}
+          {visibleRows.length} of {serverTotal}
         </Text>
       </View>
 

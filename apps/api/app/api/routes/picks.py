@@ -64,6 +64,9 @@ class PicksCollections(BaseModel):
     # collection, not just the loaded page. Expose the real count so
     # the client can show "N titles" accurately.
     ranked_favorites_count: int = 0
+    # Oct-27 follow-up: titles the user has rated but hasn't placed in
+    # the Ranked Favorites order yet. Owner-only visibility.
+    rated_unplaced_count: int = 0
     my_next_watch_count: int = 0
     favorites_count: int = 0
     watched_count: int = 0
@@ -194,6 +197,16 @@ def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksC
     # never understates.
     watched_count = max(watched_rating_count, watched_status_count)
 
+    # Oct-27 follow-up: rated but not placed in Ranked Favorites. A
+    # viewer with 60 rated titles and 20 ranked favorites sees "40
+    # rated — not yet placed" and can bulk-add them without reordering
+    # the existing manual rank.
+    ranked_title_ids_set = {r.content_title_id for r in ranked_rows}
+    rated_title_ids = list(db.scalars(
+        select(Rating.content_title_id).where(Rating.user_id == uid)
+    ).all())
+    rated_unplaced_count = sum(1 for tid in rated_title_ids if tid not in ranked_title_ids_set)
+
     # ── My Lists — all user watchlists with preview posters ──────────
     list_rows = db.scalars(
         select(Watchlist).where(Watchlist.owner_user_id == uid).order_by(Watchlist.updated_at.desc())
@@ -228,6 +241,7 @@ def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksC
         watched=watched_titles,
         my_lists=my_lists,
         ranked_favorites_count=ranked_favorites_count,
+        rated_unplaced_count=rated_unplaced_count,
         my_next_watch_count=my_next_watch_count,
         favorites_count=favorites_count,
         watched_count=watched_count,

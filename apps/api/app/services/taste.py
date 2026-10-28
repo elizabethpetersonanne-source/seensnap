@@ -74,9 +74,18 @@ LABEL_RULES: dict[str, dict[str, object]] = {
 }
 
 SWIPE_DIRECTION_WEIGHTS: dict[str, float] = {
-    "left": -3.5,
-    "right": 5.0,
-    "up": 8.0,
+    "left": -3.5,     # Pass — weak negative, context-dependent
+    "right": 5.0,     # Save — positive interest, no viewing fact
+    # Oct-27 follow-up: Up = Watched + rating prompt. On its own Up is
+    # ONLY a viewing fact ("I've seen this"), not evidence that the
+    # user liked it. Weight is small positive (reduced from 8.0) so a
+    # dismissed rating doesn't masquerade as a strong preference. The
+    # explicit numeric rating that follows carries the real signal.
+    "up": 3.0,
+    # Down = Watched + explicit qualitative dislike. Strongest
+    # negative signal; the user is telling us "watched AND didn't
+    # like it."
+    "down": -5.0,
 }
 
 
@@ -1963,6 +1972,23 @@ def record_swipe(
     )
     db.add(record)
     db.flush()
+
+    # Oct-27 follow-up: up and down swipes BOTH mean "I've watched
+    # this." Up = watched + rating prompt (handled client-side after
+    # the response); down = watched + explicit dislike. In both cases
+    # the title is Watched regardless of whether a rating follows.
+    # Delegate to the canonical title-state writer so Next Watch
+    # cleanup + state version bumps + cross-surface broadcast all
+    # happen in one place.
+    if direction in ("up", "down"):
+        try:
+            from app.services.title_state import mark_watched
+            mark_watched(db, user_id, title_id)
+        except Exception:
+            # Non-blocking — a watched write failure shouldn't reject
+            # the swipe signal itself.
+            pass
+
     _prune_old_swipes(db, user_id)
     refresh_taste_profile(db, user_id)
     # Also recompute UserSignal rows so the SceneDNA "Strongest Signals"

@@ -519,16 +519,11 @@ export default function SwipeTab() {
       // a user action.
       setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
     }
-    if (direction === "down") {
-      // Oct-27 Swipe semantics: DOWN means "already watched + didn't
-      // like". Submit a low score (2/10) directly. The rating service
-      // marks the title watched; the viewer never has to confirm.
-      void apiRequest(`/me/ratings/${item.title.id}`, {
-        method: "PUT",
-        token: sessionToken,
-        body: JSON.stringify({ score: 2 }),
-      }).catch(() => {});
-    }
+    // DOWN handled by the backend swipe-record path alone: it writes
+    // the SwipeRecord with direction=down and calls mark_watched. No
+    // automatic numeric rating is fabricated per Oct-27 follow-up
+    // ("do not assign an automatic 2/10 or other numeric score"). The
+    // qualitative dislike is carried by the swipe direction itself.
     trackEvent(`swipe_${direction}`, {
       title_id: item.title.id,
       session_id: sessionId,
@@ -993,6 +988,28 @@ export default function SwipeTab() {
                 { width: progressAnim.interpolate({ inputRange: [0, 1], outputRange: ["0%", "100%"] }) },
               ]}
             />
+          </View>
+
+          {/* Oct-27 follow-up: swipe cheat sheet lives on the actual
+              Swipe tab (not just What's Next). Compact four-pill legend
+              so the directions are discoverable without a tutorial. */}
+          <View style={styles.swipeLegendRow}>
+            <View style={styles.swipeLegendPill}>
+              <Ionicons name="arrow-back" size={11} color={colors.muted} />
+              <Text style={styles.swipeLegendLabel}>Pass</Text>
+            </View>
+            <View style={styles.swipeLegendPill}>
+              <Ionicons name="arrow-forward" size={11} color={colors.muted} />
+              <Text style={styles.swipeLegendLabel}>Save</Text>
+            </View>
+            <View style={styles.swipeLegendPill}>
+              <Ionicons name="arrow-up" size={11} color={colors.accent} />
+              <Text style={[styles.swipeLegendLabel, { color: colors.accent }]}>Watched + rate</Text>
+            </View>
+            <View style={styles.swipeLegendPill}>
+              <Ionicons name="arrow-down" size={11} color={colors.muted} />
+              <Text style={styles.swipeLegendLabel}>Watched · didn't like</Text>
+            </View>
           </View>
 
       {loading ? (
@@ -1660,6 +1677,31 @@ const styles = StyleSheet.create({
   progressFill: {
     height: 1,
     backgroundColor: colors.accent,
+  },
+
+  swipeLegendRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    paddingHorizontal: spacing.lg,
+    paddingTop: 10,
+    paddingBottom: 4,
+  },
+  swipeLegendPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.05)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.1)",
+  },
+  swipeLegendLabel: {
+    fontSize: 10,
+    letterSpacing: 0.5,
+    color: colors.muted,
   },
 
   // Loading state

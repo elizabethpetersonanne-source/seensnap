@@ -266,7 +266,24 @@ export default function MyPicksScreen() {
             {"  ·  "}{categoryTotalCount} {activeCategory === "my_lists" ? "LISTS" : "TITLES"}
           </Text>
         ) : null}
+        {activeCategory === "ranked_favorites" && (data?.rated_unplaced_count ?? 0) > 0 ? (
+          <Text style={styles.sectionKickerCount}>
+            {"  ·  "}{data?.rated_unplaced_count} NOT YET PLACED
+          </Text>
+        ) : null}
         <View style={{ flex: 1 }} />
+        {activeCategory === "ranked_favorites" ? (
+          <Pressable
+            onPress={() => router.push("/favorites/ranked")}
+            hitSlop={6}
+            style={styles.editOrderBtn}
+            accessibilityRole="button"
+            accessibilityLabel="Edit ranking order"
+          >
+            <Ionicons name="swap-vertical" size={14} color={colors.background} />
+            <Text style={styles.editOrderBtnLabel}>EDIT ORDER</Text>
+          </Pressable>
+        ) : null}
         {activeCategory === "my_lists" ? (
           <Pressable
             onPress={() => router.push("/favorites/new-list" as never)}
@@ -432,6 +449,21 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
   },
   newListBtnLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.background,
+    fontSize: 10,
+    letterSpacing: 1.2,
+  },
+  editOrderBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  editOrderBtnLabel: {
     fontFamily: fonts.monoSemiBold,
     color: colors.background,
     fontSize: 10,

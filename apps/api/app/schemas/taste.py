@@ -119,7 +119,10 @@ class TasteAlignmentResponse(BaseModel):
 
 class SwipeRecordCreate(BaseModel):
     title_id: UUID
-    direction: str = Field(pattern="^(left|right|up)$")
+    # Oct-27 follow-up: Up = Watched + liked (rating prompt follows),
+    # Down = Watched + didn't like (qualitative dislike, no implicit
+    # numeric rating). Left = pass, right = save.
+    direction: str = Field(pattern="^(left|right|up|down)$")
     pause_ms: int | None = Field(default=None, ge=0, le=120000)
     session_id: str | None = Field(default=None, max_length=80)
     reason: str | None = Field(default=None, max_length=280)

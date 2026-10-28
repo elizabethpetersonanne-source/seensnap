@@ -28,6 +28,7 @@ export type PicksCollections = {
   watched: PickTitle[];
   my_lists: PickList[];
   ranked_favorites_count?: number;
+  rated_unplaced_count?: number;
   my_next_watch_count?: number;
   favorites_count?: number;
   watched_count?: number;
