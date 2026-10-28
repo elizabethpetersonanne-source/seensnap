@@ -39,6 +39,7 @@ import YouTubePlayerComponent from "@/components/youtube-player";
 
 import { AppHeader } from "@/components/headers/app-header";
 import { CategoryChips, type CategoryFilter } from "@/components/category-chips";
+import { useDiscoveryFilter } from "@/lib/discovery-filter";
 import { OutlineActionRail } from "@/components/outline-action-rail";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
@@ -109,7 +110,9 @@ export default function PreviewsScreen() {
   const [showDetails, setShowDetails] = useState(false);
   const seenImpressionsRef = useRef<Set<string>>(new Set());
   const listRef = useRef<FlatList<PreviewFeedItem>>(null);
-  const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>({ media_type: null, genre: null });
+  // W09: shared Swipe/Preview filter session. Picking Comedy on
+  // Swipe propagates here and vice versa.
+  const [categoryFilter, setCategoryFilter] = useDiscoveryFilter();
   // Cursor for the next page. null means the feed hasn't been fetched
   // yet OR the pool is exhausted (see hasMore below).
   const [cursor, setCursor] = useState<string | null>(null);

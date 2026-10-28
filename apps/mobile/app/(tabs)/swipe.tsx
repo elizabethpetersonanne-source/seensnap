@@ -34,6 +34,7 @@ import { useAuth } from "@/lib/auth";
 import { type StreamingAvailability, getStreamingServiceMeta } from "@/lib/streaming";
 import { playSwipeSound } from "@/lib/swipe-sfx";
 import { CategoryChips } from "@/components/category-chips";
+import { useDiscoveryFilter } from "@/lib/discovery-filter";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 import { recordWatchHandoff } from "@/lib/watch-handoff";
 
@@ -130,11 +131,10 @@ export default function SwipeTab() {
   const [showAddToTeam, setShowAddToTeam] = useState(false);
   const [sessionId, setSessionId] = useState(() => `swipe-tab-${Date.now()}`);
   // Sep-22 brief §2 category chips — media type + genre filters that
-  // reset the deck when changed. Kept in local state so the queue can
-  // start fresh cleanly.
-  const [categoryFilter, setCategoryFilter] = useState<{ media_type: "movie" | "show" | null; genre: string | null }>(
-    { media_type: null, genre: null },
-  );
+  // W09: filter is a SHARED session across Swipe + Preview. Picking
+  // Comedy here propagates to the Preview tab (and vice versa) via
+  // the discovery-filter store.
+  const [categoryFilter, setCategoryFilter] = useDiscoveryFilter();
   const pan = useRef(new Animated.ValueXY()).current;
   const progressAnim = useRef(new Animated.Value(0)).current;
   const nextCardEntry = useRef(new Animated.Value(1)).current;

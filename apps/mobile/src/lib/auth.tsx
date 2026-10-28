@@ -368,6 +368,10 @@ export function AuthProvider({ children }: PropsWithChildren) {
     // signs in on this device starts with a cold cache.
     const { clearTitleStateCache } = await import("@/lib/title-state");
     clearTitleStateCache();
+    // W09: drop the shared Swipe/Preview filter so a prior account's
+    // "Horror" doesn't carry over to a new sign-in on the same device.
+    const { clearDiscoveryFilter } = await import("@/lib/discovery-filter");
+    clearDiscoveryFilter();
     setSessionToken(null);
     setUser(null);
   };
