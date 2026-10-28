@@ -347,3 +347,105 @@ def dismiss_person(
 
     dismiss_candidate(db, viewer_id=current_user.id, candidate_id=candidate_user_id)
     return None
+
+
+# ─── Your Taste Matches carousel (Oct-27 follow-up S01–S04) ─────────────
+
+
+class TasteMatchCard(BaseModel):
+    user_id: UUID
+    username: str | None = None
+    display_name: str | None = None
+    avatar_url: str | None = None
+    # 0–100 units. Null = "Learning" — not enough evidence.
+    compatibility: int | None = None
+    # One concise, viewer-safe reason label. Only populated from
+    # evidence the viewer is allowed to know (shared public genres /
+    # count of shared favorite titles). Never leaks private team or
+    # list membership.
+    reason: str | None = None
+
+
+class TasteMatchesResponse(BaseModel):
+    items: list[TasteMatchCard]
+    # Cold-start / low-evidence hint for the client to show "Rate more
+    # titles to find people with similar taste" instead of a sparse
+    # carousel.
+    has_evidence: bool = True
+
+
+@router.get("/people/taste-matches", response_model=TasteMatchesResponse)
+def get_taste_matches(
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(default=10, ge=1, le=30),
+) -> TasteMatchesResponse:
+    """Carousel immediately below the Social header.
+
+    Reuses the existing people-discovery eligibility filter (blocks,
+    dismissals, demo users, discovery-disabled accounts, already
+    followed users) and scores each candidate via the canonical
+    `get_compatibility` service — NOT the people-discovery coarse
+    score. A candidate without evidence (no shared genres/titles/
+    labels/platforms) is omitted entirely rather than shown with a
+    fabricated percentage.
+    """
+    from app.services.compatibility import get_compatibility, to_compatibility_response
+    from app.services.people_discovery import _eligible_candidate_ids
+
+    eligible = _eligible_candidate_ids(db, current_user.id, exclude_followed=True)
+    # Hard cap on candidates we score — compatibility is O(N) per pair
+    # today and we don't want to compute 10k pairs for the carousel.
+    # 60 lets us return a top-10 with meaningful competition.
+    candidate_ids = list(eligible)[:60]
+    if not candidate_ids:
+        return TasteMatchesResponse(items=[], has_evidence=False)
+
+    profiles = {
+        p.user_id: p
+        for p in db.scalars(
+            select(UserProfile).where(UserProfile.user_id.in_(candidate_ids))
+        ).all()
+    }
+
+    scored: list[tuple[int, UUID, list[str], int]] = []  # (compat, user_id, shared_genres, shared_title_count)
+    for cid in candidate_ids:
+        profile = profiles.get(cid)
+        if profile is None:
+            continue
+        record = get_compatibility(db, current_user.id, cid)
+        resp = to_compatibility_response(record, current_user.id, cid)
+        if resp.compatibility is None:
+            # No evidence — omit rather than fabricate.
+            continue
+        scored.append((
+            resp.compatibility,
+            cid,
+            resp.top_shared_genres[:1],
+            len(resp.top_shared_titles),
+        ))
+
+    scored.sort(key=lambda row: (-row[0], str(row[1])))
+
+    items: list[TasteMatchCard] = []
+    for compat, cid, shared_genres, shared_title_count in scored[:limit]:
+        profile = profiles.get(cid)
+        if profile is None:
+            continue
+        if shared_title_count >= 2:
+            reason = f"{shared_title_count} shared favorites"
+        elif shared_genres:
+            reason = f"You both like {shared_genres[0]}"
+        else:
+            reason = None
+        items.append(
+            TasteMatchCard(
+                user_id=cid,
+                username=profile.username,
+                display_name=profile.display_name,
+                avatar_url=profile.avatar_url,
+                compatibility=compat,
+                reason=reason,
+            )
+        )
+    return TasteMatchesResponse(items=items, has_evidence=len(items) > 0)

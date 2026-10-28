@@ -42,6 +42,7 @@ import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { SendToUserSheet } from "@/components/send-to-user-sheet";
 import { AppHeader } from "@/components/headers/app-header";
 import { StoriesStrip } from "@/components/stories-strip";
+import { TasteMatchesCarousel } from "@/components/taste-matches-carousel";
 import { relativeTime } from "@/lib/format";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
@@ -407,6 +408,10 @@ export default function SocialScreen() {
           per the brief's "preserve Find People and Create Post in the
           Social content's actions/menu, not a crowded global header." */}
       <AppHeader variant="primary" title="Social" />
+
+      {/* Oct-27 follow-up S01–S04: Your taste matches carousel sits
+          immediately below the header and above Stories, per brief. */}
+      <TasteMatchesCarousel />
 
       {/* Oct-19 Stories strip — 72-hour title stories per actor.
           Tapping Your Story opens the Add-to-Story flow (title picker). */}
