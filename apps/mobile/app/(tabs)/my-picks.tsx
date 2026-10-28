@@ -399,6 +399,7 @@ export default function MyPicksScreen() {
                 // Push the continuation strip above the pill nav so
                 // posters past the first few aren't hidden behind it.
                 continuationBottomOffset={56 + 20}
+                onPressKicker={item.listMeta ? () => router.push(`/favorites/list/${item.listMeta!.id}`) : undefined}
               />
             </View>
           )}

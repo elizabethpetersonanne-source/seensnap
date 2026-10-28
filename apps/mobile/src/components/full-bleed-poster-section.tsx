@@ -68,6 +68,9 @@ export function FullBleedPosterSection({
   // the horizontal strip doesn't hide behind the pill nav floating
   // over the hero.
   continuationBottomOffset,
+  // Oct-27: tapping the section kicker navigates somewhere (list
+  // detail, see-all, etc). When undefined, the kicker is text-only.
+  onPressKicker,
 }: {
   hero: FullBleedTitle | null;
   four: FullBleedTitle[];
@@ -78,6 +81,7 @@ export function FullBleedPosterSection({
   railActions: VerticalRailAction[];
   overlay?: React.ReactNode;
   continuationBottomOffset?: number;
+  onPressKicker?: () => void;
 }) {
   const { width, height } = useWindowDimensions();
   const resolvedHeroHeight = heroHeight ?? Math.min(height * 0.78, 820);
@@ -115,10 +119,23 @@ export function FullBleedPosterSection({
       </Pressable>
 
       {sectionKicker ? (
-        <View style={styles.kickerRow}>
-          <Text style={styles.kicker}>{sectionKicker}</Text>
-          <Ionicons name="chevron-forward" size={14} color={colors.accent} style={{ marginLeft: 4 }} />
-        </View>
+        onPressKicker ? (
+          <Pressable
+            style={styles.kickerRow}
+            onPress={onPressKicker}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel={`Open ${sectionKicker}`}
+          >
+            <Text style={styles.kicker}>{sectionKicker}</Text>
+            <Ionicons name="chevron-forward" size={14} color={colors.accent} style={{ marginLeft: 4 }} />
+          </Pressable>
+        ) : (
+          <View style={styles.kickerRow}>
+            <Text style={styles.kicker}>{sectionKicker}</Text>
+            <Ionicons name="chevron-forward" size={14} color={colors.accent} style={{ marginLeft: 4 }} />
+          </View>
+        )
       ) : null}
 
       {/* Overlay slot or default title treatment */}

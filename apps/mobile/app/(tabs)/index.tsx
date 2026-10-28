@@ -21,6 +21,7 @@ import { SSMotionBackdrop } from "@/components/ss-motion-backdrop";
 import { AppHeader } from "@/components/headers/app-header";
 import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 
+import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
 import { ConciergeEmptyState } from "@/components/concierge-empty-state";
@@ -356,6 +357,8 @@ export default function DiscoverScreen() {
   // Oct-18 §4 Concierge
   const entitlement = useEntitlement(sessionToken);
   const [conciergeDecision, setConciergeDecision] = useState<ConciergeDecisionResponse | null>(null);
+  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
+  const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [showListPicker, setShowListPicker] = useState(false);
 
   // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
@@ -886,6 +889,23 @@ export default function DiscoverScreen() {
                 trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
                 void openTitleModal(t.title_id);
               }}
+              onSave={(t) => {
+                trackEvent("concierge_save", { title_id: t.title_id });
+                setSaveTitleId(t.title_id);
+                setShowSaveSheet(true);
+              }}
+              onSend={(t) => {
+                trackEvent("concierge_send", { title_id: t.title_id });
+                void openTitleModal(t.title_id);
+              }}
+              onAddToTeam={(t) => {
+                trackEvent("concierge_team", { title_id: t.title_id });
+                void openTitleModal(t.title_id);
+              }}
+              onRate={(t) => {
+                trackEvent("concierge_rate", { title_id: t.title_id });
+                void openTitleModal(t.title_id);
+              }}
               onRefine={async (kind, extra) => {
                 if (!sessionToken || !conciergeDecision.decision_id) return;
                 trackEvent("concierge_refine", { kind, decision_id: conciergeDecision.decision_id });
@@ -1162,6 +1182,20 @@ export default function DiscoverScreen() {
           }}
         />
       )}
+      <SaveToListSheet
+        visible={showSaveSheet}
+        token={sessionToken}
+        titleId={saveTitleId}
+        source="concierge"
+        onClose={() => {
+          setShowSaveSheet(false);
+          setSaveTitleId(null);
+        }}
+        onSaved={() => {
+          setShowSaveSheet(false);
+          setSaveTitleId(null);
+        }}
+      />
     </SafeAreaView>
   );
 }

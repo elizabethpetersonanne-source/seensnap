@@ -76,7 +76,14 @@ export default function MessagesInboxScreen() {
           <Ionicons name="chevron-back" size={22} color={colors.ink} />
         </Pressable>
         <Text style={styles.headerTitle}>Messages</Text>
-        <View style={{ width: 22 }} />
+        <Pressable
+          onPress={() => router.push("/messages/new")}
+          hitSlop={10}
+          accessibilityRole="button"
+          accessibilityLabel="Compose a new message"
+        >
+          <Ionicons name="create-outline" size={22} color={colors.ink} />
+        </Pressable>
       </View>
 
       {loading ? (

@@ -95,8 +95,9 @@ export default function PreviewsScreen() {
   // list, the feed follows the OWNER'S order (not the viewer's
   // personalization). ranked_source="me" pulls from /me/favorites,
   // ranked_source=<user_id> pulls from /profiles/{id}/favorites/ranked.
-  const params = useLocalSearchParams<{ ranked_source?: string }>();
+  const params = useLocalSearchParams<{ ranked_source?: string; list_id?: string }>();
   const rankedSource = params.ranked_source ?? null;
+  const listId = params.list_id ?? null;
 
   const [items, setItems] = useState<PreviewFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,15 +135,23 @@ export default function PreviewsScreen() {
       // then resolve videos for each title in order. Category chips +
       // personalization are intentionally ignored — this is the
       // OWNER'S order, not a personalized re-rank.
-      if (rankedSource) {
-        const listUrl =
-          rankedSource === "me"
+      if (rankedSource || listId) {
+        const listUrl = listId
+          ? `/me/watchlist/lists/${listId}`
+          : rankedSource === "me"
             ? "/me/favorites/ranked?limit=100"
             : `/profiles/${rankedSource}/favorites/ranked?limit=100`;
-        const listData = await apiRequest<{ items: { title_id: string }[] }>(listUrl, {
-          token: sessionToken,
-        });
-        const orderedIds = listData.items.map((r) => r.title_id).join(",");
+        const raw = await apiRequest<unknown>(listUrl, { token: sessionToken });
+        // Ranked response: { items: [{ title_id, ... }] }
+        // Watchlist response: { items: [{ content_title_id, ... }] }
+        const items = (raw as { items?: unknown[] })?.items ?? [];
+        const orderedIds = items
+          .map((row) => {
+            const r = row as { title_id?: string; content_title_id?: string };
+            return r.title_id ?? r.content_title_id ?? "";
+          })
+          .filter(Boolean)
+          .join(",");
         if (!orderedIds) {
           setItems([]);
           setActiveIndex(0);
@@ -161,7 +170,7 @@ export default function PreviewsScreen() {
         setHasMore(false);
         setFeedStatus(listResp.items.length > 0 ? "ready" : "exhausted");
         trackEvent("previews_feed_ranked_loaded", {
-          source: rankedSource,
+          source: listId ? `list:${listId}` : rankedSource,
           count: listResp.items.length,
           skipped: listResp.skipped_title_ids.length,
         });
@@ -187,7 +196,7 @@ export default function PreviewsScreen() {
     } finally {
       setLoading(false);
     }
-  }, [sessionToken, rankedSource, categoryFilter.media_type, categoryFilter.genre]);
+  }, [sessionToken, rankedSource, listId, categoryFilter.media_type, categoryFilter.genre]);
 
   // Continuation fetch — appends to the end of the current list.
   // Called when the user is ~5 items away from the tail per §4.

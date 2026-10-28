@@ -158,6 +158,10 @@ function AuthGate() {
         <Stack.Screen name="favorites/new-list" options={{ animation: "slide_from_bottom" }} />
         {/* R05: rated-but-not-ranked list + bulk-add surface. */}
         <Stack.Screen name="favorites/unplaced" options={{ animation: "slide_from_right" }} />
+        {/* Compose a new direct message. */}
+        <Stack.Screen name="messages/new" options={{ animation: "slide_from_right" }} />
+        {/* List detail — edit, remove titles, watch previews. */}
+        <Stack.Screen name="favorites/list/[listId]" options={{ animation: "slide_from_right" }} />
       </Stack>
       {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
       <DidYouWatchPrompt />

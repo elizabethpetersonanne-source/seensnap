@@ -37,6 +37,10 @@ export function ConciergeResult({
   canUndo,
   onPressFeatured,
   onRefine,
+  onSave,
+  onSend,
+  onAddToTeam,
+  onRate,
 }: {
   rationale: string;
   titles: ConciergeTitleCard[];
@@ -44,6 +48,13 @@ export function ConciergeResult({
   canUndo?: boolean;
   onPressFeatured: (t: ConciergeTitleCard) => void;
   onRefine?: (kind: ConciergeRefineKind, extra?: { featured_title_id?: string }) => void;
+  // Oct-27 brief: Save / Send / Watch Team / Rate action rail on
+  // the Concierge result. Each receives the currently-featured
+  // title so the viewer acts on the one they're looking at.
+  onSave?: (t: ConciergeTitleCard) => void;
+  onSend?: (t: ConciergeTitleCard) => void;
+  onAddToTeam?: (t: ConciergeTitleCard) => void;
+  onRate?: (t: ConciergeTitleCard) => void;
 }) {
   const [featuredId, setFeaturedId] = useState<string | null>(null);
 
@@ -97,9 +108,67 @@ export function ConciergeResult({
         </View>
       </Pressable>
 
+      {/* Action rail — operates on the FEATURED title. Save / Send /
+          Watch Team / Rate per Oct-27 personalization brief. */}
+      {(onSave || onSend || onAddToTeam || onRate) ? (
+        <View style={styles.actionRail}>
+          {onSave ? (
+            <Pressable
+              onPress={() => onSave(featured)}
+              hitSlop={6}
+              style={styles.actionBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Save ${featured.title}`}
+            >
+              <Ionicons name="bookmark-outline" size={22} color={colors.ink} />
+            </Pressable>
+          ) : null}
+          {onSend ? (
+            <Pressable
+              onPress={() => onSend(featured)}
+              hitSlop={6}
+              style={styles.actionBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Send ${featured.title}`}
+            >
+              <Ionicons name="paper-plane-outline" size={22} color={colors.ink} />
+            </Pressable>
+          ) : null}
+          {onAddToTeam ? (
+            <Pressable
+              onPress={() => onAddToTeam(featured)}
+              hitSlop={6}
+              style={styles.actionBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Add ${featured.title} to a Watch Team`}
+            >
+              <Ionicons name="people-outline" size={22} color={colors.ink} />
+            </Pressable>
+          ) : null}
+          {onRate ? (
+            <Pressable
+              onPress={() => onRate(featured)}
+              hitSlop={6}
+              style={styles.actionBtn}
+              accessibilityRole="button"
+              accessibilityLabel={`Rate ${featured.title}`}
+            >
+              <Ionicons name="star-outline" size={22} color={colors.ink} />
+            </Pressable>
+          ) : null}
+        </View>
+      ) : null}
+
       {/* Continuation strip — up to four smaller posters. Tap promotes. */}
       {continuation.length > 0 ? (
-        <View style={styles.continuationRow}>
+        <View
+          // Oct-27 fix: force a remount of the strip on every title
+          // set change so the Image components reload cleanly after
+          // a refinement — otherwise iOS can hold onto the previous
+          // decoded poster even after the URI prop updates.
+          key={titles.map((t) => t.title_id).join("|")}
+          style={styles.continuationRow}
+        >
           {continuation.map((t) => (
             <Pressable
               key={t.title_id}
@@ -272,5 +341,17 @@ const styles = StyleSheet.create({
     color: colors.ink,
     fontSize: 12,
     letterSpacing: 0.2,
+  },
+  actionRail: {
+    flexDirection: "row",
+    gap: 24,
+    paddingVertical: 4,
+    alignItems: "center",
+  },
+  actionBtn: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
   },
 });
