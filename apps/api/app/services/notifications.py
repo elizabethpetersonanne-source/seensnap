@@ -7,28 +7,62 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.social import Notification, NotificationOutbox, NotificationPreference
-from app.models.user import Device, User, UserProfile
+from app.models.user import Device, User, UserPreferences, UserProfile
 
 logger = logging.getLogger(__name__)
 
-# Maps notification types to user-facing preference categories
+# Legacy mapping — kept so an older NotificationPreference row still
+# gates delivery for users who haven't touched the Oct-27 settings UI.
 _CATEGORY: dict[str, str] = {
     "team_invite": "team_activity",
     "team_member_joined": "team_activity",
     "team_comment_on_your_activity": "direct_engagement",
     "team_comment_reply": "direct_engagement",
     "team_reaction": "team_activity",
-    # Social — Social brief §44-§46. Likes are grouped under direct_engagement
-    # rather than team_activity so users can toggle push independently.
     "social_new_follower": "direct_engagement",
     "social_like_on_your_post": "direct_engagement",
     "social_comment_on_your_post": "direct_engagement",
     "social_reply_to_your_comment": "direct_engagement",
-    # Messaging spec §23–§27. Direct 1:1 messages live in their own
-    # category so users can independently toggle DM push without losing
-    # team / social pushes.
     "message_received": "direct_engagement",
 }
+
+
+# Oct-27 followup A67–A68: notification types map to the new
+# UserPreferences.notification_channels keys that the Direct / Watch
+# Teams / Social settings UI writes to. A missing key defaults to True
+# on read so a user who hasn't touched the toggles still gets delivery.
+_CHANNEL_FOR_TYPE: dict[str, str] = {
+    "team_invite": "team_invites",
+    "team_member_joined": "team_activity",
+    "team_comment_on_your_activity": "team_activity",
+    "team_comment_reply": "team_activity",
+    "team_reaction": "team_activity",
+    "social_new_follower": "direct_followers",
+    "social_like_on_your_post": "direct_reactions",
+    "social_comment_on_your_post": "direct_reactions",
+    "social_reply_to_your_comment": "direct_reactions",
+    "message_received": "direct_messages",
+}
+
+
+def channel_for_notification_type(notification_type: str) -> str | None:
+    """Public helper so callers that compose notifications can check
+    whether a user has muted the relevant channel BEFORE spending work
+    on body text. Unknown types return None (deliver by default)."""
+    return _CHANNEL_FOR_TYPE.get(notification_type)
+
+
+def _is_channel_enabled(prefs: UserPreferences | None, channel_key: str | None) -> bool:
+    """Oct-27 followup A67–A68: canonical channel gate. Missing key or
+    None channel → True (safe default — don't silently suppress a
+    notification whose channel the UI doesn't model yet)."""
+    if prefs is None or channel_key is None:
+        return True
+    channels = prefs.notification_channels or {}
+    value = channels.get(channel_key)
+    if value is None:
+        return True
+    return bool(value)
 
 
 def _create_notification(
@@ -81,10 +115,28 @@ def _enqueue_push(db: Session, notification: Notification) -> None:
     if recipient is None or recipient.is_demo:
         return
 
+    # Oct-27 followup A67–A68: canonical master + channel gate.
+    # UserPreferences.notifications_enabled is the master switch the
+    # settings screen writes to; notification_channels is the per-
+    # channel JSONB that the Direct/Watch Teams/Social toggles write
+    # to. If the user has turned the master off, suppress. If the
+    # user has muted this notification type's channel, suppress.
+    user_prefs = db.scalar(
+        select(UserPreferences).where(UserPreferences.user_id == notification.user_id)
+    )
+    if user_prefs is not None and not user_prefs.notifications_enabled:
+        return
+    channel_key = _CHANNEL_FOR_TYPE.get(notification.notification_type)
+    if not _is_channel_enabled(user_prefs, channel_key):
+        return
+
+    # Legacy NotificationPreference remains a secondary gate. A user
+    # who touched the old settings UI pre-Oct-27 and set
+    # push_enabled=False or team_activity=False or
+    # direct_engagement=False still has those honored.
     prefs = db.scalar(
         select(NotificationPreference).where(NotificationPreference.user_id == notification.user_id)
     )
-
     if prefs is not None:
         if not prefs.push_enabled:
             return
