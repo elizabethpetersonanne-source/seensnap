@@ -38,7 +38,10 @@ type EmptyState =
   | "no_eligible"
   | "viewer_cold"
   | "no_candidates"
-  | "all_followed";
+  | "all_followed"
+  // M04: distinct from no_candidates. All candidates failed to score
+  // (upstream outage). Client offers Retry rather than "no matches".
+  | "network_error";
 
 type TasteMatchesDiagnostics = {
   eligible_total: number;
@@ -122,9 +125,15 @@ export function TasteMatchesCarousel() {
   }
 
   if (!data || data.items.length === 0) {
-    // MATCH02: pick honest copy based on the server's diagnosis.
+    // MATCH02 / M04: pick honest copy based on the server's diagnosis.
     const state = data?.empty_state ?? "no_eligible";
-    const copy = state === "viewer_cold"
+    const copy = state === "network_error"
+      ? {
+          body: "I couldn't finish checking who to match you with. Retry.",
+          cta: "Retry",
+          onPress: () => { void load(); },
+        }
+      : state === "viewer_cold"
       ? {
           body: "Rate a few titles to help us find your taste matches.",
           cta: "Rate titles",
@@ -132,7 +141,9 @@ export function TasteMatchesCarousel() {
         }
       : state === "all_followed"
         ? {
-            body: "You already follow everyone we can match you with. Dismiss or unfollow to see new ones.",
+            // M04: don't tell users to unfollow or dismiss people to
+            // manufacture new matches. Offer Find people / invite.
+            body: "You already follow the people whose taste overlaps yours. Find people or invite a friend.",
             cta: "Find people",
             onPress: () => router.push("/social/people"),
           }
@@ -143,7 +154,7 @@ export function TasteMatchesCarousel() {
               onPress: () => router.push("/social/people"),
             }
           : {
-              body: "No new taste matches yet. Follow or dismiss cards and check back.",
+              body: "No new taste matches yet. Check back as more people rate titles.",
               cta: "Find people",
               onPress: () => router.push("/social/people"),
             };

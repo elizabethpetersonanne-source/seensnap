@@ -478,23 +478,62 @@ def get_taste_matches(
             ),
         )
 
-    # Preselect candidates who are themselves "scorable" — users with
-    # at least one rated title. This prevents us from spending our
-    # 60-candidate budget on inactive accounts whose compatibility
-    # will inevitably come back empty.
-    scorable_ids = set(
-        db.scalars(
-            select(_Rating.user_id)
-            .where(_Rating.user_id.in_(eligible))
-            .group_by(_Rating.user_id)
-            .limit(200)
+    # M03: deterministic candidate selection by signal overlap, not
+    # UUID slice. Users with the most rated titles are the most
+    # scorable; among those, we prefer users whose top rated-genres
+    # overlap with the viewer's. A strong candidate beyond the old
+    # first-60 is now reachable.
+    from app.models.taste import UserSignal
+    from sqlalchemy import func as _f2
+
+    # Viewer's own top genre signals (positive score).
+    viewer_genre_names = [
+        row[0] for row in db.execute(
+            select(UserSignal.signal_name)
+            .where(
+                UserSignal.user_id == current_user.id,
+                UserSignal.signal_type == "genre",
+                UserSignal.score > 0,
+            )
+            .order_by(UserSignal.score.desc())
+            .limit(8)
         ).all()
-    )
-    # If the viewer has lots of eligible candidates but none have
-    # rated anything, fall through to the full eligible set so a
-    # beta cold-start pool with no ratings still gets Learning cards.
-    pool = sorted(scorable_ids) if scorable_ids else sorted(eligible)
-    candidate_ids = pool[:60]
+    ]
+
+    # Rank every eligible candidate by (overlap_count, rated_count).
+    # Overlap count = number of their top genre signals that intersect
+    # the viewer's. Rated count = watched + rated titles. Deterministic
+    # tie-break by UUID string.
+    rated_counts: dict[UUID, int] = {
+        row[0]: int(row[1]) for row in db.execute(
+            select(_Rating.user_id, _f2.count())
+            .where(
+                _Rating.user_id.in_(eligible),
+                _Rating.watched_state == "watched",
+            )
+            .group_by(_Rating.user_id)
+        ).all()
+    }
+    overlap_counts: dict[UUID, int] = {}
+    if viewer_genre_names:
+        signal_rows = db.execute(
+            select(UserSignal.user_id, UserSignal.signal_name)
+            .where(
+                UserSignal.user_id.in_(eligible),
+                UserSignal.signal_type == "genre",
+                UserSignal.score > 0,
+                UserSignal.signal_name.in_(viewer_genre_names),
+            )
+        ).all()
+        for uid, _name in signal_rows:
+            overlap_counts[uid] = overlap_counts.get(uid, 0) + 1
+
+    def _rank_key(cid: UUID) -> tuple[int, int, str]:
+        # Negative so sort(reverse=False) places best first.
+        return (-overlap_counts.get(cid, 0), -rated_counts.get(cid, 0), str(cid))
+
+    ranked_eligible = sorted(eligible, key=_rank_key)
+    candidate_ids = ranked_eligible[:60]
 
     profiles = {
         p.user_id: p
@@ -505,15 +544,20 @@ def get_taste_matches(
 
     # (compat_int|None, user_id, shared_genres, shared_title_count)
     scored: list[tuple[int | None, UUID, list[str], int]] = []
+    scoring_failures = 0
     for cid in candidate_ids:
         profile = profiles.get(cid)
         if profile is None:
             continue
         try:
             record = get_compatibility(db, current_user.id, cid)
-            resp = to_compatibility_response(record, current_user.id, cid)
+            resp = to_compatibility_response(record, current_user.id, cid, db=db)
         except Exception:
             # Non-fatal: skip this candidate but keep scoring the rest.
+            # M04: track failure count so an all-failed request becomes
+            # a truthful network_error state rather than claiming
+            # "no eligible people".
+            scoring_failures += 1
             continue
         scored.append((
             resp.compatibility,
@@ -557,14 +601,28 @@ def get_taste_matches(
         )
     scored_with_evidence = sum(1 for s in scored if s[0] is not None)
     scored_learning = sum(1 for s in scored if s[0] is None)
-    empty_state = (
-        "ok" if items
-        else "viewer_cold" if viewer_rated_count < 5
-        else "no_eligible"
-    )
+    # M04: if we failed to score ANY candidate and had candidates to
+    # score, the honest answer is network_error — not "no eligible
+    # people" and not "cold viewer". Client surfaces a Retry.
+    if (
+        not items
+        and candidate_ids
+        and scoring_failures > 0
+        and scoring_failures == len(candidate_ids)
+    ):
+        empty_state = "network_error"
+    else:
+        empty_state = (
+            "ok" if items
+            else "viewer_cold" if viewer_rated_count < 5
+            else "no_eligible"
+        )
+    # M04: has_evidence reflects verified matching evidence, not
+    # merely that we have items. Learning cards don't count.
+    numerical_hits = sum(1 for it in items if it.compatibility is not None)
     return TasteMatchesResponse(
         items=items,
-        has_evidence=len(items) > 0,
+        has_evidence=numerical_hits > 0,
         empty_state=empty_state,
         diagnostics=TasteMatchesDiagnostics(
             eligible_total=len(eligible),

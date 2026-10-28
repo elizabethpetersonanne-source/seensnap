@@ -46,12 +46,12 @@ def refresh_compatibility(db: Session, user_a: UUID, user_b: UUID) -> Compatibil
     genre_score = sum(min(genres_a[g], genres_b[g]) for g in shared_genres[:3]) / 3 if shared_genres else 0
     title_score = min(len(shared_titles) * 18, 36)
     label_score = min(len(shared_labels) * 12, 24)
-    platform_score = min(len(shared_platforms) * 6, 12)
-    # Oct-27 spec DNA-01: no arbitrary positive floor when evidence is
-    # absent. Clamp only on the upper end; let a thin-evidence pair
-    # read 0, and let the response serializer decide to show the
-    # number vs the "Still learning your taste" state.
-    compatibility = min(99, int(round(genre_score * 0.35 + title_score + label_score + platform_score)))
+    # M01: streaming-provider overlap is NOT a taste compatibility
+    # signal. Shared subscriptions are context (we still display the
+    # platform list) but they do not contribute to the match number —
+    # that would reward paying for the same services, not having
+    # similar taste. Previously platform_score added up to 12 points.
+    compatibility = min(99, int(round(genre_score * 0.35 + title_score + label_score)))
 
     record.compatibility = compatibility
     record.shared_genres = shared_genres[:3]
@@ -75,17 +75,49 @@ def get_compatibility(db: Session, user_a: UUID, user_b: UUID, *, force_refresh:
     return record
 
 
-def to_compatibility_response(record: CompatibilityScore, viewer_user_id: UUID, other_user_id: UUID) -> CompatibilityResponse:
-    # Oct-27 spec DNA-01: return null when evidence is absent so the
-    # client can show "Still learning your taste" instead of a
-    # fabricated number. Evidence = at least one shared genre, title,
-    # label or platform.
-    has_evidence = bool(
+# M01 evidence gate: minimum distinct rated titles PER PERSON before
+# we display a numerical compatibility. Below this, both sides see
+# "Still learning your taste" instead of an invented percentage.
+# Product threshold, not statistical — kept intentionally conservative.
+_MIN_RATED_FOR_EVIDENCE = 5
+
+
+def _user_rated_count(db: Session, user_id: UUID) -> int:
+    from app.models.social import Rating as _R
+    from sqlalchemy import func as _f
+    return int(db.scalar(
+        select(_f.count()).select_from(_R).where(
+            _R.user_id == user_id,
+            _R.watched_state == "watched",
+        )
+    ) or 0)
+
+
+def to_compatibility_response(
+    record: CompatibilityScore,
+    viewer_user_id: UUID,
+    other_user_id: UUID,
+    *,
+    db: Session | None = None,
+) -> CompatibilityResponse:
+    # M01: compatibility is a NUMBER only when BOTH users have >= 5
+    # rated titles AND there's supported shared evidence. Otherwise
+    # the client shows the "Still learning your taste" Learning card.
+    shared_present = bool(
         (record.shared_genres or [])
         or (record.shared_titles or [])
         or (record.shared_labels or [])
-        or (record.shared_platforms or [])
     )
+    has_evidence = shared_present
+    if has_evidence and db is not None:
+        # Enforce the rated-count floor only when a session is
+        # available. Legacy callers (team analytics path) that pass
+        # the record without db still show the previous behavior,
+        # which is acceptable for team pair rankings.
+        a_count = _user_rated_count(db, record.user_a_id)
+        b_count = _user_rated_count(db, record.user_b_id)
+        if a_count < _MIN_RATED_FOR_EVIDENCE or b_count < _MIN_RATED_FOR_EVIDENCE:
+            has_evidence = False
     compat: int | None = record.compatibility if has_evidence else None
     return CompatibilityResponse(
         user_a=viewer_user_id,

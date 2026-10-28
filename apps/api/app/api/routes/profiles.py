@@ -31,7 +31,12 @@ def get_public_profile(user_id: UUID, current_user: CurrentUser, db: DbSession) 
         )
     ) or 0
     compatibility = (
-        to_compatibility_response(get_compatibility(db, current_user.id, profile.user_id), current_user.id, profile.user_id)
+        to_compatibility_response(
+            get_compatibility(db, current_user.id, profile.user_id),
+            current_user.id,
+            profile.user_id,
+            db=db,
+        )
         if current_user.id != profile.user_id
         else None
     )
@@ -69,7 +74,12 @@ def get_profile_compatibility(user_id: UUID, current_user: CurrentUser, db: DbSe
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
     if profile is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
-    return to_compatibility_response(get_compatibility(db, current_user.id, profile.user_id, force_refresh=True), current_user.id, profile.user_id)
+    return to_compatibility_response(
+        get_compatibility(db, current_user.id, profile.user_id, force_refresh=True),
+        current_user.id,
+        profile.user_id,
+        db=db,
+    )
 
 
 @router.get("/{user_id}/posts", response_model=list[PublicProfilePostResponse])
@@ -83,11 +93,25 @@ def get_public_profile_posts(
     if profile is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
 
+    # A01: enforce audience at the QUERY level, not just the serializer.
+    # Self-view sees everything; a follower sees public + followers; a
+    # stranger sees public only. Team events never surface here.
+    allowed_visibilities: list[str]
+    if current_user.id == user_id:
+        allowed_visibilities = ["public", "followers", "private"]
+    else:
+        from app.services.follows import is_following as _is_following
+        if _is_following(db, current_user.id, user_id):
+            allowed_visibilities = ["public", "followers"]
+        else:
+            allowed_visibilities = ["public"]
+
     events = db.scalars(
         select(FeedEvent)
         .where(
             FeedEvent.actor_user_id == user_id,
             FeedEvent.team_id.is_(None),
+            FeedEvent.visibility.in_(allowed_visibilities),
         )
         .order_by(FeedEvent.created_at.desc())
         .limit(limit)
@@ -206,6 +230,95 @@ class PublicRankedFavoritesResponse(BaseModel):
     owner_user_id: UUID
     items: list[PublicRankedFavoriteRow]
     total: int
+
+
+class PublicListTitleRow(BaseModel):
+    title_id: UUID
+    tmdb_id: int
+    title: str
+    content_type: str
+    poster_url: str | None = None
+    backdrop_url: str | None = None
+    year: int | None = None
+
+
+class PublicListResponse(BaseModel):
+    list_id: UUID
+    name: str
+    description: str | None
+    owner_user_id: UUID
+    owner_display_name: str | None
+    visibility: str
+    item_count: int
+    items: list[PublicListTitleRow]
+
+
+@router.get("/{user_id}/lists/{list_id}", response_model=PublicListResponse)
+def get_authorized_list(
+    user_id: UUID,
+    list_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(default=100, ge=1, le=200),
+) -> PublicListResponse:
+    """Authenticated viewer-aware fetch of someone else's list. Enables
+    "Watch previews" from ANY list — the viewer's own, a followed
+    user's, or a public list. Audience enforced at the query level:
+      - owner: all visibilities
+      - follower: public + followers
+      - stranger: public only
+    Returns 404 (not 403) when not authorized so existence of a
+    private list isn't disclosed.
+    """
+    from app.models.social import Watchlist as _W, WatchlistItem as _WI
+    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
+    if profile is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
+
+    watchlist = db.scalar(
+        select(_W).where(_W.id == list_id, _W.owner_user_id == user_id)
+    )
+    if watchlist is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
+
+    # A01/A02: enforce audience.
+    if current_user.id != user_id:
+        from app.services.follows import is_following as _is_following
+        visibility = getattr(watchlist, "visibility", "private") or "private"
+        if visibility == "private":
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
+        if visibility == "followers" and not _is_following(db, current_user.id, user_id):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
+
+    rows = db.execute(
+        select(_WI, ContentTitle)
+        .join(ContentTitle, ContentTitle.id == _WI.content_title_id)
+        .where(_WI.watchlist_id == watchlist.id)
+        .order_by(_WI.position.asc().nullslast(), _WI.created_at.asc())
+        .limit(limit)
+    ).all()
+
+    return PublicListResponse(
+        list_id=watchlist.id,
+        name=watchlist.name,
+        description=watchlist.description,
+        owner_user_id=user_id,
+        owner_display_name=profile.display_name,
+        visibility=getattr(watchlist, "visibility", "private") or "private",
+        item_count=len(rows),
+        items=[
+            PublicListTitleRow(
+                title_id=t.id,
+                tmdb_id=t.tmdb_id,
+                title=t.title,
+                content_type=t.content_type,
+                poster_url=t.poster_url,
+                backdrop_url=t.backdrop_url,
+                year=t.release_date.year if t.release_date else None,
+            )
+            for _, t in rows
+        ],
+    )
 
 
 @router.get("/{user_id}/favorites/ranked", response_model=PublicRankedFavoritesResponse)
