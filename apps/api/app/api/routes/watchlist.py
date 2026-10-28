@@ -1,6 +1,7 @@
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
+from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
 from app.api.dependencies import CurrentUser, DbSession
@@ -216,6 +217,8 @@ def delete_watchlist_item(item_id: UUID, current_user: CurrentUser, db: DbSessio
 
 @router.delete("/lists/{list_id}/titles/{title_id}", response_model=WatchlistResponse)
 def remove_title_from_list(list_id: UUID, title_id: UUID, current_user: CurrentUser, db: DbSession) -> WatchlistResponse:
+    """LIST05: idempotent remove. Repeated DELETEs return the current
+    list state instead of 404 so Undo + retry are safe."""
     watchlist = get_watchlist_record(db, current_user.id, list_id)
     item = db.scalar(
         select(WatchlistItem).where(
@@ -223,15 +226,155 @@ def remove_title_from_list(list_id: UUID, title_id: UUID, current_user: CurrentU
             WatchlistItem.content_title_id == title_id,
         )
     )
-    if item is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not in list")
-    db.execute(delete(WatchlistItem).where(WatchlistItem.id == item.id))
+    if item is not None:
+        db.execute(delete(WatchlistItem).where(WatchlistItem.id == item.id))
+        db.commit()
+        try:
+            refresh_taste_profile(db, current_user.id)
+        except Exception:
+            pass
+    return _watchlist_response(db, watchlist)
+
+
+class TitleMembershipResponse(BaseModel):
+    """LIST01: which of the viewer's lists the given title belongs to.
+    Includes system + custom lists; the client renders checkboxes
+    pre-filled from this response."""
+    list_id: UUID
+    name: str
+    is_default: bool
+    is_system_list: bool
+    visibility: str = "private"
+    title_count: int
+
+
+@router.get("/memberships/{title_id}", response_model=list[TitleMembershipResponse])
+def get_title_memberships(
+    title_id: UUID,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> list[TitleMembershipResponse]:
+    """Return every owned list the title is in. Used by the Manage
+    Lists sheet to render the current membership checkbox state
+    without N round trips."""
+    from sqlalchemy import func as sqlfunc
+
+    # Pull all owned lists + whether this title has a membership row.
+    rows = db.execute(
+        select(Watchlist, WatchlistItem.id, sqlfunc.count(WatchlistItem.id).over(partition_by=Watchlist.id))
+        .join(
+            WatchlistItem,
+            (WatchlistItem.watchlist_id == Watchlist.id) & (WatchlistItem.content_title_id == title_id),
+            isouter=True,
+        )
+        .where(Watchlist.owner_user_id == current_user.id)
+    ).all()
+    # Collapse to one row per list; count ALL items per list separately
+    # since the join only materialises matching rows for this title.
+    counts = {
+        r[0]: int(r[1] or 0) for r in db.execute(
+            select(WatchlistItem.watchlist_id, sqlfunc.count(WatchlistItem.id))
+            .where(WatchlistItem.watchlist_id.in_({w.id for w, _, _ in rows}))
+            .group_by(WatchlistItem.watchlist_id)
+        ).all()
+    }
+    out: list[TitleMembershipResponse] = []
+    seen: set[UUID] = set()
+    for watchlist, item_id, _ in rows:
+        if watchlist.id in seen:
+            continue
+        if item_id is None:
+            continue
+        seen.add(watchlist.id)
+        out.append(TitleMembershipResponse(
+            list_id=watchlist.id,
+            name=watchlist.name,
+            is_default=watchlist.is_default,
+            is_system_list=watchlist.is_system_list,
+            visibility=watchlist.visibility,
+            title_count=counts.get(watchlist.id, 0),
+        ))
+    return out
+
+
+class ApplyMembershipRequest(BaseModel):
+    """LIST02: atomic batch membership change for one title. The
+    client sends ONLY the lists it explicitly toggled — never the
+    full load, which would clobber unseen pages."""
+    add_list_ids: list[UUID] = Field(default_factory=list, max_length=50)
+    remove_list_ids: list[UUID] = Field(default_factory=list, max_length=50)
+
+
+class ApplyMembershipResponse(BaseModel):
+    added: list[UUID]
+    removed: list[UUID]
+    skipped_duplicate_adds: list[UUID] = Field(default_factory=list)
+
+
+@router.post("/memberships/{title_id}/apply", response_model=ApplyMembershipResponse)
+def apply_title_memberships(
+    title_id: UUID,
+    payload: ApplyMembershipRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> ApplyMembershipResponse:
+    """LIST02: apply explicit additions/removals in one transaction.
+    Every target list must be owned by the viewer; a foreign id
+    aborts the whole call rather than partially applying."""
+    all_ids = set(payload.add_list_ids) | set(payload.remove_list_ids)
+    if not all_ids:
+        return ApplyMembershipResponse(added=[], removed=[])
+
+    owned = db.scalars(
+        select(Watchlist).where(
+            Watchlist.id.in_(all_ids),
+            Watchlist.owner_user_id == current_user.id,
+        )
+    ).all()
+    owned_ids = {w.id for w in owned}
+    foreign = all_ids - owned_ids
+    if foreign:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Not owner of {len(foreign)} target list(s)",
+        )
+
+    added: list[UUID] = []
+    skipped: list[UUID] = []
+    for lid in payload.add_list_ids:
+        existing = db.scalar(
+            select(WatchlistItem).where(
+                WatchlistItem.watchlist_id == lid,
+                WatchlistItem.content_title_id == title_id,
+            )
+        )
+        if existing is not None:
+            skipped.append(lid)
+            continue
+        db.add(WatchlistItem(
+            watchlist_id=lid,
+            content_title_id=title_id,
+            added_via="manage_lists",
+        ))
+        added.append(lid)
+
+    removed: list[UUID] = []
+    for lid in payload.remove_list_ids:
+        res = db.execute(
+            delete(WatchlistItem).where(
+                WatchlistItem.watchlist_id == lid,
+                WatchlistItem.content_title_id == title_id,
+            )
+        )
+        if res.rowcount:
+            removed.append(lid)
+
     db.commit()
     try:
         refresh_taste_profile(db, current_user.id)
     except Exception:
         pass
-    return _watchlist_response(db, watchlist)
+    return ApplyMembershipResponse(added=added, removed=removed, skipped_duplicate_adds=skipped)
 
 
 def _watchlist_response(db: DbSession, watchlist: Watchlist) -> WatchlistResponse:

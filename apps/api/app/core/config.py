@@ -74,5 +74,13 @@ class Settings(BaseSettings):
             return configured
         return Path(__file__).resolve().parents[2] / configured
 
+    def private_uploads_path(self) -> Path:
+        """Oct-27 PRIV02-03: user-submitted content that must NOT be
+        served via the public /uploads or /media static mounts. Bug
+        report screenshots live here; the authenticated download
+        route reads these bytes."""
+        base = self.uploads_path().parent
+        return base / "private-uploads"
+
 
 settings = Settings()
