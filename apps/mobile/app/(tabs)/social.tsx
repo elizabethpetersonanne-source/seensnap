@@ -102,6 +102,9 @@ type SocialPost = {
   // Server computes this from previous_rank + new_rank at publish time;
   // never recomputed from the author's current ranking.
   rank_change?: RankChangePayload | null;
+  // Which bucket surfaced this post into the viewer's feed.
+  // "followed" | "match_90" | "match_80" | "unknown".
+  source_label?: "followed" | "match_90" | "match_80" | "unknown";
 };
 
 type FeedResponse = {
@@ -925,7 +928,18 @@ function FeedCard({
       >
         <Avatar uri={author.avatar_url} label={authorName} size={36} />
         <View style={{ flex: 1 }}>
-          <Text style={styles.cardAuthorName} numberOfLines={1}>{authorName}</Text>
+          <View style={styles.cardAuthorNameRow}>
+            <Text style={styles.cardAuthorName} numberOfLines={1}>{authorName}</Text>
+            {post.source_label === "match_90" ? (
+              <View style={styles.sourceChip}>
+                <Text style={styles.sourceChipText}>90%+ MATCH</Text>
+              </View>
+            ) : post.source_label === "match_80" ? (
+              <View style={[styles.sourceChip, styles.sourceChipLow]}>
+                <Text style={styles.sourceChipText}>80%+ MATCH</Text>
+              </View>
+            ) : null}
+          </View>
           <Text style={styles.cardAuthorMeta} numberOfLines={1}>
             {handle ? `${handle}  ·  ` : ""}
             {formatPostType(post)}  ·  {relativeTime(post.created_at)}
@@ -1429,6 +1443,22 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.sm,
   },
   cardAuthorName: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 14 },
+  cardAuthorNameRow: { flexDirection: "row", alignItems: "center", gap: 8 },
+  sourceChip: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+  },
+  sourceChipLow: {
+    backgroundColor: "rgba(255,230,0,0.5)",
+  },
+  sourceChipText: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.background,
+    fontSize: 9,
+    letterSpacing: 0.8,
+  },
   cardAuthorMeta: { color: colors.muted, fontFamily: fonts.mono, fontSize: 11, marginTop: 2 },
   cardCaption: {
     color: colors.ink,

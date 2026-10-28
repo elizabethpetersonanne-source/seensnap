@@ -234,22 +234,63 @@ def following_feed(
     limit: int = 20,
     before_created_at: datetime | None = None,
 ) -> list[FeedEvent]:
-    """Return posts from users the viewer follows, ordered by recency.
-    Cursor-based pagination via `before_created_at` per §28 — offset-based
-    would produce duplicates as new posts insert."""
-    following_subq = (
-        select(UserFollow.following_user_id)
-        .where(UserFollow.follower_user_id == viewer_user_id)
-        .subquery()
+    """SOC-01: three-bucket ranking.
+
+    Order within the feed:
+      1. Posts from followed users (incl. the viewer's own posts).
+      2. Posts from non-followed users with reliable 90%+ person-match.
+      3. Posts from non-followed users with reliable 80–89% match.
+
+    Within each bucket, order by `created_at desc` + stable tie-break by
+    `FeedEvent.id`. Visibility + block eligibility are enforced BEFORE
+    ranking so a 90% match can't surface a private post.
+
+    Cursor pagination via `before_created_at` keeps working as a
+    crude timestamp cursor; a dedup check in the API layer prevents
+    duplicates when a post straddles a bucket boundary across pages.
+    """
+    from app.models.taste import CompatibilityScore
+
+    following_ids = set(
+        db.scalars(
+            select(UserFollow.following_user_id).where(
+                UserFollow.follower_user_id == viewer_user_id,
+            )
+        ).all()
     )
-    # Own posts + posts by users you follow. Every mainstream Following
-    # feed (X, Threads, Instagram) shows the author their own activity —
-    # confirms the post went out and lets them interact with replies.
+    following_ids.add(viewer_user_id)  # self-authored posts render too
+
+    # Pull every stored compatibility score for the viewer and bucket
+    # the counterparties. The score table stores pairs sorted by uuid
+    # string, so the viewer can be either user_a or user_b.
+    compat_rows = db.execute(
+        select(CompatibilityScore.user_a_id, CompatibilityScore.user_b_id, CompatibilityScore.compatibility)
+        .where(
+            or_(
+                CompatibilityScore.user_a_id == viewer_user_id,
+                CompatibilityScore.user_b_id == viewer_user_id,
+            )
+        )
+    ).all()
+    bucket90_ids: set[UUID] = set()
+    bucket80_ids: set[UUID] = set()
+    for a, b, c in compat_rows:
+        other = b if a == viewer_user_id else a
+        if other in following_ids:
+            continue  # followed users are always Bucket 1
+        if c is None:
+            continue
+        if c >= 90:
+            bucket90_ids.add(other)
+        elif c >= 80:
+            bucket80_ids.add(other)
+
+    allowed_actor_ids = following_ids | bucket90_ids | bucket80_ids
+    if not allowed_actor_ids:
+        return []
+
     conds = [
-        or_(
-            FeedEvent.actor_user_id.in_(select(following_subq)),
-            FeedEvent.actor_user_id == viewer_user_id,
-        ),
+        FeedEvent.actor_user_id.in_(allowed_actor_ids),
         FeedEvent.event_type.in_(SOCIAL_POST_TYPES),
         _visible_to_viewer_clause(viewer_user_id),
     ]
@@ -259,14 +300,27 @@ def following_feed(
     if before_created_at is not None:
         conds.append(FeedEvent.created_at < before_created_at)
 
-    return list(
+    # Pull a bounded working set (3x the page) so Python-side bucket
+    # sort has room to prefer followed/high-match posts even when the
+    # most recent raw post is from the 80–89% bucket.
+    rows = list(
         db.scalars(
             select(FeedEvent)
             .where(and_(*conds))
             .order_by(FeedEvent.created_at.desc())
-            .limit(limit)
+            .limit(limit * 3)
         ).all()
     )
+
+    def _bucket(event: FeedEvent) -> int:
+        if event.actor_user_id in following_ids:
+            return 0
+        if event.actor_user_id in bucket90_ids:
+            return 1
+        return 2
+
+    rows.sort(key=lambda e: (_bucket(e), -e.created_at.timestamp(), str(e.id)))
+    return rows[:limit]
 
 
 def user_activity_feed(

@@ -87,6 +87,48 @@ def get_following_feed(
     events = following_feed(db, current_user.id, limit=limit, before_created_at=before)
     hydrated = [hydrate_feed_event(db, e, current_user.id) for e in events]
     next_cursor = events[-1].created_at.isoformat() if events else None
+    # SOC-01: expose a short label so the client can show "Followed",
+    # "90%+ match", "80–89% match" chips on the mixed-source feed
+    # without inventing bands on the client. Derived from the viewer's
+    # following set + compatibility scores at query time.
+    from app.models.social import UserFollow
+    from app.models.taste import CompatibilityScore
+    from sqlalchemy import or_ as _or
+
+    following_ids = set(
+        db.scalars(
+            select(UserFollow.following_user_id).where(
+                UserFollow.follower_user_id == current_user.id,
+            )
+        ).all()
+    )
+    following_ids.add(current_user.id)
+    compat_map: dict = {}
+    for a, b, c in db.execute(
+        select(CompatibilityScore.user_a_id, CompatibilityScore.user_b_id, CompatibilityScore.compatibility)
+        .where(
+            _or(
+                CompatibilityScore.user_a_id == current_user.id,
+                CompatibilityScore.user_b_id == current_user.id,
+            )
+        )
+    ).all():
+        compat_map[b if a == current_user.id else a] = c
+
+    def _source_label(actor_id):
+        if actor_id in following_ids:
+            return "followed"
+        c = compat_map.get(actor_id)
+        if c is None:
+            return "unknown"
+        if c >= 90:
+            return "match_90"
+        if c >= 80:
+            return "match_80"
+        return "unknown"
+
+    for item, event in zip(hydrated, events):
+        item["source_label"] = _source_label(event.actor_user_id)
     return {
         "items": hydrated,
         "next_cursor": next_cursor,
