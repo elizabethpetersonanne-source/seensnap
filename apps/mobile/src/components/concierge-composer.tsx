@@ -7,12 +7,13 @@
  * submits.
  */
 import { Ionicons } from "@expo/vector-icons";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
   ImageSourcePropType,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -21,6 +22,22 @@ import {
 
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
+
+
+type SuggestedPrompt = {
+  id: string;
+  label: string;
+  prompt: string;
+  required_context?: string | null;
+  reference_title_id?: string | null;
+};
+
+type SuggestedPromptsResponse = {
+  headline: string;
+  placeholder: string;
+  prompts: SuggestedPrompt[];
+  personalised: boolean;
+};
 
 
 export type ConciergeTitleCard = {
@@ -77,9 +94,44 @@ export function ConciergeComposer({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [exampleIdx, setExampleIdx] = useState(0);
+  const [suggestions, setSuggestions] = useState<SuggestedPromptsResponse | null>(null);
+  // Snapshot the previous draft when the user swaps it with a chip so
+  // "Replace with a suggestion" stays reversible per spec.
+  const previousDraftRef = useRef<string | null>(null);
+  const inputRef = useRef<TextInput | null>(null);
 
   const outOfAllowance = tier === "free" && allowanceRemaining != null && allowanceRemaining <= 0;
   const currentExample = ROTATING_EXAMPLES[exampleIdx] ?? DEFAULT_EXAMPLE;
+  const placeholder = suggestions?.placeholder ?? currentExample;
+
+  useEffect(() => {
+    if (!token) return;
+    let cancelled = false;
+    void apiRequest<SuggestedPromptsResponse>("/me/concierge/prompts", { token })
+      .then((res) => { if (!cancelled) setSuggestions(res); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [token]);
+
+  function applyChip(chip: SuggestedPrompt) {
+    // Preserve the current draft so the user can undo. We only
+    // snapshot once per swap cycle so repeated chip taps don't lose
+    // the ORIGINAL draft.
+    if (intent.trim() && previousDraftRef.current === null) {
+      previousDraftRef.current = intent;
+    } else if (!intent.trim()) {
+      previousDraftRef.current = null;
+    }
+    setIntent(chip.prompt);
+    inputRef.current?.focus();
+  }
+
+  function restorePreviousDraft() {
+    if (previousDraftRef.current !== null) {
+      setIntent(previousDraftRef.current);
+      previousDraftRef.current = null;
+    }
+  }
 
   async function submit() {
     if (!token || busy) return;
@@ -124,14 +176,23 @@ export function ConciergeComposer({
         </View>
 
         <Text style={styles.headline}>Find your next{"\n"}great watch.</Text>
-        <Text style={styles.subhead}>Tell us the mood. We'll find the movie.</Text>
+        <Text style={styles.subhead}>
+          {suggestions?.headline ?? "Tell me what you're in the mood for—or let me pick from My Picks."}
+        </Text>
 
         <View style={styles.inputRow}>
           <TextInput
-            placeholder={currentExample}
+            ref={inputRef}
+            placeholder={placeholder}
             placeholderTextColor="rgba(255,255,255,0.65)"
             value={intent}
-            onChangeText={setIntent}
+            onChangeText={(next) => {
+              // Any manual edit clears the "undo last chip" state.
+              if (previousDraftRef.current !== null) {
+                previousDraftRef.current = null;
+              }
+              setIntent(next);
+            }}
             editable={!busy && !outOfAllowance}
             onSubmitEditing={submit}
             returnKeyType="send"
@@ -143,7 +204,7 @@ export function ConciergeComposer({
             disabled={busy || outOfAllowance}
             onPress={() => {
               if (!intent.trim()) {
-                setIntent(currentExample);
+                setIntent(placeholder);
                 return;
               }
               void submit();
@@ -163,6 +224,45 @@ export function ConciergeComposer({
             )}
           </Pressable>
         </View>
+
+        {suggestions && suggestions.prompts.length > 0 ? (
+          <View style={styles.promptsBlock}>
+            <View style={styles.promptsHead}>
+              <Text style={styles.promptsLabel}>TRY ASKING</Text>
+              {previousDraftRef.current !== null ? (
+                <Pressable
+                  onPress={restorePreviousDraft}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Undo last suggestion"
+                >
+                  <Text style={styles.undoLabel}>UNDO</Text>
+                </Pressable>
+              ) : null}
+            </View>
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.promptsRow}
+              // Horizontal chip scrolling must not trigger vertical
+              // section navigation per spec.
+              directionalLockEnabled
+            >
+              {suggestions.prompts.map((p) => (
+                <Pressable
+                  key={p.id}
+                  onPress={() => applyChip(p)}
+                  hitSlop={4}
+                  style={({ pressed }) => [styles.promptChip, pressed && { opacity: 0.75 }]}
+                  accessibilityRole="button"
+                  accessibilityLabel={p.label}
+                >
+                  <Text style={styles.promptChipLabel} numberOfLines={1}>{p.label}</Text>
+                </Pressable>
+              ))}
+            </ScrollView>
+          </View>
+        ) : null}
 
         <AllowanceStrip
           tier={tier}
@@ -279,6 +379,51 @@ const styles = StyleSheet.create({
     backgroundColor: colors.accent,
     alignItems: "center",
     justifyContent: "center",
+  },
+  promptsBlock: {
+    marginTop: 12,
+    gap: 8,
+  },
+  promptsHead: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  promptsLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.muted,
+    fontSize: 10,
+    letterSpacing: 1.2,
+  },
+  undoLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 10,
+    letterSpacing: 1.2,
+  },
+  promptsRow: {
+    flexDirection: "row",
+    gap: 8,
+    // Leave a sliver of the next chip visible so the horizontal
+    // scroll affordance is obvious per spec.
+    paddingRight: 32,
+  },
+  promptChip: {
+    minHeight: 44,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  promptChipLabel: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 12,
+    letterSpacing: 0.2,
   },
   goBtnDisabled: {
     opacity: 0.5,

@@ -150,3 +150,196 @@ def post_concierge_decision(
         allowance_cap=cap,
         resets_at=allowance.resets_at.isoformat() if allowance and allowance.resets_at else None,
     )
+
+
+# ─── Suggested prompts (Chunk A of Concierge brief) ─────────────────────
+
+
+class SuggestedPrompt(BaseModel):
+    """A single Try asking chip.
+
+    `label` is the short chip caption. `prompt` is the editable text
+    inserted into the Concierge input when the chip is tapped. Both
+    reflect real personal data when it exists (e.g. "More like Arrival"
+    for the user's actual #1), otherwise they fall back to honest
+    general starters so we never claim a favorite the user doesn't have.
+    """
+    id: str
+    label: str
+    prompt: str
+    # Diagnostic — which personal collection the chip assumes exists.
+    # Clients may hide a chip whose required_context is already stale
+    # (e.g. if Next Watch becomes empty between prompt load and tap).
+    required_context: str | None = None
+    # When the chip is anchored to a specific title (e.g. "More like
+    # Arrival"), carry the title id so the follow-up decision can
+    # resolve it without re-parsing the label.
+    reference_title_id: UUID | None = None
+
+
+class SuggestedPromptsResponse(BaseModel):
+    headline: str
+    placeholder: str
+    prompts: list[SuggestedPrompt]
+    # True iff at least one chip is personalised (vs. all generic
+    # new-user starters). Clients can show "Try asking" vs a different
+    # eyebrow for the generic case.
+    personalised: bool = False
+
+
+@router.get("/prompts", response_model=SuggestedPromptsResponse)
+def get_suggested_prompts(
+    current_user: CurrentUser,
+    db: DbSession,
+) -> SuggestedPromptsResponse:
+    """Return 6–8 suggested prompts tailored to the viewer's data.
+
+    Deterministic templates — no model call, no allowance consumed.
+    A chip is only emitted when the required personal data actually
+    exists; otherwise we fall back to an honest general starter.
+    """
+    from app.models.social import (
+        RankedFavorite,
+        Rating,
+        Watchlist,
+        WatchlistItem,
+    )
+    from app.models.user import UserPreferences
+    from sqlalchemy import func as sqlfunc
+
+    uid = current_user.id
+
+    # ── Personal evidence probes ──────────────────────────────────────
+    top_ranked_title = db.scalar(
+        select(ContentTitle)
+        .join(RankedFavorite, RankedFavorite.content_title_id == ContentTitle.id)
+        .where(RankedFavorite.user_id == uid)
+        .order_by(RankedFavorite.position.asc())
+        .limit(1)
+    )
+
+    next_watch_list = db.scalar(
+        select(Watchlist).where(
+            Watchlist.owner_user_id == uid,
+            Watchlist.is_default.is_(True),
+            Watchlist.name.ilike("next%watch%"),
+        )
+    )
+    next_watch_count = 0
+    if next_watch_list is not None:
+        next_watch_count = int(db.scalar(
+            select(sqlfunc.count()).select_from(WatchlistItem).where(WatchlistItem.watchlist_id == next_watch_list.id)
+        ) or 0)
+
+    watched_rated_count = int(db.scalar(
+        select(sqlfunc.count()).select_from(Rating).where(
+            Rating.user_id == uid,
+            Rating.watched_state == "watched",
+            Rating.score >= 7,
+        )
+    ) or 0)
+
+    # Any non-default custom list — "a saved list" chip gates on this.
+    custom_list = db.scalar(
+        select(Watchlist).where(
+            Watchlist.owner_user_id == uid,
+            Watchlist.is_default.is_(False),
+            Watchlist.is_system_list.is_(False),
+        ).limit(1)
+    )
+
+    prefs = db.scalar(select(UserPreferences).where(UserPreferences.user_id == uid))
+    services: list[str] = list(prefs.connected_streaming_services) if prefs else []
+
+    prompts: list[SuggestedPrompt] = []
+    personalised = False
+
+    if next_watch_count > 0:
+        prompts.append(SuggestedPrompt(
+            id="next_watch_pick",
+            label="Pick from My Next Watch",
+            prompt="Choose something from My Next Watch that I would enjoy tonight.",
+            required_context="my_next_watch_nonempty",
+        ))
+        personalised = True
+
+    if top_ranked_title is not None:
+        prompts.append(SuggestedPrompt(
+            id="like_number_one",
+            label=f"More like {top_ranked_title.title}",
+            prompt=(
+                f"Find something I haven't watched with a similar feel to "
+                f"{top_ranked_title.title}, my number-one ranked pick."
+            ),
+            required_context="ranked_favorite_1",
+            reference_title_id=top_ranked_title.id,
+        ))
+        personalised = True
+
+    prompts.append(SuggestedPrompt(
+        id="hidden_gem",
+        label="A hidden gem for me",
+        prompt="Find an overlooked movie that fits my taste.",
+    ))
+
+    prompts.append(SuggestedPrompt(
+        id="under_90",
+        label="Under 90 minutes",
+        prompt="Find a movie I'd enjoy that is under 90 minutes.",
+    ))
+
+    if services:
+        prompts.append(SuggestedPrompt(
+            id="on_my_services",
+            label="On my services",
+            prompt=(
+                "Find something I haven't watched that is included with one "
+                "of my selected streaming services."
+            ),
+            required_context="connected_services_nonempty",
+        ))
+        personalised = True
+
+    if watched_rated_count >= 3:
+        prompts.append(SuggestedPrompt(
+            id="comfort_rewatch",
+            label="A comfort rewatch",
+            prompt="Pick a comforting rewatch from titles I've watched and enjoyed.",
+            required_context="rated_watched_positive",
+        ))
+        personalised = True
+
+    if custom_list is not None:
+        prompts.append(SuggestedPrompt(
+            id="from_saved_list",
+            label="From my saved list",
+            prompt="Help me choose from one of my saved lists.",
+            required_context="custom_list_exists",
+        ))
+        personalised = True
+
+    prompts.append(SuggestedPrompt(
+        id="surprise_me",
+        label="Surprise me",
+        prompt="Find something outside my usual taste that I might enjoy.",
+    ))
+
+    # New-user fallback — if we have very little personal signal, swap
+    # in honest generic starters so the row isn't padded with chips
+    # whose context would mislead.
+    if not personalised:
+        prompts = [
+            SuggestedPrompt(id="funny", label="Something funny", prompt="Something funny."),
+            SuggestedPrompt(id="thriller", label="A gripping thriller", prompt="A gripping thriller."),
+            SuggestedPrompt(id="easy", label="An easy watch", prompt="An easy watch."),
+            SuggestedPrompt(id="doc", label="A great documentary", prompt="A great documentary."),
+            SuggestedPrompt(id="under_90", label="Under 90 minutes", prompt="A movie under 90 minutes."),
+            SuggestedPrompt(id="surprise_me", label="Surprise me", prompt="Find something I might enjoy."),
+        ]
+
+    return SuggestedPromptsResponse(
+        headline="Tell me what you're in the mood for—or let me pick from My Picks.",
+        placeholder="A movie, a mood, or something from your list…",
+        prompts=prompts[:8],
+        personalised=personalised,
+    )
