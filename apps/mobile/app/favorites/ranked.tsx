@@ -11,12 +11,14 @@ import { router } from "expo-router";
 import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   Modal,
   Pressable,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -62,6 +64,11 @@ export default function RankedFavoritesScreen() {
   >(null);
   const [publishBusy, setPublishBusy] = useState(false);
   const [publishedTitleIds, setPublishedTitleIds] = useState<Set<string>>(new Set());
+  // R03/R08: Move-to-position dialog. Opens from a per-row action
+  // and lets the user jump a title to any slot without stepping
+  // through 100+ positions.
+  const [moveTarget, setMoveTarget] = useState<Row | null>(null);
+  const [moveTargetPosition, setMoveTargetPosition] = useState("");
 
   const visibleRows =
     view === "top20" ? rows.slice(0, 20)
@@ -123,6 +130,48 @@ export default function RankedFavoritesScreen() {
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't reorder.");
       void load();
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+
+  async function submitMoveToPosition() {
+    if (!sessionToken || !moveTarget || busyId) return;
+    const parsed = Number.parseInt(moveTargetPosition, 10);
+    const totalBound = serverTotal || rows.length;
+    if (!Number.isFinite(parsed) || parsed < 1 || parsed > totalBound) {
+      Alert.alert("Invalid position", `Enter a number between 1 and ${totalBound}.`);
+      return;
+    }
+    const target = moveTarget;
+    const previousRank = target.position;
+    setBusyId(target.title_id);
+    try {
+      const data = await apiRequest<ListResponse>(
+        `/me/favorites/ranked/${target.title_id}/move`,
+        {
+          method: "POST",
+          token: sessionToken,
+          body: JSON.stringify({ to_position: parsed }),
+        },
+      );
+      setRows(data.items);
+      setServerTotal(data.total ?? data.items.length);
+      // Reuse the Publish bar so users can post the deliberate move.
+      const current = data.items.find((r) => r.title_id === target.title_id);
+      if (current && current.position !== previousRank) {
+        setPublishable({
+          titleId: target.title_id,
+          title: target.title,
+          previousRank,
+          newRank: current.position,
+        });
+      }
+      setMoveTarget(null);
+      setMoveTargetPosition("");
+    } catch (e) {
+      Alert.alert("Couldn't move", e instanceof Error ? e.message : "Try again.");
     } finally {
       setBusyId(null);
     }
@@ -361,6 +410,17 @@ export default function RankedFavoritesScreen() {
                   <Ionicons name="chevron-down" size={16} color={colors.ink} />
                 </Pressable>
                 <Pressable
+                  onPress={() => {
+                    setMoveTarget(item);
+                    setMoveTargetPosition(String(item.position));
+                  }}
+                  disabled={busyId === item.title_id}
+                  style={styles.iconBtn}
+                  accessibilityLabel={`Move ${item.title} to a specific position`}
+                >
+                  <Ionicons name="swap-vertical" size={16} color={colors.ink} />
+                </Pressable>
+                <Pressable
                   onPress={() => void remove(item)}
                   disabled={busyId === item.title_id}
                   style={styles.iconBtn}
@@ -374,6 +434,70 @@ export default function RankedFavoritesScreen() {
         />
         </>
       )}
+
+      {/* R03/R08: Move-to-position picker. Lets the user jump a
+          title to any slot without stepping through dozens of ↑/↓
+          presses. */}
+      <Modal
+        visible={moveTarget !== null}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setMoveTarget(null)}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={() => setMoveTarget(null)}>
+          <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
+            <Text style={styles.modalTitle}>Move to position</Text>
+            <Text style={styles.modalBody}>
+              {moveTarget
+                ? `${moveTarget.title} is currently #${moveTarget.position}. Pick a new position between 1 and ${serverTotal || rows.length}.`
+                : ""}
+            </Text>
+            <TextInput
+              value={moveTargetPosition}
+              onChangeText={(text) => setMoveTargetPosition(text.replace(/[^0-9]/g, ""))}
+              keyboardType="number-pad"
+              inputMode="numeric"
+              maxLength={5}
+              placeholder="Position"
+              placeholderTextColor={colors.muted2}
+              style={styles.moveInput}
+              autoFocus
+            />
+            <View style={styles.moveQuickRow}>
+              {[1, 10, 25, 50].map((p) => (
+                p <= (serverTotal || rows.length) ? (
+                  <Pressable
+                    key={p}
+                    onPress={() => setMoveTargetPosition(String(p))}
+                    style={styles.moveQuickChip}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Jump to position ${p}`}
+                  >
+                    <Text style={styles.moveQuickChipLabel}>#{p}</Text>
+                  </Pressable>
+                ) : null
+              ))}
+            </View>
+            <View style={styles.modalBtnRow}>
+              <Pressable
+                onPress={() => setMoveTarget(null)}
+                style={({ pressed }) => [styles.modalBtn, styles.modalBtnGhost, pressed && { opacity: 0.6 }]}
+              >
+                <Text style={styles.modalBtnGhostLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => void submitMoveToPosition()}
+                disabled={busyId === moveTarget?.title_id}
+                style={({ pressed }) => [styles.modalBtn, styles.modalBtnPrimary, (pressed || busyId === moveTarget?.title_id) && { opacity: 0.7 }]}
+              >
+                <Text style={styles.modalBtnPrimaryLabel}>
+                  {busyId === moveTarget?.title_id ? "Moving…" : "Move"}
+                </Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
 
       {/* Rebuild-from-ratings confirmation preview. */}
       <Modal visible={confirmRebuild != null} transparent animationType="fade" onRequestClose={() => setConfirmRebuild(null)}>
@@ -622,6 +746,71 @@ const styles = StyleSheet.create({
   },
   modalTitle: { fontFamily: fonts.serifBold, fontSize: 20, color: colors.ink },
   modalBody: { fontFamily: fonts.sans, fontSize: 13, lineHeight: 18, color: colors.muted },
+  moveInput: {
+    marginTop: spacing.sm,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.12)",
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 20,
+    color: colors.ink,
+    letterSpacing: 1,
+    textAlign: "center",
+  },
+  moveQuickRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+    marginTop: 2,
+  },
+  moveQuickChip: {
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  moveQuickChipLabel: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 11,
+    color: colors.ink,
+    letterSpacing: 0.6,
+  },
+  modalBtnRow: {
+    flexDirection: "row",
+    gap: 10,
+    marginTop: spacing.md,
+  },
+  modalBtn: {
+    flex: 1,
+    minHeight: 44,
+    paddingVertical: 10,
+    borderRadius: radii.md,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  modalBtnGhost: {
+    backgroundColor: "transparent",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  modalBtnGhostLabel: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 13,
+  },
+  modalBtnPrimary: {
+    backgroundColor: colors.accent,
+  },
+  modalBtnPrimaryLabel: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.background,
+    fontSize: 13,
+  },
   previewRow: {
     flexDirection: "row",
     alignItems: "center",
