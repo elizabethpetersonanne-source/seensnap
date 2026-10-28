@@ -1,10 +1,11 @@
 from fastapi import APIRouter
 
-from app.api.routes import activity, analytics, auth, collections, concierge, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, picks, previews, profiles, ratings, recommendations, scene_dna, search, share_asset, shares, snips, social, stories, team_home, teams, title_state, titles, watch_handoff, watch_options, watchlist
+from app.api.routes import activity, analytics, auth, bug_reports, collections, concierge, devices, discover, entitlement, favorites, feed, list_shares, me, messages, notifications, picks, previews, profiles, ratings, recommendations, scene_dna, search, share_asset, shares, snips, social, stories, team_home, teams, title_state, titles, watch_handoff, watch_options, watchlist
 
 api_router = APIRouter()
 api_router.include_router(analytics.router, prefix="/events", tags=["analytics"])
 api_router.include_router(auth.router, prefix="/auth", tags=["auth"])
+api_router.include_router(bug_reports.router, prefix="/me/bug-reports", tags=["bug-reports"])
 api_router.include_router(me.router, prefix="/me", tags=["me"])
 api_router.include_router(titles.router, prefix="/titles", tags=["titles"])
 api_router.include_router(watchlist.router, prefix="/me/watchlist", tags=["watchlist"])

@@ -415,3 +415,28 @@ class PeopleDismissal(Base):
     viewer_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     candidate_user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class BugReport(Base):
+    """Oct-27 followup A72: user-submitted bug reports with real
+    attachments. Previous SET-04 implementation only wrote a
+    screenshot_count to analytics; the actual files were never
+    uploaded. This row stores the description + diagnostics + the
+    attachment URLs so support can triage with evidence.
+    """
+
+    __tablename__ = "bug_reports"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"))
+    description: Mapped[str] = mapped_column(String(5000))
+    # JSONB blob with platform, OS version, app version, SDK version
+    # and user id snapshot. Nullable because diagnostics are optional.
+    diagnostics: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    # Attachment URLs relative to the API base (served via /uploads/).
+    # Capped to 3 per spec.
+    attachment_urls: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    # Triage state. "open" → "in_review" → "resolved" / "wont_fix".
+    status: Mapped[str] = mapped_column(String(16), default="open")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

@@ -29,6 +29,7 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { AppHeader } from "@/components/headers/app-header";
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
+import { RatingEditor, type RatingSnapshot } from "@/components/rating-editor";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { EmptyView, LoadingView } from "@/components/state-views";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
@@ -96,6 +97,9 @@ export default function MyPicksScreen() {
 
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
+  // A41–A45: inline rating editor opens straight from the My Picks
+  // hero without routing through the full title modal.
+  const [rateTarget, setRateTarget] = useState<{ titleId: string; titleName: string; snapshot: RatingSnapshot | null } | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -247,7 +251,22 @@ export default function MyPicksScreen() {
         active: title.personal_score != null,
         onPress: () => {
           trackEvent("my_picks_rate", { title_id: title.id, category: activeCategory });
-          void openTitle(title.id);
+          // A41–A45: open the inline rating editor directly — a 7/10
+          // commit should take one tap, not five taps through the
+          // full title modal.
+          setRateTarget({
+            titleId: title.id,
+            titleName: title.title,
+            snapshot: title.personal_score != null
+              ? {
+                  title_id: title.id,
+                  score: title.personal_score,
+                  watched_state: "watched",
+                  version: 0,
+                  updated_at: null,
+                }
+              : null,
+          });
         },
       },
     );
@@ -402,6 +421,15 @@ export default function MyPicksScreen() {
           setShowSaveSheet(false);
           setSaveTitleId(null);
         }}
+      />
+      <RatingEditor
+        visible={rateTarget !== null}
+        token={sessionToken}
+        titleId={rateTarget?.titleId ?? null}
+        titleName={rateTarget?.titleName ?? null}
+        initial={rateTarget?.snapshot ?? null}
+        onClose={() => setRateTarget(null)}
+        onChanged={() => setRateTarget(null)}
       />
     </SafeAreaView>
   );

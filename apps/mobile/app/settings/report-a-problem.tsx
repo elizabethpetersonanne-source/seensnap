@@ -73,19 +73,37 @@ export default function ReportAProblemScreen() {
     }
     setSubmitting(true);
     try {
-      await apiRequest("/events", {
+      // A72: real attachment upload. multipart/form-data with
+      // description + diagnostics JSON + up to 3 image files. The
+      // server writes the files to /uploads/bug-reports/<report_id>/
+      // and stores the URLs on the BugReport row.
+      const form = new FormData();
+      form.append("description", description.trim());
+      if (includeDiagnostics) {
+        form.append("diagnostics", JSON.stringify(diagnostics));
+      }
+      for (let i = 0; i < screenshots.length; i += 1) {
+        const uri = screenshots[i];
+        const name = uri.split("/").pop() || `screenshot_${i}.jpg`;
+        const lower = name.toLowerCase();
+        const type = lower.endsWith(".png")
+          ? "image/png"
+          : lower.endsWith(".webp")
+          ? "image/webp"
+          : lower.endsWith(".heic")
+          ? "image/heic"
+          : "image/jpeg";
+        // React Native's FormData accepts this shape for files; TS
+        // typings disagree so we cast to any to appease the compiler.
+        form.append("files", { uri, name, type } as unknown as Blob);
+      }
+      await apiRequest("/me/bug-reports", {
         method: "POST",
         token: sessionToken ?? undefined,
-        body: JSON.stringify({
-          event: "bug_report",
-          platform: Platform.OS,
-          app_build: Constants.expoConfig?.version ?? null,
-          properties: {
-            description: description.trim(),
-            screenshot_count: screenshots.length,
-            diagnostics: includeDiagnostics ? diagnostics : null,
-          },
-        }),
+        body: form as unknown as BodyInit,
+        // Let fetch set the multipart boundary — DO NOT set
+        // Content-Type manually.
+        headers: {},
       });
       setSubmitted(true);
     } catch {
