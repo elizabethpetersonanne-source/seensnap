@@ -382,12 +382,17 @@ export default function DiscoverScreen() {
 
   // ── Load discover content ─────────────────────────────────────────────────
 
-  async function loadTrending() {
+  async function loadTrending(mediaOverride?: "movie" | "tv") {
     if (!sessionToken) return;
     try {
-      const result = await apiRequest<TrendingResponse>("/discover/trending?limit=12", {
-        token: sessionToken,
-      });
+      const media = mediaOverride ?? trendingMedia;
+      // DISC01: server-filtered trending so the toggle produces a
+      // media-matched set instead of client-side filtering a tiny
+      // mixed pool.
+      const result = await apiRequest<TrendingResponse>(
+        `/discover/trending?limit=12&media_type=${media === "movie" ? "movie" : "tv"}`,
+        { token: sessionToken },
+      );
       setTrending(result);
     } catch {
       // silently degrade — trending stays null
@@ -429,6 +434,16 @@ export default function DiscoverScreen() {
       // silently degrade — module hidden when empty
     }
   }
+
+  // DISC01: when the Trending toggle flips, refetch server-filtered
+  // trending so the carousel actually swaps media types instead of
+  // filtering client-side on a 12-item mixed pool.
+  useEffect(() => {
+    if (!sessionToken) return;
+    setTrendingLoading(true);
+    void loadTrending(trendingMedia);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trendingMedia, sessionToken]);
 
   // DISC01/02/03: whenever the For You media toggle changes, fetch
   // a server-filtered rec list. This replaces the previous local
@@ -1062,33 +1077,43 @@ export default function DiscoverScreen() {
           })()}
 
           {/* 2 · Trending — dedicated /discover/trending (TMDB weekly) */}
-          {trending && trending.items && trending.items.length > 0 ? (() => {
-            const items = trending.items.filter((t) => {
-              return trendingMedia === "movie" ? t.content_type === "movie" : t.content_type !== "movie";
-            });
-            const effective = items.length > 0 ? items : trending.items;
-            return (
-              <DiscoverSection
-                kicker="TRENDING"
-                subtitle="Popular this week"
-                rightSlot={<MediaToggle value={trendingMedia} onChange={setTrendingMedia} />}
-                hero={titleItemToDiscover(effective[0])}
-                four={effective.slice(1, 5).map(titleItemToDiscover)}
-                onPressTitle={(t) => {
-                  trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
-                  void openTitleModal(t.id);
-                }}
-                onSeeAll={() => router.push({
-                  pathname: "/discover/collection/[key]",
-                  params: { key: "trending", media: trendingMedia },
-                })}
-              />
-            );
-          })() : trendingLoading ? (
+          {trending && trending.items && trending.items.length > 0 ? (
+            <DiscoverSection
+              kicker="TRENDING"
+              subtitle="Popular this week"
+              rightSlot={<MediaToggle value={trendingMedia} onChange={setTrendingMedia} />}
+              hero={titleItemToDiscover(trending.items[0])}
+              four={trending.items.slice(1, 5).map(titleItemToDiscover)}
+              onPressTitle={(t) => {
+                trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
+                void openTitleModal(t.id);
+              }}
+              onSeeAll={() => router.push({
+                pathname: "/discover/collection/[key]",
+                params: { key: "trending", media: trendingMedia },
+              })}
+            />
+          ) : trendingLoading ? (
             <View style={styles.moduleLoading}>
               <ActivityIndicator color={colors.accent} size="small" />
             </View>
-          ) : null}
+          ) : (
+            // DISC01: honest empty state when the toggle produces no
+            // results — never silently fall back to the unfiltered
+            // pool.
+            <View style={styles.coldStartCard}>
+              <Text style={styles.coldStartKicker}>TRENDING</Text>
+              <Text style={styles.coldStartTitle}>
+                {trendingMedia === "tv" ? "No trending TV right now." : "No trending movies right now."}
+              </Text>
+              <Text style={styles.coldStartBody}>
+                Try the other media type or check back later.
+              </Text>
+              <View style={{ alignSelf: "flex-end" }}>
+                <MediaToggle value={trendingMedia} onChange={setTrendingMedia} />
+              </View>
+            </View>
+          )}
 
           {/* 3 · In Theaters Now — /discover/now-in-theaters */}
           {nowInTheatersItems.length > 0 ? (

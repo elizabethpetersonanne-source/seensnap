@@ -20,13 +20,15 @@
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { useEffect, useState } from "react";
+import { AppState, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Avatar } from "@/components/avatar";
 import { SSLogo } from "@/components/branding/ss-logo";
 import { colors, fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
+import { fetchNotifications } from "@/lib/notifications";
 
 
 export type AppHeaderMode = "swipe" | "preview";
@@ -110,14 +112,54 @@ export function AppHeader({
 }) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
-  const { user } = useAuth();
+  const { user, sessionToken } = useAuth();
   const hz = width < 380 ? 16 : 20;
 
-  // Default right slot: Chat icon + profile avatar. Oct-27 spec
-  // CHAT-01: chat must be accessible from every primary surface so
-  // profile is still one tap away.
+  // Notifications bell on primary surfaces (regression fix: the
+  // old legacy headers had a bell; the Oct-19 AppHeader was
+  // shipped without one and users lost the entry point). Poll
+  // unread count on mount + on app foreground.
+  const [unread, setUnread] = useState(0);
+  useEffect(() => {
+    if (!sessionToken || variant !== "primary" || hideProfileAvatar) return;
+    let cancelled = false;
+    async function poll() {
+      if (!sessionToken) return;
+      try {
+        const res = await fetchNotifications(sessionToken);
+        if (!cancelled) setUnread(res.unread_count ?? 0);
+      } catch {
+        // ignore — stale 0 is better than an error badge
+      }
+    }
+    void poll();
+    const sub = AppState.addEventListener("change", (state) => {
+      if (state === "active") void poll();
+    });
+    return () => {
+      cancelled = true;
+      sub.remove();
+    };
+  }, [sessionToken, variant, hideProfileAvatar]);
+
+  // Default right slot: Notifications + Chat + profile avatar.
+  // CHAT-01 + notifications regression fix.
   const defaultRight = !hideProfileAvatar && variant === "primary" && user?.user_id ? (
     <View style={styles.rightCluster}>
+      <Pressable
+        onPress={() => router.push("/notifications")}
+        hitSlop={10}
+        accessibilityRole="button"
+        accessibilityLabel={unread > 0 ? `Open notifications, ${unread} unread` : "Open notifications"}
+        style={styles.chatBtn}
+      >
+        <Ionicons name="notifications-outline" size={20} color={colors.ink} />
+        {unread > 0 ? (
+          <View style={styles.unreadDot}>
+            <Text style={styles.unreadDotText}>{unread > 9 ? "9+" : String(unread)}</Text>
+          </View>
+        ) : null}
+      </Pressable>
       <Pressable
         onPress={() => router.push("/messages")}
         hitSlop={10}
@@ -326,5 +368,24 @@ const styles = StyleSheet.create({
     height: 36,
     alignItems: "center",
     justifyContent: "center",
+    position: "relative",
+  },
+  unreadDot: {
+    position: "absolute",
+    top: 4,
+    right: 2,
+    minWidth: 16,
+    height: 16,
+    borderRadius: 8,
+    paddingHorizontal: 4,
+    backgroundColor: colors.accent,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  unreadDotText: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.background,
+    fontSize: 10,
+    letterSpacing: 0,
   },
 });

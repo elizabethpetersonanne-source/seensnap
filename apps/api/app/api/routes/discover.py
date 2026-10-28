@@ -89,13 +89,32 @@ def discover_trending(
     db: DbSession,
     _user: CurrentUser,
     limit: int = Query(default=12, ge=4, le=60),
+    media_type: str | None = Query(default=None),
 ) -> TrendingResponse:
-    result = get_trending(db, limit=limit)
+    """Oct-27 personalization brief DISC01: optional media_type
+    hard-filter ("movie" | "series" | "tv" | "show"). The service
+    pulls a wider pool so filtering still yields `limit` eligible
+    results; the result set is clamped to the requested limit after
+    filter."""
+    want: str | None = None
+    if media_type:
+        norm = media_type.strip().lower()
+        if norm in ("movie", "film"):
+            want = "movie"
+        elif norm in ("series", "tv", "show"):
+            want = "series"
+    # Pull 3x the limit so the filter has room to produce `limit`
+    # matching titles. The upstream service caps at 60.
+    pool_size = min(60, limit * 3) if want else limit
+    result = get_trending(db, limit=pool_size)
+    items = result["items"]
+    if want is not None:
+        items = [t for t in items if t.content_type == want]
     return TrendingResponse(
         source_mode=result["source_mode"],
         display_label=result["display_label"],
         generated_at=result["generated_at"],
-        items=[_to_title_response(t) for t in result["items"]],
+        items=[_to_title_response(t) for t in items[:limit]],
     )
 
 

@@ -414,6 +414,13 @@ class TasteMatchesResponse(BaseModel):
     # titles to find people with similar taste" instead of a sparse
     # carousel.
     has_evidence: bool = True
+    # MATCH02: distinguish empty states so the mobile copy is honest.
+    # "ok"               — items present (len(items) > 0)
+    # "no_eligible"      — viewer has evidence, no candidates match
+    # "viewer_cold"      — viewer has <5 rated titles → "Rate more"
+    # "no_candidates"    — zero eligible candidates (new user with
+    #                      no discoverable people)
+    empty_state: str = "ok"
 
 
 @router.get("/people/taste-matches", response_model=TasteMatchesResponse)
@@ -422,26 +429,47 @@ def get_taste_matches(
     db: DbSession,
     limit: int = Query(default=10, ge=1, le=30),
 ) -> TasteMatchesResponse:
-    """Carousel immediately below the Social header.
-
-    Reuses the existing people-discovery eligibility filter (blocks,
-    dismissals, demo users, discovery-disabled accounts, already
-    followed users) and scores each candidate via the canonical
-    `get_compatibility` service — NOT the people-discovery coarse
-    score. A candidate without evidence (no shared genres/titles/
-    labels/platforms) is omitted entirely rather than shown with a
-    fabricated percentage.
+    """Carousel immediately below the Social header. Reuses the
+    existing people-discovery eligibility filter and scores each
+    candidate via the canonical `get_compatibility` service.
     """
     from app.services.compatibility import get_compatibility, to_compatibility_response
     from app.services.people_discovery import _eligible_candidate_ids
+    from app.models.social import Rating as _Rating
+    from sqlalchemy import func as _func
+
+    # Viewer-side evidence check. If the viewer has barely rated
+    # anything, no amount of candidate scoring will produce
+    # meaningful matches — the honest answer is "Rate a few titles."
+    viewer_rated_count = int(db.scalar(
+        select(_func.count()).select_from(_Rating).where(_Rating.user_id == current_user.id)
+    ) or 0)
 
     eligible = _eligible_candidate_ids(db, current_user.id, exclude_followed=True)
-    # Hard cap on candidates we score — compatibility is O(N) per pair
-    # today and we don't want to compute 10k pairs for the carousel.
-    # 60 lets us return a top-10 with meaningful competition.
-    candidate_ids = list(eligible)[:60]
-    if not candidate_ids:
-        return TasteMatchesResponse(items=[], has_evidence=False)
+    if not eligible:
+        return TasteMatchesResponse(
+            items=[],
+            has_evidence=False,
+            empty_state="viewer_cold" if viewer_rated_count < 5 else "no_candidates",
+        )
+
+    # Preselect candidates who are themselves "scorable" — users with
+    # at least one rated title. This prevents us from spending our
+    # 60-candidate budget on inactive accounts whose compatibility
+    # will inevitably come back empty.
+    scorable_ids = set(
+        db.scalars(
+            select(_Rating.user_id)
+            .where(_Rating.user_id.in_(eligible))
+            .group_by(_Rating.user_id)
+            .limit(200)
+        ).all()
+    )
+    # If the viewer has lots of eligible candidates but none have
+    # rated anything, fall through to the full eligible set so a
+    # beta cold-start pool with no ratings still gets Learning cards.
+    pool = sorted(scorable_ids) if scorable_ids else sorted(eligible)
+    candidate_ids = pool[:60]
 
     profiles = {
         p.user_id: p
@@ -450,15 +478,17 @@ def get_taste_matches(
         ).all()
     }
 
-    scored: list[tuple[int, UUID, list[str], int]] = []  # (compat, user_id, shared_genres, shared_title_count)
+    # (compat_int|None, user_id, shared_genres, shared_title_count)
+    scored: list[tuple[int | None, UUID, list[str], int]] = []
     for cid in candidate_ids:
         profile = profiles.get(cid)
         if profile is None:
             continue
-        record = get_compatibility(db, current_user.id, cid)
-        resp = to_compatibility_response(record, current_user.id, cid)
-        if resp.compatibility is None:
-            # No evidence — omit rather than fabricate.
+        try:
+            record = get_compatibility(db, current_user.id, cid)
+            resp = to_compatibility_response(record, current_user.id, cid)
+        except Exception:
+            # Non-fatal: skip this candidate but keep scoring the rest.
             continue
         scored.append((
             resp.compatibility,
@@ -467,17 +497,27 @@ def get_taste_matches(
             len(resp.top_shared_titles),
         ))
 
-    scored.sort(key=lambda row: (-row[0], str(row[1])))
+    # Rank: real scores first (desc), then Learning (null) cards,
+    # then stable tie-break by uuid string. Learning cards are
+    # surfaced only when there aren't enough real scores to fill
+    # the limit — otherwise they'd crowd out the signal.
+    real = [s for s in scored if s[0] is not None]
+    learning = [s for s in scored if s[0] is None]
+    real.sort(key=lambda row: (-(row[0] or 0), str(row[1])))
+    learning.sort(key=lambda row: str(row[1]))
+    ordered: list[tuple[int | None, UUID, list[str], int]] = real + learning
 
     items: list[TasteMatchCard] = []
-    for compat, cid, shared_genres, shared_title_count in scored[:limit]:
+    for compat, cid, shared_genres, shared_title_count in ordered[:limit]:
         profile = profiles.get(cid)
         if profile is None:
             continue
-        if shared_title_count >= 2:
+        if compat is not None and shared_title_count >= 2:
             reason = f"{shared_title_count} shared favorites"
-        elif shared_genres:
+        elif compat is not None and shared_genres:
             reason = f"You both like {shared_genres[0]}"
+        elif compat is None:
+            reason = "Still learning your taste"
         else:
             reason = None
         items.append(
@@ -490,4 +530,13 @@ def get_taste_matches(
                 reason=reason,
             )
         )
-    return TasteMatchesResponse(items=items, has_evidence=len(items) > 0)
+    empty_state = (
+        "ok" if items
+        else "viewer_cold" if viewer_rated_count < 5
+        else "no_eligible"
+    )
+    return TasteMatchesResponse(
+        items=items,
+        has_evidence=len(items) > 0,
+        empty_state=empty_state,
+    )

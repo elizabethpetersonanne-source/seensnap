@@ -33,9 +33,12 @@ type TasteMatchCard = {
   reason: string | null;
 };
 
+type EmptyState = "ok" | "no_eligible" | "viewer_cold" | "no_candidates";
+
 type TasteMatchesResponse = {
   items: TasteMatchCard[];
   has_evidence: boolean;
+  empty_state?: EmptyState;
 };
 
 
@@ -105,6 +108,25 @@ export function TasteMatchesCarousel() {
   }
 
   if (!data || data.items.length === 0) {
+    // MATCH02: pick honest copy based on the server's diagnosis.
+    const state = data?.empty_state ?? "no_eligible";
+    const copy = state === "viewer_cold"
+      ? {
+          body: "Rate a few titles to help us find your taste matches.",
+          cta: "Rate titles",
+          onPress: () => router.push("/(tabs)/swipe"),
+        }
+      : state === "no_candidates"
+        ? {
+            body: "We don't have discoverable people yet. Invite a friend or try again later.",
+            cta: "Find people",
+            onPress: () => router.push("/social/people"),
+          }
+        : {
+            body: "No new taste matches yet. Follow or dismiss cards and check back.",
+            cta: "Find people",
+            onPress: () => router.push("/social/people"),
+          };
     return (
       <View style={styles.wrap}>
         <View style={styles.headRow}>
@@ -119,9 +141,9 @@ export function TasteMatchesCarousel() {
         </View>
         <View style={styles.emptyCard}>
           <Ionicons name="sparkles-outline" size={20} color={colors.muted} />
-          <Text style={styles.emptyTitle}>Rate more titles to find people with similar taste.</Text>
-          <Pressable onPress={() => router.push("/(tabs)/swipe")} style={styles.emptyCta}>
-            <Text style={styles.emptyCtaLabel}>Find people</Text>
+          <Text style={styles.emptyTitle}>{copy.body}</Text>
+          <Pressable onPress={copy.onPress} style={styles.emptyCta}>
+            <Text style={styles.emptyCtaLabel}>{copy.cta}</Text>
           </Pressable>
         </View>
       </View>
