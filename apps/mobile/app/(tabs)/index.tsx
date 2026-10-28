@@ -458,10 +458,12 @@ export default function DiscoverScreen() {
     if (!sessionToken) return;
     try {
       // Oct-27 spec CON-01: owner's highest-ranked MOVIE from Ranked
-      // Favorites. Pull up to 20 and walk until we hit a movie — a
-      // series ranked above it does NOT become the background.
+      // Favorites. Concierge follow-up chunk F: resolve across the
+      // FULL ranking, not just the top 20 — a cinephile whose top 20
+      // is all series shouldn't get a dark backdrop when they have a
+      // film at #42.
       type RankedResp = { items: { title_id: string; title: string; poster_url: string | null; media_type: string; backdrop_url?: string | null }[] };
-      const res = await apiRequest<RankedResp>("/me/favorites/ranked?limit=20", { token: sessionToken });
+      const res = await apiRequest<RankedResp>("/me/favorites/ranked?limit=500", { token: sessionToken });
       const topMovie = (res.items ?? []).find((it) => it.media_type === "movie");
       if (topMovie) {
         // Prefer high-res backdrop; fall back to poster.

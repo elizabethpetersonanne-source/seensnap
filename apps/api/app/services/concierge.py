@@ -83,6 +83,192 @@ class ConciergeDecision:
     status_detail: str = ""
 
 
+# ─── Personal context (Concierge brief chunk B) ─────────────────────
+
+
+@dataclass
+class PersonalContext:
+    """Bounded summary of the viewer's own data that we send to the
+    model. Deliberately small so the context budget never becomes a
+    hidden cap on which saved titles can be reasoned about — the model
+    gets a signal, the GROUNDING layer still runs against the full
+    collection.
+    """
+    # The actual #1 ranked title (title + year + media type). This is
+    # what "my number one" resolves to.
+    ranked_number_one: dict | None = None
+    # Up to 5 of the viewer's top ranked titles — short list so the
+    # model has similarity anchors without dumping the whole history.
+    top_ranked_sample: list[dict] = field(default_factory=list)
+    # Sample from My Next Watch (unwatched intent queue), up to 8.
+    next_watch_sample: list[dict] = field(default_factory=list)
+    next_watch_total: int = 0
+    # Highest-score Watched titles (score >= 8), up to 5.
+    favorites_sample: list[dict] = field(default_factory=list)
+    # Rough signal of history breadth. The model gets a count, not the
+    # full list — "haven't seen X" filtering happens server-side.
+    watched_total: int = 0
+    # Streaming services the user has explicitly selected (not
+    # authenticated OAuth — just "I subscribe"). Lowercase keys.
+    selected_services: list[str] = field(default_factory=list)
+    # The region used for provider availability checks.
+    region: str = "US"
+    # SceneDNA signal labels — short strings like "Slow Burn",
+    # "Character-Driven", etc. Bounded to 6.
+    scene_dna_signals: list[str] = field(default_factory=list)
+
+    def is_cold_start(self) -> bool:
+        """True when the user has basically no personal signal yet.
+        The model should be told to lean on explicit constraints, not
+        on taste inference, in that case."""
+        return (
+            self.ranked_number_one is None
+            and self.next_watch_total == 0
+            and self.watched_total < 3
+            and not self.scene_dna_signals
+        )
+
+
+def build_personal_context(db: Session, user_id: UUID) -> PersonalContext:
+    """Pull a bounded summary of the viewer's data for the model.
+
+    Reads span: RankedFavorite (full ordering, not top 20),
+    Watchlist/WatchlistItem (default Next Watch list), Rating
+    (favorites + watched totals), UserPreferences (selected services,
+    region) and UserSignal (SceneDNA labels). Falls back gracefully if
+    any table is empty — never raises.
+    """
+    from app.models.social import (
+        RankedFavorite,
+        Rating,
+        Watchlist,
+        WatchlistItem,
+    )
+    from app.models.user import UserPreferences
+    from sqlalchemy import func as sqlfunc
+
+    def _title_dict(t: ContentTitle, *, extra: dict | None = None) -> dict:
+        row = {
+            "title_id": str(t.id),
+            "title": t.title,
+            "year": t.release_date.year if t.release_date else None,
+            "media_type": "movie" if t.content_type == "movie" else "series",
+        }
+        if extra:
+            row.update(extra)
+        return row
+
+    ctx = PersonalContext()
+
+    # Ranked favorites — walks the FULL ranking, not just the top 20
+    # the mobile backdrop loader previously fetched. Grab up to 5 for
+    # the sample.
+    ranked_rows = db.execute(
+        select(RankedFavorite, ContentTitle)
+        .join(ContentTitle, ContentTitle.id == RankedFavorite.content_title_id)
+        .where(RankedFavorite.user_id == user_id)
+        .order_by(RankedFavorite.position.asc())
+        .limit(5)
+    ).all()
+    if ranked_rows:
+        first_rf, first_title = ranked_rows[0]
+        ctx.ranked_number_one = _title_dict(first_title, extra={"rank": first_rf.position})
+        ctx.top_ranked_sample = [
+            _title_dict(t, extra={"rank": rf.position}) for rf, t in ranked_rows
+        ]
+
+    # My Next Watch — real queue of saved-not-yet-watched intent.
+    next_watch_list = db.scalar(
+        select(Watchlist).where(
+            Watchlist.owner_user_id == user_id,
+            Watchlist.is_default.is_(True),
+            Watchlist.name.ilike("next%watch%"),
+        )
+    )
+    if next_watch_list is not None:
+        ctx.next_watch_total = int(db.scalar(
+            select(sqlfunc.count()).select_from(WatchlistItem).where(WatchlistItem.watchlist_id == next_watch_list.id)
+        ) or 0)
+        sample_rows = db.execute(
+            select(WatchlistItem, ContentTitle)
+            .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
+            .where(WatchlistItem.watchlist_id == next_watch_list.id)
+            .order_by(WatchlistItem.created_at.desc())
+            .limit(8)
+        ).all()
+        ctx.next_watch_sample = [_title_dict(t) for _, t in sample_rows]
+
+    # Favorites — top-rated Watched titles. Score ≥ 8.
+    fav_rows = db.execute(
+        select(Rating, ContentTitle)
+        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
+        .where(Rating.user_id == user_id, Rating.score >= 8)
+        .order_by(Rating.score.desc(), Rating.updated_at.desc())
+        .limit(5)
+    ).all()
+    ctx.favorites_sample = [
+        _title_dict(t, extra={"score": int(round(float(r.score)))}) for r, t in fav_rows
+    ]
+    ctx.watched_total = int(db.scalar(
+        select(sqlfunc.count()).select_from(Rating).where(
+            Rating.user_id == user_id,
+            Rating.watched_state == "watched",
+        )
+    ) or 0)
+
+    # Selected services + region.
+    prefs = db.scalar(select(UserPreferences).where(UserPreferences.user_id == user_id))
+    if prefs is not None:
+        ctx.selected_services = list(prefs.connected_streaming_services or [])
+        regions = list(prefs.preferred_regions or [])
+        if regions:
+            ctx.region = regions[0]
+
+    # SceneDNA — bounded to 6 signal labels.
+    try:
+        from app.models.taste import UserSignal
+        signals = db.scalars(
+            select(UserSignal)
+            .where(UserSignal.user_id == user_id)
+            .order_by(UserSignal.weight.desc())
+            .limit(6)
+        ).all()
+        ctx.scene_dna_signals = [s.label for s in signals if s.label]
+    except Exception:
+        # Signal table shape has evolved — degrade silently rather
+        # than break the whole Concierge request.
+        pass
+
+    return ctx
+
+
+def _context_summary_for_prompt(ctx: PersonalContext) -> str:
+    """Flatten PersonalContext into a short JSON string the prompt
+    template can interpolate. Deliberately small — the full catalog
+    search still happens server-side."""
+    def _pick(t: dict) -> dict:
+        return {
+            "title": t.get("title"),
+            "year": t.get("year"),
+            "media_type": t.get("media_type"),
+            **({"rank": t["rank"]} if "rank" in t else {}),
+            **({"score": t["score"]} if "score" in t else {}),
+        }
+    payload = {
+        "cold_start": ctx.is_cold_start(),
+        "region": ctx.region,
+        "selected_services": ctx.selected_services[:8],
+        "ranked_number_one": _pick(ctx.ranked_number_one) if ctx.ranked_number_one else None,
+        "top_ranked": [_pick(t) for t in ctx.top_ranked_sample],
+        "next_watch_sample": [_pick(t) for t in ctx.next_watch_sample],
+        "next_watch_total": ctx.next_watch_total,
+        "favorites": [_pick(t) for t in ctx.favorites_sample],
+        "watched_total": ctx.watched_total,
+        "scene_dna_signals": ctx.scene_dna_signals,
+    }
+    return json.dumps(payload, separators=(",", ":"))
+
+
 # ─── Public entry point ──────────────────────────────────────────────
 
 
@@ -126,19 +312,25 @@ def resolve_concierge_decision(
             ),
         )
 
+    # Chunk B: build the personal context block ONCE per decision so
+    # every adapter sees the same bounded summary.
+    context = build_personal_context(db, user_id)
+    context_summary = _context_summary_for_prompt(context)
+
     # Call the adapter. Timeouts + retries live inside each adapter.
     try:
         if provider == "vertex":
             raw = _call_vertex(
                 intent,
+                context_summary=context_summary,
                 project=(settings.concierge_ai_project or settings.gcp_project_id or os.environ.get("GOOGLE_CLOUD_PROJECT", "")).strip(),
                 location=(settings.concierge_ai_location or "us-central1").strip(),
                 model=(settings.concierge_ai_model or "gemini-2.5-flash").strip(),
             )
         elif provider == "anthropic":
-            raw = _call_anthropic(intent, api_key, settings.concierge_ai_model or "claude-opus-4-7")
+            raw = _call_anthropic(intent, api_key, settings.concierge_ai_model or "claude-opus-4-7", context_summary=context_summary)
         elif provider == "openai":
-            raw = _call_openai(intent, api_key, settings.concierge_ai_model or "gpt-4o-mini")
+            raw = _call_openai(intent, api_key, settings.concierge_ai_model or "gpt-4o-mini", context_summary=context_summary)
         else:
             return ConciergeDecision(
                 decision_id=None,
@@ -170,6 +362,13 @@ def resolve_concierge_decision(
     constraints = _constraints_from_raw(raw, intent)
     rationale = (raw.get("rationale") or "").strip()[:280]
 
+    # Chunk B: resolve "my number one" / "my #1" / "my top pick" from
+    # the user's actual manual ranking, no matter what the model said.
+    # If the model already added a canonical anchor we leave it alone;
+    # we only INJECT when the intent clearly references the user's own
+    # ranking and the catalog can supply a title.
+    constraints = _resolve_personal_references(constraints, intent, context)
+
     # Ground results in the catalog. The adapter MAY suggest titles by
     # name; we never return them unless they resolve to a real
     # ContentTitle in our catalog.
@@ -196,6 +395,49 @@ def resolve_concierge_decision(
         title_ids=grounded_ids,
         status="ready",
     )
+
+
+_PERSONAL_NUMBER_ONE_PATTERNS = (
+    "my number one",
+    "my #1",
+    "my number-one",
+    "my top pick",
+    "my top-ranked",
+    "my top ranked",
+    "my favorite",
+)
+
+
+def _resolve_personal_references(
+    constraints: ConciergeConstraints,
+    intent: str,
+    context: PersonalContext,
+) -> ConciergeConstraints:
+    """If the raw intent mentions "my number one" / "my #1" and the
+    user actually HAS a #1 ranked title, inject it as a canonical
+    like_anchor so grounding can resolve it. The authoritative anchor
+    is the manual ranking — never recomputed from scores. Also sets
+    media_type to the real title's type when the user hasn't already
+    constrained it, so we don't recommend a movie when the anchor is a
+    series (or vice-versa)."""
+    if context.ranked_number_one is None:
+        return constraints
+    anchor_title = context.ranked_number_one.get("title")
+    if not anchor_title:
+        return constraints
+    low_intent = intent.lower()
+    if not any(p in low_intent for p in _PERSONAL_NUMBER_ONE_PATTERNS):
+        return constraints
+    # Avoid duplicating an anchor the model already surfaced.
+    existing_lower = {a.lower() for a in constraints.like_anchors}
+    if anchor_title.lower() not in existing_lower:
+        constraints.like_anchors = [anchor_title, *constraints.like_anchors][:4]
+    # Lock media type to the real anchor's type when not explicitly set.
+    if constraints.media_type == "any":
+        anchor_type = context.ranked_number_one.get("media_type")
+        if anchor_type in ("movie", "series"):
+            constraints.media_type = anchor_type  # type: ignore[assignment]
+    return constraints
 
 
 # ─── Catalog grounding ───────────────────────────────────────────────
@@ -358,8 +600,18 @@ Rules:
 - `moods` is a short list of lowercase mood/tone tags.
 - `required_providers` only if the user explicitly asked (e.g. "only Netflix").
 - `exclusions` for things the user explicitly rejected.
-- `like_anchors` for similarity references ("like Arrival").
+- `like_anchors` for similarity references ("like Arrival"). When the user
+  says "my number one" or "my top pick", resolve it against the viewer's
+  ranked_number_one from the context block.
 - `rewatch_intent` true only if the user said they want something they've seen before.
+
+PERSONAL CONTEXT — use this to interpret references like "my #1",
+"something from my list", or "on my services". Do not fabricate a
+favorite the context doesn't contain. If `cold_start` is true, prefer
+explicit constraints over taste inference.
+
+Context: {context_summary}
+
 - Respond with ONLY a valid JSON object matching this schema:
 
 {{
@@ -423,7 +675,14 @@ def _vertex_access_token() -> str:
     return _VERTEX_CREDS.token  # type: ignore[attr-defined]
 
 
-def _call_vertex(intent: str, *, project: str, location: str, model: str) -> dict:
+def _call_vertex(
+    intent: str,
+    *,
+    project: str,
+    location: str,
+    model: str,
+    context_summary: str = "{}",
+) -> dict:
     """Vertex AI Gemini adapter.
 
     Uses the REST `:generateContent` endpoint with Application Default
@@ -436,7 +695,7 @@ def _call_vertex(intent: str, *, project: str, location: str, model: str) -> dic
             "concierge_ai_project (or gcp_project_id / GOOGLE_CLOUD_PROJECT) is required."
         )
     token = _vertex_access_token()
-    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000])
+    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
     url = (
         f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}"
         f"/locations/{location}/publishers/google/models/{model}:generateContent"
@@ -471,8 +730,8 @@ def _call_vertex(intent: str, *, project: str, location: str, model: str) -> dic
     return _extract_json(text)
 
 
-def _call_anthropic(intent: str, api_key: str, model: str) -> dict:
-    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000])
+def _call_anthropic(intent: str, api_key: str, model: str, *, context_summary: str = "{}") -> dict:
+    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
     with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
         r = client.post(
             "https://api.anthropic.com/v1/messages",
@@ -497,8 +756,8 @@ def _call_anthropic(intent: str, api_key: str, model: str) -> dict:
     return _extract_json(text)
 
 
-def _call_openai(intent: str, api_key: str, model: str) -> dict:
-    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000])
+def _call_openai(intent: str, api_key: str, model: str, *, context_summary: str = "{}") -> dict:
+    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
     with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
         r = client.post(
             "https://api.openai.com/v1/chat/completions",
