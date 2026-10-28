@@ -92,9 +92,12 @@ export default function CollectionSeeAllScreen() {
         const preferredType = mediaFilter === "movie" ? "movie" : "show";
         path = `/titles/recommendations/for-me?limit=40&preferred_type=${preferredType}`;
       } else if (validKey === "trending") {
-        // Backend caps limit at 20 for trending until the next deploy
-        // raises it; staying under the cap avoids a 422.
-        path = `/discover/trending?limit=20`;
+        // D05: Trending See all uses the SAME server media filter as
+        // the landing section. Previously the See-all did a client-
+        // side filter on a small mixed pool, which routinely yielded
+        // a thin TV section for mixed-request users.
+        const mediaParam = mediaFilter === "movie" ? "movie" : "tv";
+        path = `/discover/trending?limit=20&media_type=${mediaParam}`;
       } else if (validKey === "now-in-theaters") {
         path = `/discover/now-in-theaters?limit=20`;
       }

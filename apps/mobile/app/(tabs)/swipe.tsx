@@ -29,7 +29,7 @@ import { useFallbackBackdrop } from "@/lib/backdrop-pool";
 import { formatGenres } from "@/lib/format";
 import { colors, fonts, rules, spacing } from "@/constants/theme";
 import { trackEvent } from "@/lib/analytics";
-import { apiRequest, resolveMediaUrl, resolvedApiBaseUrl } from "@/lib/api";
+import { apiRequest, ApiError, resolveMediaUrl, resolvedApiBaseUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { type StreamingAvailability, getStreamingServiceMeta } from "@/lib/streaming";
 import { playSwipeSound } from "@/lib/swipe-sfx";
@@ -541,53 +541,16 @@ export default function SwipeTab() {
       // a user action.
       setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
     }
-    // W03: if the user down-swipes a title they've already rated
-    // positively (score >= 7), ask them to resolve the conflict
-    // before we record the dislike. "An existing numeric score must
-    // never be overwritten or cleared silently."  — spec.
+    // W01/W02: Down against an existing positive rating (>=7). The
+    // server's record_swipe raises 409 BEFORE writing anything, so
+    // we rely on that response (no racy preflight GET). The 409
+    // handler below binds restoration to this exact title_id so a
+    // slow conflict response can't rewind a later card.
     //
-    // The server-side swipe path WON'T touch the rating anyway, but
-    // leaving both signals in place is contradictory. Prompt for
-    // Change rating / Cancel. Watched state stays either way.
-    if (direction === "down") {
-      void (async () => {
-        try {
-          type RatingResp = { score: number | null };
-          const current = await apiRequest<RatingResp>(`/me/ratings/${item.title.id}`, { token: sessionToken });
-          const score = typeof current?.score === "number" ? current.score : null;
-          if (score !== null && score >= 7) {
-            // Reverse the local progress so the card can be
-            // restored or the user can re-rate.
-            setSwipes((prev) => prev.slice(0, -1));
-            setCurrentIndex((prev) => Math.max(0, prev - 1));
-            Alert.alert(
-              "You rated this " + score + "/10",
-              "A thumbs-down swipe conflicts with your existing positive rating. Change the rating, or cancel this swipe?",
-              [
-                {
-                  text: "Cancel swipe",
-                  style: "cancel",
-                  // Nothing further — local state is already restored.
-                },
-                {
-                  text: "Change rating",
-                  onPress: () => {
-                    setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
-                  },
-                },
-              ],
-            );
-          }
-        } catch {
-          // Non-fatal — if we can't check, don't block the swipe.
-        }
-      })();
-    }
-    // DOWN handled by the backend swipe-record path alone: it writes
-    // the SwipeRecord with direction=down and calls mark_watched. No
-    // automatic numeric rating is fabricated per Oct-27 follow-up
-    // ("do not assign an automatic 2/10 or other numeric score"). The
-    // qualitative dislike is carried by the swipe direction itself.
+    // DOWN handled by the backend swipe-record path: it writes the
+    // SwipeRecord with direction=down and calls mark_watched. No
+    // automatic numeric rating is fabricated — the qualitative
+    // dislike is carried by the swipe direction itself.
     trackEvent(`swipe_${direction}`, {
       title_id: item.title.id,
       session_id: sessionId,
@@ -631,7 +594,49 @@ export default function SwipeTab() {
           showDnaFeedback(res.scene_dna_feedback);
         }
       })
-      .catch(() => {});
+      .catch((err: unknown) => {
+        // W01/W02: 409 means the server detected a conflict between
+        // this Down and an existing positive rating. The server did
+        // NOT write anything. Restore the card ONLY if this is still
+        // the card we were on (bind to title_id so a slow response
+        // can't rewind a later card).
+        if (err instanceof ApiError && err.status === 409 && direction === "down") {
+          const detail = err.detail as { error?: string; existing_score?: number; title_id?: string } | null;
+          if (detail?.error === "rating_conflict" && detail.title_id === item.title.id) {
+            const score = detail.existing_score ?? null;
+            // If the user has moved past this card already, don't
+            // rewind — just surface a non-blocking toast so they
+            // know the Down didn't land. Otherwise restore.
+            setSwipes((prev) => {
+              const last = prev[prev.length - 1];
+              if (!last || last.item.title.id !== item.title.id) return prev;
+              return prev.slice(0, -1);
+            });
+            setCurrentIndex((prev) => {
+              const current = deck[prev - 1];
+              if (!current || current.title.id !== item.title.id) return prev;
+              return Math.max(0, prev - 1);
+            });
+            Alert.alert(
+              score ? `You rated this ${score}/10` : "Rating conflict",
+              "A thumbs-down conflicts with your existing positive rating. Change the rating, or cancel this swipe?",
+              [
+                { text: "Cancel swipe", style: "cancel" },
+                {
+                  text: "Change rating",
+                  onPress: () => setRatingTarget({
+                    titleId: item.title.id,
+                    titleName: item.title.title,
+                  }),
+                },
+              ],
+            );
+          }
+        }
+        // Other errors are intentionally non-blocking — the user
+        // already moved past the card; a network blip shouldn't
+        // interrupt the deck.
+      });
   }
 
   // Oct-27 W06: Undo the most recent eligible swipe. Reverses the

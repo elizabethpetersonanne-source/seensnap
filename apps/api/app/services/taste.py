@@ -88,17 +88,23 @@ class RatingConflictError(Exception):
 SWIPE_DIRECTION_WEIGHTS: dict[str, float] = {
     "left": -3.5,     # Pass — weak negative, context-dependent
     "right": 5.0,     # Save — positive interest, no viewing fact
-    # Oct-27 follow-up: Up = Watched + rating prompt. On its own Up is
-    # ONLY a viewing fact ("I've seen this"), not evidence that the
-    # user liked it. Weight is small positive (reduced from 8.0) so a
-    # dismissed rating doesn't masquerade as a strong preference. The
-    # explicit numeric rating that follows carries the real signal.
-    "up": 3.0,
+    # S04: v2 Up = Watched + rating prompt. On its own Up is a
+    # viewing fact ("I've seen this"), NOT evidence of enjoyment.
+    # The explicit numeric rating that follows carries the real
+    # preference signal. We hold at near-neutral (0.5) so a dismissed
+    # rating cannot inflate taste labels.
+    "up": 0.5,
     # Down = Watched + explicit qualitative dislike. Strongest
     # negative signal; the user is telling us "watched AND didn't
     # like it."
     "down": -5.0,
 }
+
+
+# S04: v1 Up events carried the old "more like this" meaning
+# (pre-v2 Watched refactor). We keep them identifiable so historical
+# bias is preserved without retroactively relabeling.
+SWIPE_UP_V1_WEIGHT: float = 3.0
 
 
 def refresh_taste_profile(db: Session, user_id: UUID) -> UserTasteProfile:
@@ -2015,14 +2021,21 @@ def record_swipe(
     # Delegate to the canonical title-state writer so Next Watch
     # cleanup + state version bumps + cross-surface broadcast all
     # happen in one place.
+    #
+    # W02: a Watched write failure must NOT be silently reported as a
+    # successful complete swipe. If we can't persist the viewing fact,
+    # the swipe signal is still truthful (user tapped the button) but
+    # the caller needs to know the Watched write didn't land. We
+    # delete the just-flushed SwipeRecord so the "record" that gets
+    # returned is unambiguous.
     if direction in ("up", "down"):
+        from app.services.title_state import mark_watched
         try:
-            from app.services.title_state import mark_watched
             mark_watched(db, user_id, title_id)
         except Exception:
-            # Non-blocking — a watched write failure shouldn't reject
-            # the swipe signal itself.
-            pass
+            db.delete(record)
+            db.commit()
+            raise
 
     _prune_old_swipes(db, user_id)
     refresh_taste_profile(db, user_id)
@@ -2135,7 +2148,14 @@ def _collect_title_signals(db: Session, user_id: UUID) -> tuple[defaultdict[str,
     for swipe, title in swipe_rows:
         if title is None:
             continue
-        weight = SWIPE_DIRECTION_WEIGHTS.get(swipe.direction, 0.0)
+        # S04: branch on action_version so legacy v1 Up events keep
+        # their original "more like this" semantics but current v2 Up
+        # contributes near-neutral weight (watching ≠ liking).
+        version = getattr(swipe, "action_version", 1) or 1
+        if swipe.direction == "up":
+            weight = SWIPE_UP_V1_WEIGHT if version < 2 else SWIPE_DIRECTION_WEIGHTS["up"]
+        else:
+            weight = SWIPE_DIRECTION_WEIGHTS.get(swipe.direction, 0.0)
         if weight > 0:
             apply_title(title, weight)
             continue
@@ -2296,7 +2316,11 @@ def _derive_current_obsessions_recent(
     ratings = db.execute(
         select(Rating, ContentTitle)
         .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        .where(Rating.user_id == user_id, Rating.created_at >= cutoff)
+        # S06: use updated_at — a user who re-rates an old title has
+        # supplied FRESH preference evidence; the original created_at
+        # is misleading. This also means invalidating a cached result
+        # when a rating is edited is automatic.
+        .where(Rating.user_id == user_id, Rating.updated_at >= cutoff)
     ).all()
     for rating, title in ratings:
         if title is None:
@@ -2318,8 +2342,12 @@ def _derive_current_obsessions_recent(
     for swipe, title in swipes:
         if title is None:
             continue
+        # S04: v2 Up is a viewing fact, not an obsession signal. We
+        # keep legacy v1 Up at its original "more like this" weight
+        # so historical obsessions don't drop out of the rail.
+        version = getattr(swipe, "action_version", 1) or 1
         if swipe.direction == "up":
-            weights[title.id] += 5.0
+            weights[title.id] += 5.0 if version < 2 else 0.5
         elif swipe.direction == "right":
             weights[title.id] += 3.0
         elif swipe.direction == "left":
@@ -2511,7 +2539,12 @@ def get_taste_evolution(db: Session, user_id: UUID) -> TasteEvolutionResponse:
             )
         ).all()
         for swipe, title in swipe_rows:
-            weight = int(SWIPE_DIRECTION_WEIGHTS.get(swipe.direction, 1.0))
+            # S04: honor v1 vs v2 Up semantics in evolution scoring.
+            version = getattr(swipe, "action_version", 1) or 1
+            if swipe.direction == "up" and version >= 2:
+                weight = 1  # near-neutral — Watched, not liked yet
+            else:
+                weight = int(SWIPE_DIRECTION_WEIGHTS.get(swipe.direction, 1.0)) or 1
             for genre in _title_genres(title):
                 scores[genre] += weight
 

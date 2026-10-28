@@ -269,14 +269,27 @@ def _diversify(
 
 
 def _exclude_ids(db: Session, user_id: UUID) -> set[UUID]:
-    """Never recommend titles the user has already saved OR recently
-    left-swiped (last 60). Cap recycling window at 60 to match the earlier
-    Swipe brief fix (task #30/#52)."""
-    saves = set(
+    """D02: new discovery excludes watched-with-rating,
+    watched-without-rating AND recently dismissed titles. Saves are
+    NOT excluded — saved-unwatched titles stay eligible for
+    rediscovery (brief: "saved-but-unwatched remain eligible and
+    visibly marked"). Recent left swipes cap at 60 per Swipe brief.
+    """
+    from app.models.social import Rating, TitleWatchStatus
+    watched_rated = set(
         db.scalars(
-            select(WatchlistItem.content_title_id)
-            .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-            .where(Watchlist.owner_user_id == user_id)
+            select(Rating.content_title_id).where(
+                Rating.user_id == user_id,
+                Rating.watched_state == "watched",
+            )
+        ).all()
+    )
+    watched_only = set(
+        db.scalars(
+            select(TitleWatchStatus.content_title_id).where(
+                TitleWatchStatus.user_id == user_id,
+                TitleWatchStatus.watched_state == "watched",
+            )
         ).all()
     )
     recent_dismisses = db.execute(
@@ -285,7 +298,11 @@ def _exclude_ids(db: Session, user_id: UUID) -> set[UUID]:
         .order_by(SwipeRecord.created_at.desc())
         .limit(60)
     ).all()
-    return saves | {r[0] for r in recent_dismisses if r[0] is not None}
+    return (
+        watched_rated
+        | watched_only
+        | {r[0] for r in recent_dismisses if r[0] is not None}
+    )
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────

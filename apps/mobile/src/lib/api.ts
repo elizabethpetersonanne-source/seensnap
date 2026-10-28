@@ -100,8 +100,22 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   }
 
   if (!response.ok) {
-    const message = await response.text();
-    throw new Error(message || `Request failed: ${response.status}`);
+    const body = await response.text();
+    // Thrown error carries the HTTP status + parsed FastAPI `detail`
+    // body so callers can distinguish 409 conflict from 500 error
+    // without a second parse. Legacy string callers still work:
+    // `err.message` holds the raw body text.
+    let detail: unknown = null;
+    try {
+      detail = body ? JSON.parse(body) : null;
+      if (detail && typeof detail === "object" && "detail" in detail) {
+        detail = (detail as { detail: unknown }).detail;
+      }
+    } catch {
+      // Not JSON — leave detail as null.
+    }
+    const err = new ApiError(body || `Request failed: ${response.status}`, response.status, detail);
+    throw err;
   }
 
   if (response.status === 204) {
@@ -109,6 +123,18 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   }
 
   return (await response.json()) as T;
+}
+
+
+export class ApiError extends Error {
+  readonly status: number;
+  readonly detail: unknown;
+  constructor(message: string, status: number, detail: unknown) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+    this.detail = detail;
+  }
 }
 
 export function resolveMediaUrl(uri?: string | null): string | null {
