@@ -62,6 +62,10 @@ export default function ListDetailScreen() {
   const [editVisibility, setEditVisibility] = useState<"private" | "followers" | "public">("private");
   const [saving, setSaving] = useState(false);
   const [busyTitleId, setBusyTitleId] = useState<string | null>(null);
+  // L02 Undo: hold the last removed item for ~6s so the user can
+  // restore it with one tap. Only one undo in flight; a second
+  // removal replaces the current pending one.
+  const [undoTarget, setUndoTarget] = useState<ListItem | null>(null);
 
   const load = useCallback(async () => {
     if (!sessionToken || !listId) return;
@@ -116,10 +120,36 @@ export default function ListDetailScreen() {
         token: sessionToken,
       });
       setList((prev) => prev ? { ...prev, items: prev.items.filter((i) => i.id !== item.id) } : prev);
+      // L02: show Undo. Auto-expire after 6s so stale actions don't
+      // reappear mid-browse. Only this membership is restored — all
+      // other title state (Watched, rating, favorite, other lists)
+      // is preserved by the server.
+      setUndoTarget(item);
+      setTimeout(() => setUndoTarget((t) => (t?.id === item.id ? null : t)), 6000);
     } catch (e) {
       Alert.alert("Couldn't remove", e instanceof Error ? e.message : "Try again.");
     } finally {
       setBusyTitleId(null);
+    }
+  }
+
+  async function undoRemove() {
+    if (!sessionToken || !listId || !undoTarget) return;
+    const target = undoTarget;
+    setUndoTarget(null);
+    try {
+      await apiRequest(`/me/watchlist/items`, {
+        method: "POST",
+        token: sessionToken,
+        body: JSON.stringify({
+          list_id: listId,
+          content_title_id: target.content_title_id,
+          added_via: "undo_remove",
+        }),
+      });
+      await load();
+    } catch (e) {
+      Alert.alert("Couldn't restore", e instanceof Error ? e.message : "Try again.");
     }
   }
 
@@ -280,10 +310,25 @@ export default function ListDetailScreen() {
             ListEmptyComponent={
               <View style={styles.center}>
                 <Ionicons name="list-outline" size={28} color={colors.muted} />
-                <Text style={styles.emptyBody}>No titles in this list yet.</Text>
+                <Text style={styles.emptyBody}>No titles in this list yet. Add titles from Discover or Concierge.</Text>
               </View>
             }
           />
+          {undoTarget ? (
+            <View style={styles.undoBar}>
+              <Text style={styles.undoText} numberOfLines={1}>
+                Removed from {list?.name ?? "list"}
+              </Text>
+              <Pressable
+                onPress={() => void undoRemove()}
+                hitSlop={10}
+                accessibilityRole="button"
+                accessibilityLabel="Undo remove"
+              >
+                <Text style={styles.undoAction}>UNDO</Text>
+              </Pressable>
+            </View>
+          ) : null}
         </>
       )}
     </SafeAreaView>
@@ -390,4 +435,27 @@ const styles = StyleSheet.create({
   rowTitle: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 13 },
   rowMeta: { marginTop: 2, fontFamily: fonts.sans, color: colors.muted, fontSize: 11 },
   removeBtn: { width: 32, height: 32, alignItems: "center", justifyContent: "center" },
+  undoBar: {
+    position: "absolute",
+    left: spacing.md,
+    right: spacing.md,
+    bottom: spacing.lg + 20,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: radii.md,
+    backgroundColor: colors.surface,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  undoText: { flex: 1, fontFamily: fonts.sans, color: colors.ink, fontSize: 13 },
+  undoAction: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.accent,
+    fontSize: 11,
+    letterSpacing: 1.4,
+    marginLeft: 12,
+  },
 });

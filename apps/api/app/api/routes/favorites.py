@@ -52,9 +52,15 @@ class RankedFavoritesResponse(BaseModel):
     # of this page. Oct-27 follow-up explicitly forbids reporting the
     # loaded page size as the total.
     total: int
-    # Rendering hint. 500 is a soft limit on the write path; the read
-    # path returns every row regardless.
+    # Rendering hint. The write path still gates at 500, but the read
+    # path paginates past it per R01: all ranked, saved, watched and
+    # custom-list titles must be reachable, including records 501 and
+    # 1001.
     max_capacity: int = 500
+    # R01: pagination cursor. offset is the index of the first row in
+    # `items`; has_more signals the client should fetch the next page.
+    offset: int = 0
+    has_more: bool = False
 
 
 def _fetch_titles(db, ids: list[UUID]) -> dict[UUID, ContentTitle]:
@@ -103,21 +109,34 @@ def get_ranked_favorites(
     current_user: CurrentUser,
     db: DbSession,
     limit: int = Query(default=500, ge=1, le=1000),
+    offset: int = Query(default=0, ge=0),
 ) -> RankedFavoritesResponse:
     """Return the viewer's ordered favorites list. `limit` is a page
     size; the response always reports the real `total` from the
-    collection, not the row count on this page."""
+    collection, not the row count on this page.
+
+    R01: paginates past 500. Rows 501, 1001 and beyond are reachable
+    with (offset=500, limit=500) etc. The caller can also request a
+    specific window to inspect / move a title at a known position.
+    """
     favorites = db.scalars(
         select(RankedFavorite)
         .where(RankedFavorite.user_id == current_user.id)
         .order_by(RankedFavorite.position.asc())
+        .offset(offset)
         .limit(limit)
     ).all()
     # Real total of ALL rows for this user — never the page size.
     total = int(db.scalar(
         select(func.count()).select_from(RankedFavorite).where(RankedFavorite.user_id == current_user.id)
     ) or 0)
-    return RankedFavoritesResponse(items=_hydrate(db, current_user.id, favorites), total=total)
+    has_more = (offset + len(favorites)) < total
+    return RankedFavoritesResponse(
+        items=_hydrate(db, current_user.id, favorites),
+        total=total,
+        offset=offset,
+        has_more=has_more,
+    )
 
 
 class ReplaceOrderRequest(BaseModel):
@@ -250,32 +269,110 @@ def move_ranked_favorite(
     current_user: CurrentUser,
     db: DbSession,
 ) -> RankedFavoritesResponse:
-    """Move a title to a specific position, shifting others in between
-    by one. Idempotent to the requested position."""
-    favorites = db.scalars(
-        select(RankedFavorite)
-        .where(RankedFavorite.user_id == current_user.id)
-        .order_by(RankedFavorite.position.asc())
-    ).all()
-    target = next((f for f in favorites if f.content_title_id == title_id), None)
+    """Move a title to a specific position, shifting only the rows
+    BETWEEN the old and new positions. Numeric scores on Rating rows
+    are untouched. Idempotent to the requested position.
+
+    R02: targeted transactional move — a user with 1000+ ranked
+    titles can move #850 → #3 without loading or re-numbering the
+    other 998 rows.
+    """
+    # Load just the target + its sibling range we'll actually shift.
+    target = db.scalar(
+        select(RankedFavorite).where(
+            RankedFavorite.user_id == current_user.id,
+            RankedFavorite.content_title_id == title_id,
+        )
+    )
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not in your ranked favorites")
 
-    to_position = min(payload.to_position, len(favorites))
-    if target.position == to_position:
-        return RankedFavoritesResponse(items=_hydrate(db, current_user.id, favorites), total=len(favorites))
+    total = int(db.scalar(
+        select(func.count()).select_from(RankedFavorite).where(RankedFavorite.user_id == current_user.id)
+    ) or 0)
+    to_position = max(1, min(payload.to_position, total))
+    from_position = target.position
+    if from_position == to_position:
+        # No-op; return a short window around the current position.
+        window = db.scalars(
+            select(RankedFavorite)
+            .where(RankedFavorite.user_id == current_user.id)
+            .order_by(RankedFavorite.position.asc())
+            .offset(max(0, from_position - 1))
+            .limit(50)
+        ).all()
+        return RankedFavoritesResponse(
+            items=_hydrate(db, current_user.id, window),
+            total=total,
+            offset=max(0, from_position - 1),
+            has_more=max(0, from_position - 1) + len(window) < total,
+        )
 
-    # Pull the target out, insert at new position, renumber contiguously.
-    ordered = [f for f in favorites if f.id != target.id]
-    ordered.insert(to_position - 1, target)
     now = datetime.now(timezone.utc)
-    for idx, f in enumerate(ordered, start=1):
-        if f.position != idx:
-            f.position = idx
-            f.updated_at = now
-            f.version += 1
+    # Move the target out of the way (position=0) so the shift of
+    # intermediate rows doesn't collide with it on the deferrable
+    # unique constraint.
+    target.position = 0
+    target.updated_at = now
+    target.version += 1
+    db.flush()
+    # Shift intermediate rows by one. Moving DOWN (from < to): rows
+    # strictly between from and to decrement by 1. Moving UP (from > to):
+    # rows between to and from (inclusive-exclusive on the right)
+    # increment by 1.
+    if from_position < to_position:
+        # Decrement rows (from, to] by 1 (SQL UPDATE in one shot).
+        db.execute(
+            RankedFavorite.__table__.update()
+            .where(
+                RankedFavorite.user_id == current_user.id,
+                RankedFavorite.position > from_position,
+                RankedFavorite.position <= to_position,
+                RankedFavorite.id != target.id,
+            )
+            .values(
+                position=RankedFavorite.position - 1,
+                updated_at=now,
+                version=RankedFavorite.version + 1,
+            )
+        )
+    else:  # from_position > to_position
+        db.execute(
+            RankedFavorite.__table__.update()
+            .where(
+                RankedFavorite.user_id == current_user.id,
+                RankedFavorite.position >= to_position,
+                RankedFavorite.position < from_position,
+                RankedFavorite.id != target.id,
+            )
+            .values(
+                position=RankedFavorite.position + 1,
+                updated_at=now,
+                version=RankedFavorite.version + 1,
+            )
+        )
+    # Place the target at its new position.
+    target.position = to_position
+    target.updated_at = now
     db.commit()
-    return RankedFavoritesResponse(items=_hydrate(db, current_user.id, ordered), total=len(ordered))
+    # Return a window centered on the new position so the UI can
+    # scroll + render immediately without a second fetch for small
+    # moves. Larger moves still work; the client re-renders from
+    # offset=max(0, to-1).
+    anchor = max(0, to_position - 1)
+    window = db.scalars(
+        select(RankedFavorite)
+        .where(RankedFavorite.user_id == current_user.id)
+        .order_by(RankedFavorite.position.asc())
+        .offset(anchor)
+        .limit(50)
+    ).all()
+    return RankedFavoritesResponse(
+        items=_hydrate(db, current_user.id, window),
+        total=total,
+        offset=anchor,
+        has_more=anchor + len(window) < total,
+    )
 
 
 @router.post("/ranked/{title_id}/publish-rank-change")

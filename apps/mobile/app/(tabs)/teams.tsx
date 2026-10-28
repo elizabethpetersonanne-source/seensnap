@@ -1610,7 +1610,9 @@ export default function TeamsScreen() {
         titleId={saveTitleId}
         source="watch_team"
         onClose={() => { setShowSaveSheet(false); setSaveTitleId(null); }}
-        onSaved={(listName, alreadySaved) => setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`)}
+        // L04: sheet returns the complete summary ("Saved to X" / "Removed from X" / "Updated N lists").
+        // Do not prepend "Saved to" or we get "Saved to Removed from X" on a removal.
+        onSaved={(summary, alreadySaved) => setToast(alreadySaved ? "No changes" : summary)}
         onError={(message) => setError(message)}
       />
 

@@ -809,11 +809,12 @@ export default function FeedScreen() {
           setShowSaveSheet(false);
           setSaveTitleId(null);
         }}
-        onSaved={(listName, alreadySaved) => {
+        // L04: the sheet returns a complete summary message.
+        onSaved={(summary, alreadySaved) => {
           if (saveTitleId) {
             setSavedTitleIds((current) => new Set(current).add(saveTitleId));
           }
-          setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
+          setToast(alreadySaved ? "No changes" : summary);
         }}
         onError={(message) => setError(message)}
       />

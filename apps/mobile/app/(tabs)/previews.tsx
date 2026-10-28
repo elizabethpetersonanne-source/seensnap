@@ -95,9 +95,13 @@ export default function PreviewsScreen() {
   // list, the feed follows the OWNER'S order (not the viewer's
   // personalization). ranked_source="me" pulls from /me/favorites,
   // ranked_source=<user_id> pulls from /profiles/{id}/favorites/ranked.
-  const params = useLocalSearchParams<{ ranked_source?: string; list_id?: string }>();
+  const params = useLocalSearchParams<{ ranked_source?: string; list_id?: string; owner_id?: string }>();
   const rankedSource = params.ranked_source ?? null;
   const listId = params.list_id ?? null;
+  // When list_id is set AND owner_id is a different user, we fetch
+  // via the viewer-aware /profiles/{owner_id}/lists/{list_id} path.
+  // Omitting owner_id (or passing self) uses /me/watchlist/lists/{id}.
+  const listOwnerId = params.owner_id ?? null;
 
   const [items, setItems] = useState<PreviewFeedItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -136,8 +140,17 @@ export default function PreviewsScreen() {
       // personalization are intentionally ignored — this is the
       // OWNER'S order, not a personalized re-rank.
       if (rankedSource || listId) {
+        // Previews from ANY list: three source shapes.
+        //   1. ranked_source=me                → my ranked favorites
+        //   2. ranked_source=<user_id>         → that user's ranked
+        //   3. list_id=<id> (owner optional)   → a watchlist. If
+        //      owner_id matches me or is absent, use my private route;
+        //      otherwise go through the viewer-aware public path
+        //      which enforces audience server-side.
         const listUrl = listId
-          ? `/me/watchlist/lists/${listId}`
+          ? (listOwnerId && listOwnerId !== "me"
+              ? `/profiles/${listOwnerId}/lists/${listId}?limit=100`
+              : `/me/watchlist/lists/${listId}`)
           : rankedSource === "me"
             ? "/me/favorites/ranked?limit=100"
             : `/profiles/${rankedSource}/favorites/ranked?limit=100`;

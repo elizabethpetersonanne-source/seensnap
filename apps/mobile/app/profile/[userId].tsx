@@ -274,6 +274,11 @@ export default function PublicProfileScreen() {
                   <FullBleedPosterSection
                     heroHeight={sectionHeight}
                     sectionKicker="RANKED FAVORITES"
+                    // Tapping the kicker opens the user's full ranked
+                    // list — all of their rankings, not just the top 5.
+                    onPressKicker={() =>
+                      router.push(`/profile/ranked/${userId}`)
+                    }
                     hero={rankedToFullBleed(rankedHero)}
                     four={rankedFour.map(rankedToFullBleed)}
                     onPressHero={() => void openTitle(rankedHero.title_id)}
@@ -286,9 +291,19 @@ export default function PublicProfileScreen() {
             if (item.key === "lists") {
               const hero = lists[0];
               const four = lists.slice(1, 5);
+              const openPreviews = (listId: string) =>
+                router.push({
+                  pathname: "/(tabs)/previews",
+                  params: { list_id: listId, owner_id: String(userId) },
+                });
               return (
                 <View style={{ height: sectionHeight }}>
-                  <View style={styles.listHeroWrap}>
+                  <Pressable
+                    style={styles.listHeroWrap}
+                    onPress={() => openPreviews(hero.list_id)}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Watch previews of ${hero.name}`}
+                  >
                     <Image
                       source={{ uri: hero.preview_posters[0] }}
                       style={StyleSheet.absoluteFillObject}
@@ -299,7 +314,7 @@ export default function PublicProfileScreen() {
                       <Text style={styles.sectionKicker}>PUBLIC LISTS</Text>
                       <Text style={styles.listHeroName}>{hero.name}</Text>
                       <Text style={styles.listHeroMeta}>
-                        {hero.item_count} title{hero.item_count === 1 ? "" : "s"}
+                        {hero.item_count} title{hero.item_count === 1 ? "" : "s"} · Tap to watch previews
                       </Text>
                     </View>
                     {four.length > 0 ? (
@@ -308,7 +323,7 @@ export default function PublicProfileScreen() {
                           <Pressable
                             key={l.list_id}
                             style={styles.listTile}
-                            onPress={() => router.push(`/lists/${l.share_token}`)}
+                            onPress={() => openPreviews(l.list_id)}
                           >
                             {l.preview_posters[0] ? (
                               <Image source={{ uri: l.preview_posters[0] }} style={styles.listTilePoster} />
@@ -322,7 +337,7 @@ export default function PublicProfileScreen() {
                         ))}
                       </View>
                     ) : null}
-                  </View>
+                  </Pressable>
                 </View>
               );
             }

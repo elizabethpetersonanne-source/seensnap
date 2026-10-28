@@ -755,9 +755,10 @@ export function UniversalTitleModal({
             titleId={currentTitle?.id ?? null}
             source="details"
             onClose={() => setShowSaveSheet(false)}
-            onSaved={(listName, alreadySaved) => {
+            // L04: sheet returns the complete summary message.
+            onSaved={(summary, alreadySaved) => {
               if (currentTitle?.id) setSavedTitleIds((current) => new Set(current).add(currentTitle.id));
-              setToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
+              setToast(alreadySaved ? "No changes" : summary);
               onSave?.();
             }}
             onError={(message) => setToast(message)}

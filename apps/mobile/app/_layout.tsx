@@ -162,6 +162,8 @@ function AuthGate() {
         <Stack.Screen name="messages/new" options={{ animation: "slide_from_right" }} />
         {/* List detail — edit, remove titles, watch previews. */}
         <Stack.Screen name="favorites/list/[listId]" options={{ animation: "slide_from_right" }} />
+        {/* All of another user's ranked favorites, tapped from profile. */}
+        <Stack.Screen name="profile/ranked/[userId]" options={{ animation: "slide_from_right" }} />
       </Stack>
       {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
       <DidYouWatchPrompt />

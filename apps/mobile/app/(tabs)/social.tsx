@@ -1338,15 +1338,16 @@ function FeedCard({
         titleId={post.title?.id ?? null}
         source="social_feed"
         onClose={() => setSaveSheetOpen(false)}
-        onSaved={(listName, alreadySaved) => {
+        // L04: sheet returns the complete summary message.
+        onSaved={(summary, alreadySaved) => {
           setSaveSheetOpen(false);
           trackEvent("social_post_saved", {
             post_id: post.id,
             title_id: post.title?.id ?? null,
-            list_name: listName,
+            summary,
             already_saved: alreadySaved ?? false,
           });
-          setSaveToast(alreadySaved ? `Already in ${listName}` : `Saved to ${listName}`);
+          setSaveToast(alreadySaved ? "No changes" : summary);
           setTimeout(() => setSaveToast(null), 2400);
         }}
         onError={(msg) => {
