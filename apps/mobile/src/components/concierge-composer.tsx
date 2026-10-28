@@ -64,7 +64,11 @@ export type ConciergeDecisionResponse = {
   // Chunk D: the composer may stash the original intent on the
   // response so the empty-state recovery UI can rebuild adjustment
   // prompts without plumbing the raw string through Discover state.
-  _intent?: string;
+  _intent?: string | null;
+  // Chunk E: client-side turn counter. The decision persists its
+  // own turns on the server; the mobile client tracks whether to
+  // show the Undo chip without an extra round-trip.
+  _turn_count?: number;
 };
 
 

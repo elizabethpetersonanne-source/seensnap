@@ -1,42 +1,65 @@
 /**
- * Oct-18 Visual Design brief §7: Concierge result presentation.
+ * Concierge result — hero + four small posters.
  *
- * - Short, pullquote-style rationale (the "response") up top.
- * - A horizontal strip of poster options (up to 8) — users scan the
- *   full set rather than being funneled into a single hero.
- * - Soft peripheral aura behind the whole block (handled by caller).
- * - "Refine this" affordance for continuing the conversation in
- *   the same decision (no new allowance consumed server-side).
- *
- * NOT a chat bubble. NOT a robot-mascot block. NOT a text-heavy AI
- * dashboard. Reads as editorial curation.
+ * Oct-27 brief chunk E:
+ * - Render ONE featured poster plus four smaller posters per spec.
+ * - Tapping a smaller poster PROMOTES it (makes it the featured
+ *   poster) — does not open details.
+ * - Tapping the featured poster opens full TMDB details.
+ * - A compact row of follow-up chips sits below ("Shorter", "Different
+ *   options", "More like this", "Undo", "New search").
+ * - Shorter chip only shows when runtime is a meaningful constraint
+ *   (either runtime_max is set, or the user's current intent included
+ *   a runtime-ish phrase).
  */
 import { Ionicons } from "@expo/vector-icons";
-import {
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Text,
-  View,
-} from "react-native";
+import { useEffect, useState } from "react";
+import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 import type { ConciergeTitleCard } from "@/components/concierge-composer";
 
 
+export type ConciergeRefineKind =
+  | "shorter"
+  | "longer"
+  | "different_options"
+  | "more_like_selected"
+  | "edit"
+  | "undo"
+  | "new_search";
+
+
 export function ConciergeResult({
   rationale,
   titles,
-  onPressTitle,
+  constraints,
+  canUndo,
+  onPressFeatured,
   onRefine,
 }: {
   rationale: string;
   titles: ConciergeTitleCard[];
-  onPressTitle: (t: ConciergeTitleCard) => void;
-  onRefine?: () => void;
+  constraints?: Record<string, unknown> | null;
+  canUndo?: boolean;
+  onPressFeatured: (t: ConciergeTitleCard) => void;
+  onRefine?: (kind: ConciergeRefineKind, extra?: { featured_title_id?: string }) => void;
 }) {
-  const visible = titles.slice(0, 8);
+  const [featuredId, setFeaturedId] = useState<string | null>(null);
+
+  // Reset promotion when the backing title set changes (new turn).
+  useEffect(() => {
+    setFeaturedId(null);
+  }, [titles.map((t) => t.title_id).join("|")]);
+
+  if (titles.length === 0) return null;
+  const featured = titles.find((t) => t.title_id === featuredId) ?? titles[0];
+  const continuation = titles.filter((t) => t.title_id !== featured.title_id).slice(0, 4);
+
+  const runtimeConstrained =
+    (constraints && (typeof constraints.runtime_max === "number" || typeof constraints.runtime_min === "number")) ||
+    false;
+
   return (
     <View style={styles.wrap}>
       <View style={styles.kickerRow}>
@@ -51,44 +74,97 @@ export function ConciergeResult({
         </View>
       ) : null}
 
-      <Text style={styles.optionsLabel}>
-        {visible.length === 1 ? "1 option" : `${visible.length} options`}
-      </Text>
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.strip}
+      {/* Featured poster — large, tap opens details. */}
+      <Pressable
+        onPress={() => onPressFeatured(featured)}
+        style={({ pressed }) => [styles.heroCard, pressed && { opacity: 0.9 }]}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${featured.title}`}
       >
-        {visible.map((t, idx) => (
-          <Pressable
-            key={t.title_id}
-            onPress={() => onPressTitle(t)}
-            style={({ pressed }) => [styles.card, pressed && { opacity: 0.78 }]}
-          >
-            {t.poster_url ? (
-              <Image source={{ uri: t.poster_url }} style={styles.poster} resizeMode="cover" />
-            ) : (
-              <View style={[styles.poster, styles.posterFallback]}>
-                <Ionicons name="film-outline" size={16} color={colors.muted2} />
-              </View>
-            )}
-            <Text style={styles.cardTitle} numberOfLines={2}>{t.title}</Text>
-            <Text style={styles.cardMeta}>
-              {[t.year, t.media_type === "movie" ? "Movie" : "Series"].filter(Boolean).join(" · ")}
-            </Text>
-          </Pressable>
-        ))}
-      </ScrollView>
+        {featured.backdrop_url || featured.poster_url ? (
+          <Image
+            source={{ uri: featured.backdrop_url ?? featured.poster_url ?? "" }}
+            style={StyleSheet.absoluteFillObject}
+            resizeMode="cover"
+          />
+        ) : null}
+        <View style={styles.heroShade} />
+        <View style={styles.heroBody}>
+          <Text style={styles.heroTitle} numberOfLines={2}>{featured.title}</Text>
+          <Text style={styles.heroMeta}>
+            {[featured.year, featured.media_type === "movie" ? "FILM" : "SERIES"].filter(Boolean).join(" · ")}
+          </Text>
+        </View>
+      </Pressable>
 
+      {/* Continuation strip — up to four smaller posters. Tap promotes. */}
+      {continuation.length > 0 ? (
+        <View style={styles.continuationRow}>
+          {continuation.map((t) => (
+            <Pressable
+              key={t.title_id}
+              onPress={() => setFeaturedId(t.title_id)}
+              style={({ pressed }) => [styles.smallCard, pressed && { opacity: 0.78 }]}
+              accessibilityRole="button"
+              accessibilityLabel={`Feature ${t.title}`}
+            >
+              {t.poster_url ? (
+                <Image source={{ uri: t.poster_url }} style={styles.smallPoster} resizeMode="cover" />
+              ) : (
+                <View style={[styles.smallPoster, styles.smallPosterFallback]}>
+                  <Ionicons name="film-outline" size={14} color={colors.muted2} />
+                </View>
+              )}
+              <Text style={styles.smallTitle} numberOfLines={2}>{t.title}</Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+
+      {titles.length < 5 ? (
+        <Text style={styles.lowCountNote}>
+          {titles.length === 1 ? "1 result" : `${titles.length} results`} — try an adjustment below for more.
+        </Text>
+      ) : null}
+
+      {/* Follow-up chips. Order: refinements first, then undo / new. */}
       {onRefine ? (
-        <Pressable onPress={onRefine} hitSlop={6} style={styles.refineBtn}>
-          <Ionicons name="arrow-redo-outline" size={13} color={colors.accent} />
-          <Text style={styles.refineLabel}>Refine this</Text>
-        </Pressable>
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow} directionalLockEnabled>
+          {runtimeConstrained ? (
+            <RefineChip label="Shorter" onPress={() => onRefine("shorter")} />
+          ) : null}
+          {runtimeConstrained ? (
+            <RefineChip label="Longer" onPress={() => onRefine("longer")} />
+          ) : null}
+          <RefineChip label="Different options" onPress={() => onRefine("different_options")} />
+          <RefineChip
+            label={`More like ${truncate(featured.title, 18)}`}
+            onPress={() => onRefine("more_like_selected", { featured_title_id: featured.title_id })}
+          />
+          {canUndo ? <RefineChip label="Undo" onPress={() => onRefine("undo")} /> : null}
+          <RefineChip label="New search" onPress={() => onRefine("new_search")} />
+        </ScrollView>
       ) : null}
     </View>
   );
+}
+
+function RefineChip({ label, onPress }: { label: string; onPress: () => void }) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={4}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      style={({ pressed }) => [styles.chip, pressed && { opacity: 0.75 }]}
+    >
+      <Text style={styles.chipLabel}>{label}</Text>
+    </Pressable>
+  );
+}
+
+function truncate(s: string, n: number): string {
+  return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
 }
 
 
@@ -97,29 +173,17 @@ const styles = StyleSheet.create({
     paddingHorizontal: spacing.lg,
     paddingTop: spacing.sm,
     paddingBottom: spacing.md,
-    gap: 10,
+    gap: 12,
   },
-  kickerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-  },
+  kickerRow: { flexDirection: "row", alignItems: "center", gap: 6 },
   kicker: {
     fontFamily: fonts.monoSemiBold,
     color: colors.accent,
     fontSize: 10,
     letterSpacing: 1.4,
   },
-  responseBlock: {
-    flexDirection: "row",
-    gap: 10,
-    paddingVertical: 2,
-  },
-  responseRule: {
-    width: 2,
-    backgroundColor: colors.accent,
-    opacity: 0.6,
-  },
+  responseBlock: { flexDirection: "row", gap: 10, paddingVertical: 2 },
+  responseRule: { width: 2, backgroundColor: colors.accent, opacity: 0.6 },
   responseText: {
     flex: 1,
     fontFamily: fonts.serif,
@@ -128,57 +192,85 @@ const styles = StyleSheet.create({
     lineHeight: 22,
     fontStyle: "italic",
   },
-  optionsLabel: {
-    marginTop: 4,
-    fontFamily: fonts.monoMedium,
-    color: colors.muted2,
-    fontSize: 10,
-    letterSpacing: 1,
+  heroCard: {
+    height: 260,
+    borderRadius: radii.md,
+    overflow: "hidden",
+    position: "relative",
+    backgroundColor: colors.surfaceMuted,
   },
-  strip: {
-    gap: 10,
-    paddingVertical: 4,
-    paddingRight: spacing.lg,
+  heroShade: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "rgba(0,0,0,0.42)",
   },
-  card: {
-    width: 112,
-    gap: 6,
+  heroBody: {
+    position: "absolute",
+    left: 14,
+    right: 14,
+    bottom: 12,
+    gap: 4,
   },
-  poster: {
-    width: 112,
-    height: 168,
+  heroTitle: {
+    fontFamily: fonts.sansBold,
+    color: colors.ink,
+    fontSize: 22,
+    letterSpacing: -0.3,
+  },
+  heroMeta: {
+    fontFamily: fonts.monoSemiBold,
+    color: "rgba(255,255,255,0.9)",
+    fontSize: 11,
+    letterSpacing: 1.3,
+  },
+  continuationRow: {
+    flexDirection: "row",
+    gap: 8,
+  },
+  smallCard: {
+    flex: 1,
+    gap: 4,
+  },
+  smallPoster: {
+    width: "100%",
+    aspectRatio: 2 / 3,
     borderRadius: radii.sm,
     backgroundColor: colors.surfaceMuted,
   },
-  posterFallback: {
+  smallPosterFallback: {
     alignItems: "center",
     justifyContent: "center",
   },
-  cardTitle: {
+  smallTitle: {
+    fontFamily: fonts.sans,
+    color: colors.ink,
+    fontSize: 10,
+    lineHeight: 13,
+  },
+  lowCountNote: {
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 11,
+  },
+  chipRow: {
+    flexDirection: "row",
+    gap: 6,
+    paddingRight: 32,
+  },
+  chip: {
+    minHeight: 36,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.08)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  chipLabel: {
     fontFamily: fonts.sansSemiBold,
     color: colors.ink,
     fontSize: 12,
-    lineHeight: 15,
-  },
-  cardMeta: {
-    fontFamily: fonts.monoMedium,
-    color: colors.muted2,
-    fontSize: 10,
-    letterSpacing: 0.4,
-  },
-  refineBtn: {
-    marginTop: 4,
-    alignSelf: "flex-start",
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    paddingVertical: 4,
-  },
-  refineLabel: {
-    fontFamily: fonts.monoSemiBold,
-    color: colors.accent,
-    fontSize: 11,
-    letterSpacing: 0.6,
-    textTransform: "uppercase",
+    letterSpacing: 0.2,
   },
 });

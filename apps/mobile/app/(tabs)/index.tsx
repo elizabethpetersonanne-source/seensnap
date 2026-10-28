@@ -820,14 +820,49 @@ export default function DiscoverScreen() {
             />
           ) : null}
 
-          {/* Concierge result — serif pullquote + horizontal strip. */}
+          {/* Concierge result — hero + four small posters + follow-up chips. */}
           {conciergeDecision && conciergeDecision.status === "ready" && conciergeDecision.titles.length > 0 ? (
             <ConciergeResult
               rationale={conciergeDecision.rationale}
               titles={conciergeDecision.titles}
-              onPressTitle={(t) => {
+              constraints={conciergeDecision.constraints ?? undefined}
+              canUndo={(conciergeDecision as unknown as { _turn_count?: number })._turn_count !== undefined && (conciergeDecision as unknown as { _turn_count?: number })._turn_count! > 1}
+              onPressFeatured={(t) => {
                 trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
                 void openTitleModal(t.title_id);
+              }}
+              onRefine={async (kind, extra) => {
+                if (!sessionToken || !conciergeDecision.decision_id) return;
+                trackEvent("concierge_refine", { kind, decision_id: conciergeDecision.decision_id });
+                if (kind === "new_search") {
+                  setConciergeDecision(null);
+                  return;
+                }
+                try {
+                  const idempotency_key = `concierge-refine-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                  const res = await apiRequest<ConciergeDecisionResponse>(
+                    `/me/concierge/decision/${conciergeDecision.decision_id}/refine`,
+                    {
+                      method: "POST",
+                      token: sessionToken,
+                      body: JSON.stringify({
+                        kind,
+                        featured_title_id: extra?.featured_title_id,
+                        idempotency_key,
+                      }),
+                    },
+                  );
+                  // Carry a turn counter forward so the Undo chip can
+                  // show after the first refinement.
+                  const priorTurns = (conciergeDecision as unknown as { _turn_count?: number })._turn_count ?? 1;
+                  setConciergeDecision({
+                    ...res,
+                    _intent: conciergeDecision._intent ?? null,
+                    _turn_count: priorTurns + 1,
+                  } as unknown as ConciergeDecisionResponse);
+                } catch {
+                  // Keep the current result; the user can retry.
+                }
               }}
             />
           ) : null}
