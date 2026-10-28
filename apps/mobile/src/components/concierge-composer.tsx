@@ -61,6 +61,10 @@ export type ConciergeDecisionResponse = {
   allowance_remaining: number | null;
   allowance_cap: number | null;
   resets_at: string | null;
+  // Chunk D: the composer may stash the original intent on the
+  // response so the empty-state recovery UI can rebuild adjustment
+  // prompts without plumbing the raw string through Discover state.
+  _intent?: string;
 };
 
 
@@ -146,11 +150,17 @@ export function ConciergeComposer({
         token,
         body: JSON.stringify({ intent: trimmed, idempotency_key }),
       });
-      onDecision(res);
+      // Thread the original intent through so the empty-state
+      // adjustment chips can rebuild "edit this one constraint"
+      // prompts without a round-trip.
+      onDecision({ ...res, _intent: trimmed });
       if (res.status === "unavailable") setError("Concierge is unavailable right now.");
       else if (res.status === "error") setError(res.status_detail || "Something went wrong.");
       else if (res.status === "allowance_exhausted") setError("Monthly allowance used up — resets next month.");
-      else if (res.status === "empty") setError("No matches with that constraint.");
+      // Chunk D: don't surface a flat error for empty. The Discover
+      // screen renders the ConciergeEmptyState with specific chips
+      // instead. Keep the composer input focused on the user's draft.
+      else if (res.status === "empty") setIntent(trimmed);
       else setIntent("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Something went wrong.");

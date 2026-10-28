@@ -23,6 +23,7 @@ import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
+import { ConciergeEmptyState } from "@/components/concierge-empty-state";
 import { ConciergeResult } from "@/components/concierge-result";
 import { DiscoverSection, MediaToggle, type DiscoverTitle } from "@/components/discover-section";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
@@ -827,6 +828,30 @@ export default function DiscoverScreen() {
               onPressTitle={(t) => {
                 trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
                 void openTitleModal(t.title_id);
+              }}
+            />
+          ) : null}
+
+          {/* Chunk D: empty / no-exact-match → diagnosis + adjustment chips */}
+          {conciergeDecision && conciergeDecision.status === "empty" ? (
+            <ConciergeEmptyState
+              statusDetail={conciergeDecision.status_detail}
+              originalIntent={conciergeDecision._intent ?? null}
+              rationale={conciergeDecision.rationale}
+              onApplyAdjustment={async (prompt) => {
+                if (!sessionToken || !prompt.trim()) return;
+                trackEvent("concierge_adjustment_applied", { status_detail: conciergeDecision.status_detail });
+                try {
+                  const idempotency_key = `concierge-adj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                  const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
+                    method: "POST",
+                    token: sessionToken,
+                    body: JSON.stringify({ intent: prompt, idempotency_key }),
+                  });
+                  setConciergeDecision({ ...res, _intent: prompt });
+                } catch {
+                  // Keep the current empty state visible; user can retry.
+                }
               }}
             />
           ) : null}
