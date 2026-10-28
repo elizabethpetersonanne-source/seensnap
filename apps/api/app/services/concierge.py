@@ -69,6 +69,14 @@ class ConciergeConstraints:
     # rewatch" or "something I've seen before". Default False keeps
     # watched titles excluded.
     rewatch_intent: bool = False
+    # Oct-27 Concierge brief chunk C: the user's intent may constrain
+    # WHERE Concierge searches, independent of what it searches for.
+    # "any" is the broader catalog; "my_next_watch" / "watched" /
+    # "named_list" are hard source constraints — never silently
+    # broaden them.
+    collection_scope: Literal["any", "my_next_watch", "watched", "named_list"] = "any"
+    # When collection_scope == "named_list", the resolved list id.
+    collection_list_id: str | None = None
     # Original natural-language intent, kept verbatim for display.
     raw_intent: str = ""
 
@@ -369,14 +377,29 @@ def resolve_concierge_decision(
     # ranking and the catalog can supply a title.
     constraints = _resolve_personal_references(constraints, intent, context)
 
+    # Chunk C: resolve the source collection from the intent.
+    # "pick from my next watch" / "something from my list" / "a
+    # comfort rewatch" are HARD source constraints — we never silently
+    # fall back to the general catalog.
+    constraints = _resolve_collection_scope(constraints, intent)
+
     # Ground results in the catalog. The adapter MAY suggest titles by
     # name; we never return them unless they resolve to a real
-    # ContentTitle in our catalog.
+    # ContentTitle in our catalog. Chunk C: candidate retrieval starts
+    # from the correct source COLLECTION, then enforces hard
+    # constraints; the model's suggestions SUPPLEMENT retrieval, they
+    # are not the only candidate source.
     suggested_names = [
         s.strip() for s in (raw.get("suggested_titles") or [])
         if isinstance(s, str) and s.strip()
     ][:12]
-    grounded_ids = _ground_suggestions(db, suggested_names, constraints)
+    grounded_ids = _retrieve_candidates(
+        db,
+        user_id=user_id,
+        suggested_names=suggested_names,
+        constraints=constraints,
+        context=context,
+    )
 
     if not grounded_ids:
         return ConciergeDecision(
@@ -385,7 +408,7 @@ def resolve_concierge_decision(
             rationale=rationale,
             title_ids=[],
             status="empty",
-            status_detail="no_grounded_titles",
+            status_detail=_empty_detail_for(constraints),
         )
 
     return ConciergeDecision(
@@ -395,6 +418,230 @@ def resolve_concierge_decision(
         title_ids=grounded_ids,
         status="ready",
     )
+
+
+# ─── Collection scope + candidate retrieval (Concierge brief chunk C) ──
+
+
+_NEXT_WATCH_PATTERNS = (
+    "my next watch",
+    "from my next watch",
+    "from next watch",
+    "pick from next watch",
+    "pick from my next watch",
+    "pick from my picks",  # default to Next Watch per spec
+    "from my picks",
+    "something i saved",
+    "something from my saved",
+    "something already saved",
+)
+
+_WATCHED_REWATCH_PATTERNS = (
+    "comfort rewatch",
+    "rewatch",
+    "watch again",
+    "something i've seen",
+    "something i already watched",
+    "a movie i've watched",
+    "already watched",
+)
+
+_NAMED_LIST_PATTERNS = (
+    "from my list",
+    "from my saved list",
+    "only from my list",
+    "from my ",  # catches "from my weekend list" / "from my cozy list"
+)
+
+
+def _resolve_collection_scope(constraints: ConciergeConstraints, intent: str) -> ConciergeConstraints:
+    """Hard source constraints come from the intent language, not the
+    model. Per spec: "A named list or 'only from my list' is a hard
+    source constraint. Do not quietly recommend outside it."
+
+    Precedence:
+      1. "from my (weekend|cozy|...) list" → named_list (list_id TBD;
+         composer may short-circuit to a list picker before Ask).
+      2. "comfort rewatch" / "rewatch" / "already watched" → watched.
+      3. "my next watch" / "from my picks" / "something I saved" →
+         my_next_watch.
+    """
+    low = intent.lower()
+    for p in _NAMED_LIST_PATTERNS:
+        if p in low:
+            constraints.collection_scope = "named_list"
+            # Spec: ask the user to pick a specific list before
+            # resolving. We leave list_id unset and the composer/UI
+            # layer surfaces the selector. The decision reports which
+            # scope it believed was requested.
+            return constraints
+    for p in _WATCHED_REWATCH_PATTERNS:
+        if p in low:
+            constraints.collection_scope = "watched"
+            constraints.rewatch_intent = True
+            return constraints
+    for p in _NEXT_WATCH_PATTERNS:
+        if p in low:
+            constraints.collection_scope = "my_next_watch"
+            return constraints
+    return constraints
+
+
+def _passes_constraints(row: ContentTitle, constraints: ConciergeConstraints) -> bool:
+    """Hard constraint gate. Unknown metadata is NEVER treated as a
+    pass — e.g. a title with no runtime fails an "under 90 min" ask
+    rather than slipping through."""
+    if constraints.media_type != "any":
+        want = "movie" if constraints.media_type == "movie" else "series"
+        if row.content_type != want:
+            return False
+    if constraints.year_min:
+        if row.release_date is None or row.release_date.year < constraints.year_min:
+            return False
+    if constraints.year_max:
+        if row.release_date is None or row.release_date.year > constraints.year_max:
+            return False
+    if constraints.runtime_min:
+        if row.runtime_minutes is None or row.runtime_minutes < constraints.runtime_min:
+            return False
+    if constraints.runtime_max:
+        if row.runtime_minutes is None or row.runtime_minutes > constraints.runtime_max:
+            return False
+    if constraints.genres:
+        row_genres = [str(g).lower() for g in (row.genres or [])]
+        if not any(g in row_genres for g in constraints.genres):
+            return False
+    if constraints.exclusions:
+        excl = [e.lower() for e in constraints.exclusions]
+        row_name = row.title.lower()
+        row_genres = {str(g).lower() for g in (row.genres or [])}
+        for e in excl:
+            if e in row_name or e in row_genres:
+                return False
+    return True
+
+
+def _empty_detail_for(constraints: ConciergeConstraints) -> str:
+    """Short diagnostic code the client can use to pick the right
+    recovery copy. Mobile maps the code to a user-facing message."""
+    if constraints.collection_scope == "my_next_watch":
+        return "empty_next_watch_scope"
+    if constraints.collection_scope == "watched":
+        return "empty_watched_scope"
+    if constraints.collection_scope == "named_list":
+        return "needs_list_selection"
+    if constraints.required_providers:
+        return "empty_provider_constraint"
+    if constraints.runtime_max or constraints.runtime_min:
+        return "empty_runtime_constraint"
+    return "no_grounded_titles"
+
+
+def _retrieve_candidates(
+    db: Session,
+    *,
+    user_id: UUID,
+    suggested_names: list[str],
+    constraints: ConciergeConstraints,
+    context: PersonalContext,
+) -> list[UUID]:
+    """Pull candidates from the correct source collection, then
+    enforce hard constraints. The model's suggested titles SUPPLEMENT
+    retrieval; they are not the sole source."""
+    from app.models.social import (
+        RankedFavorite,
+        Rating,
+        TitleWatchStatus,
+        Watchlist,
+        WatchlistItem,
+    )
+
+    scope = constraints.collection_scope
+
+    def _apply_watched_policy(rows: list[ContentTitle]) -> list[ContentTitle]:
+        """Hide Watched titles for new-discovery intents; keep them
+        when the user asked for a rewatch."""
+        if constraints.rewatch_intent or scope == "watched":
+            return rows
+        watched_ids = set(db.scalars(
+            select(Rating.content_title_id).where(
+                Rating.user_id == user_id,
+                Rating.watched_state == "watched",
+            )
+        ).all())
+        watched_ids.update(
+            db.scalars(
+                select(TitleWatchStatus.content_title_id).where(
+                    TitleWatchStatus.user_id == user_id,
+                    TitleWatchStatus.watched_state == "watched",
+                )
+            ).all()
+        )
+        return [r for r in rows if r.id not in watched_ids]
+
+    # Hard source: My Next Watch
+    if scope == "my_next_watch":
+        next_watch_list = db.scalar(
+            select(Watchlist).where(
+                Watchlist.owner_user_id == user_id,
+                Watchlist.is_default.is_(True),
+                Watchlist.name.ilike("next%watch%"),
+            )
+        )
+        if next_watch_list is None:
+            return []
+        rows = list(db.execute(
+            select(ContentTitle)
+            .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
+            .where(WatchlistItem.watchlist_id == next_watch_list.id)
+        ).scalars().all())
+        rows = _apply_watched_policy(rows)
+        passing = [r for r in rows if _passes_constraints(r, constraints)]
+        return [r.id for r in passing[:8]]
+
+    # Hard source: Watched (comfort rewatch) — only Watched titles the
+    # user liked (score >= 7) count as "comfort."
+    if scope == "watched":
+        rows = list(db.execute(
+            select(ContentTitle)
+            .join(Rating, Rating.content_title_id == ContentTitle.id)
+            .where(
+                Rating.user_id == user_id,
+                Rating.watched_state == "watched",
+                Rating.score >= 7,
+            )
+        ).scalars().all())
+        passing = [r for r in rows if _passes_constraints(r, constraints)]
+        return [r.id for r in passing[:8]]
+
+    # Hard source: named list — if the composer couldn't resolve a
+    # specific list_id (list picker UX), return empty so the client
+    # surfaces the selector.
+    if scope == "named_list" and not constraints.collection_list_id:
+        return []
+    if scope == "named_list" and constraints.collection_list_id:
+        try:
+            list_uuid = UUID(constraints.collection_list_id)
+        except (TypeError, ValueError):
+            return []
+        wl = db.scalar(
+            select(Watchlist).where(Watchlist.id == list_uuid, Watchlist.owner_user_id == user_id)
+        )
+        if wl is None:
+            return []
+        rows = list(db.execute(
+            select(ContentTitle)
+            .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
+            .where(WatchlistItem.watchlist_id == wl.id)
+        ).scalars().all())
+        passing = [r for r in rows if _passes_constraints(r, constraints)]
+        return [r.id for r in passing[:8]]
+
+    # Broad catalog: start from the model's suggestions, apply hard
+    # constraints strictly. If the hard constraints eliminate
+    # everything we return empty — the previous "soft fallback that
+    # drops filters" is explicitly forbidden by the Concierge brief.
+    return _ground_suggestions(db, suggested_names, constraints)
 
 
 _PERSONAL_NUMBER_ONE_PATTERNS = (
@@ -514,45 +761,22 @@ def _ground_suggestions(
                     rows.append(fetched[0])
                     found_names.add(fetched[0].title.lower())
 
-    def passes(row: ContentTitle) -> bool:
-        if constraints.media_type != "any":
-            want = "movie" if constraints.media_type == "movie" else "series"
-            if row.content_type != want:
-                return False
-        if constraints.year_min and row.release_date and row.release_date.year < constraints.year_min:
-            return False
-        if constraints.year_max and row.release_date and row.release_date.year > constraints.year_max:
-            return False
-        if constraints.runtime_min and row.runtime_minutes and row.runtime_minutes < constraints.runtime_min:
-            return False
-        if constraints.runtime_max and row.runtime_minutes and row.runtime_minutes > constraints.runtime_max:
-            return False
-        if constraints.genres:
-            row_genres = [str(g).lower() for g in (row.genres or [])]
-            if not any(g in row_genres for g in constraints.genres):
-                return False
-        return True
-
-    # Preserve the LLM's suggested order where titles pass filters.
+    # Preserve the LLM's suggested order where titles pass hard
+    # constraints. Oct-27 Concierge brief chunk C: NO soft fallback
+    # that silently broadens the user's constraints; empty here
+    # means genuinely no match, and the client surfaces the recovery
+    # state with specific adjustment chips.
     ordered: list[UUID] = []
     for name in suggested_names:
         target = name.lower()
         for r in rows:
-            if r.title.lower() == target and r.id not in ordered and passes(r):
+            if (
+                r.title.lower() == target
+                and r.id not in ordered
+                and _passes_constraints(r, constraints)
+            ):
                 ordered.append(r.id)
                 break
-    # Soft fallback: if hard filters dropped everything, return the
-    # LLM's grounded-in-TMDB suggestions in order, trusting the model's
-    # genre/year reasoning rather than returning the "No matches" wall.
-    if not ordered:
-        seen: set[UUID] = set()
-        for name in suggested_names:
-            target = name.lower()
-            for r in rows:
-                if r.title.lower() == target and r.id not in seen:
-                    ordered.append(r.id)
-                    seen.add(r.id)
-                    break
     return ordered[:8]
 
 
