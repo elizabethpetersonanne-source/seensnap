@@ -143,6 +143,12 @@ export default function SocialScreen() {
   const [composerText, setComposerText] = useState("");
   const [isPosting, setIsPosting] = useState(false);
   const [composerError, setComposerError] = useState<string | null>(null);
+  // EDIT01-04: owner Edit sheet state.
+  const [editTarget, setEditTarget] = useState<SocialPost | null>(null);
+  const [editCaption, setEditCaption] = useState("");
+  const [editVisibility, setEditVisibility] = useState<"public" | "followers" | "private">("public");
+  const [editSaving, setEditSaving] = useState(false);
+  const [editError, setEditError] = useState<string | null>(null);
   type AttachedTitle = {
     id: string;
     title: string;
@@ -382,6 +388,65 @@ export default function SocialScreen() {
     );
   }
 
+  async function saveEdit() {
+    if (!sessionToken || !editTarget || editSaving) return;
+    setEditSaving(true);
+    setEditError(null);
+    const nextCaption = editCaption.trim();
+    const nextVisibility = editVisibility;
+    try {
+      const updated = await apiRequest<SocialPost>(`/social/posts/${editTarget.id}`, {
+        method: "PATCH",
+        token: sessionToken,
+        body: JSON.stringify({
+          caption: nextCaption,
+          visibility: nextVisibility,
+        }),
+      });
+      // Replace in place — preserves ID, title, created_at, reactions,
+      // comments per spec. Server marks payload.edited=true on real
+      // content change; we rely on the server response to carry that.
+      setFeed((prev) => prev ? {
+        ...prev,
+        items: prev.items.map((p) => (p.id === editTarget.id ? { ...p, ...updated } : p)),
+      } : prev);
+      setEditTarget(null);
+    } catch (e) {
+      setEditError(e instanceof Error ? e.message : "Couldn't save changes.");
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  async function deletePost(target: SocialPost) {
+    if (!sessionToken) return;
+    Alert.alert(
+      "Delete this post?",
+      "This can't be undone. The post will be removed from your profile and your followers' feeds.",
+      [
+        { text: "Cancel", style: "cancel" },
+        {
+          text: "Delete",
+          style: "destructive",
+          onPress: async () => {
+            try {
+              await apiRequest(`/social/posts/${target.id}`, {
+                method: "DELETE",
+                token: sessionToken,
+              });
+              setFeed((prev) => prev ? {
+                ...prev,
+                items: prev.items.filter((p) => p.id !== target.id),
+              } : prev);
+            } catch {
+              Alert.alert("Couldn't delete", "Try again in a moment.");
+            }
+          },
+        },
+      ],
+    );
+  }
+
   async function toggleLike(postId: string) {
     if (!sessionToken) return;
     // Optimistic UI update
@@ -574,6 +639,12 @@ export default function SocialScreen() {
               onLike={() => void toggleLike(item.id)}
               onReport={reportPost}
               onBlock={blockUser}
+              onEdit={(p) => {
+                setEditTarget(p);
+                setEditCaption(p.caption ?? "");
+                setEditVisibility(p.visibility);
+              }}
+              onDelete={(p) => void deletePost(p)}
             />
           )}
         />
@@ -617,6 +688,77 @@ export default function SocialScreen() {
           otherwise via /feed/wall-posts. Only one attachment at a
           time to keep the composer surface compact; attaching the
           second replaces the first. */}
+      {/* EDIT01-04: owner post editor. Preserves the post id, title,
+          historical rank/score, reactions and comments by writing
+          only caption + visibility through the existing PATCH. */}
+      <Modal
+        visible={editTarget !== null}
+        animationType="slide"
+        transparent
+        onRequestClose={() => setEditTarget(null)}
+      >
+        <Pressable style={styles.editBackdrop} onPress={() => setEditTarget(null)}>
+          <Pressable style={styles.editSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.editHandle} />
+            <View style={styles.editHeaderRow}>
+              <Text style={styles.editTitle}>Edit post</Text>
+              <Pressable onPress={() => setEditTarget(null)} hitSlop={10}>
+                <Ionicons name="close" size={22} color={colors.ink} />
+              </Pressable>
+            </View>
+            <Text style={styles.editLabel}>CAPTION</Text>
+            <TextInput
+              value={editCaption}
+              onChangeText={(t) => setEditCaption(t.slice(0, 500))}
+              multiline
+              style={styles.editInput}
+              placeholder="Add a caption…"
+              placeholderTextColor={colors.muted2}
+              textAlignVertical="top"
+            />
+            <Text style={styles.editLabel}>AUDIENCE</Text>
+            <View style={styles.editAudRow}>
+              {(["public", "followers", "private"] as const).map((v) => {
+                const active = editVisibility === v;
+                return (
+                  <Pressable
+                    key={v}
+                    onPress={() => setEditVisibility(v)}
+                    style={[styles.editAudChip, active && styles.editAudChipActive]}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected: active }}
+                  >
+                    <Text style={[styles.editAudChipLabel, active && styles.editAudChipLabelActive]}>
+                      {v === "public" ? "Public" : v === "followers" ? "Followers" : "Private"}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+            {editError ? <Text style={styles.editError}>{editError}</Text> : null}
+            <View style={styles.editBtnRow}>
+              <Pressable
+                onPress={() => setEditTarget(null)}
+                style={[styles.editBtn, styles.editBtnGhost]}
+                accessibilityRole="button"
+                accessibilityLabel="Cancel edit"
+              >
+                <Text style={styles.editBtnGhostLabel}>Cancel</Text>
+              </Pressable>
+              <Pressable
+                onPress={saveEdit}
+                disabled={editSaving}
+                style={[styles.editBtn, styles.editBtnPrimary, editSaving && { opacity: 0.6 }]}
+                accessibilityRole="button"
+                accessibilityLabel="Save edits"
+              >
+                <Text style={styles.editBtnPrimaryLabel}>{editSaving ? "Saving…" : "Save changes"}</Text>
+              </Pressable>
+            </View>
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <Modal
         visible={showComposer}
         animationType="slide"
@@ -870,12 +1012,17 @@ function FeedCard({
   onLike,
   onReport,
   onBlock,
+  onEdit,
+  onDelete,
 }: {
   post: SocialPost;
   token: string | null;
   onLike: () => void;
   onReport: (postId: string) => void;
   onBlock: (userId: string, displayName: string) => void;
+  // Owner-only actions (brief EDIT01-04). Non-owners ignore these.
+  onEdit: (post: SocialPost) => void;
+  onDelete: (post: SocialPost) => void;
 }) {
   const author = post.author;
   const authorName = author.display_name ?? author.username ?? "SeenSnap user";
@@ -1067,39 +1214,69 @@ function FeedCard({
             {post.visibility === "followers" ? "FOLLOWERS" : "PRIVATE"}
           </Text>
         ) : null}
-        {!post.viewer_state.is_author ? (
-          <Pressable
-            onPress={() => setShowOverflow((v) => !v)}
-            hitSlop={10}
-            style={styles.overflowBtn}
-          >
-            <Ionicons name="ellipsis-horizontal" size={16} color={colors.muted} />
-          </Pressable>
-        ) : null}
+        <Pressable
+          onPress={() => setShowOverflow((v) => !v)}
+          hitSlop={10}
+          style={styles.overflowBtn}
+          accessibilityLabel="Post actions"
+        >
+          <Ionicons name="ellipsis-horizontal" size={16} color={colors.muted} />
+        </Pressable>
       </View>
 
-      {showOverflow && !post.viewer_state.is_author ? (
+      {showOverflow ? (
         <View style={styles.overflowMenu}>
-          <Pressable
-            style={styles.overflowItem}
-            onPress={() => {
-              setShowOverflow(false);
-              onReport(post.id);
-            }}
-          >
-            <Ionicons name="flag-outline" size={14} color={colors.muted} />
-            <Text style={styles.overflowItemText}>Report post</Text>
-          </Pressable>
-          <Pressable
-            style={styles.overflowItem}
-            onPress={() => {
-              setShowOverflow(false);
-              onBlock(post.author.user_id, authorName);
-            }}
-          >
-            <Ionicons name="ban-outline" size={14} color={colors.muted} />
-            <Text style={styles.overflowItemText}>Block {authorName}</Text>
-          </Pressable>
+          {post.viewer_state.is_author ? (
+            <>
+              <Pressable
+                style={styles.overflowItem}
+                onPress={() => {
+                  setShowOverflow(false);
+                  onEdit(post);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Edit post"
+              >
+                <Ionicons name="create-outline" size={14} color={colors.muted} />
+                <Text style={styles.overflowItemText}>Edit post</Text>
+              </Pressable>
+              <Pressable
+                style={styles.overflowItem}
+                onPress={() => {
+                  setShowOverflow(false);
+                  onDelete(post);
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Delete post"
+              >
+                <Ionicons name="trash-outline" size={14} color={colors.danger} />
+                <Text style={[styles.overflowItemText, { color: colors.danger }]}>Delete post</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Pressable
+                style={styles.overflowItem}
+                onPress={() => {
+                  setShowOverflow(false);
+                  onReport(post.id);
+                }}
+              >
+                <Ionicons name="flag-outline" size={14} color={colors.muted} />
+                <Text style={styles.overflowItemText}>Report post</Text>
+              </Pressable>
+              <Pressable
+                style={styles.overflowItem}
+                onPress={() => {
+                  setShowOverflow(false);
+                  onBlock(post.author.user_id, authorName);
+                }}
+              >
+                <Ionicons name="ban-outline" size={14} color={colors.muted} />
+                <Text style={styles.overflowItemText}>Block {authorName}</Text>
+              </Pressable>
+            </>
+          )}
         </View>
       ) : null}
 
@@ -1501,6 +1678,77 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
     flex: 1,
   },
+  editBackdrop: { flex: 1, backgroundColor: "rgba(0,0,0,0.65)", justifyContent: "flex-end" },
+  editSheet: {
+    backgroundColor: colors.background,
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.xl,
+    gap: 10,
+  },
+  editHandle: {
+    alignSelf: "center",
+    width: 36,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "rgba(255,255,255,0.2)",
+    marginBottom: 4,
+  },
+  editHeaderRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: 4,
+  },
+  editTitle: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 18 },
+  editLabel: {
+    fontFamily: fonts.monoSemiBold,
+    color: colors.muted,
+    fontSize: 10,
+    letterSpacing: 1.2,
+    marginTop: 4,
+  },
+  editInput: {
+    minHeight: 100,
+    padding: 12,
+    borderRadius: 10,
+    backgroundColor: colors.surface,
+    color: colors.ink,
+    fontFamily: fonts.sans,
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  editAudRow: { flexDirection: "row", gap: 6 },
+  editAudChip: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    backgroundColor: "rgba(255,255,255,0.06)",
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  editAudChipActive: { backgroundColor: colors.accent, borderColor: colors.accent },
+  editAudChipLabel: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 12 },
+  editAudChipLabelActive: { color: colors.background },
+  editError: { fontFamily: fonts.sans, color: colors.danger, fontSize: 12 },
+  editBtnRow: { flexDirection: "row", gap: 10, marginTop: 6 },
+  editBtn: {
+    flex: 1,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: 10,
+    paddingVertical: 10,
+  },
+  editBtnGhost: {
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: "rgba(255,255,255,0.14)",
+  },
+  editBtnGhostLabel: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 13 },
+  editBtnPrimary: { backgroundColor: colors.accent },
+  editBtnPrimaryLabel: { fontFamily: fonts.sansSemiBold, color: colors.background, fontSize: 13 },
   rankChangePill: {
     alignSelf: "flex-start",
     paddingHorizontal: 8,
