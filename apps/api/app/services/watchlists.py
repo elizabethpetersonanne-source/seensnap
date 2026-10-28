@@ -93,6 +93,59 @@ def get_default_watchlist(db: Session, user_id: UUID) -> Watchlist:
     return watchlist
 
 
+def get_next_watch_list(db: Session, user_id: UUID) -> Watchlist | None:
+    """QUEUE01: canonical Next Watch resolver. Uses system_role, NEVER
+    name/is_default inference. Returns the single row with
+    system_role='next_watch' or None if the user has none yet.
+
+    Callers that need to CREATE the queue should use the ensure flow
+    which stamps system_role on the historical default list.
+    """
+    return db.scalar(
+        select(Watchlist).where(
+            Watchlist.owner_user_id == user_id,
+            Watchlist.system_role == "next_watch",
+        )
+    )
+
+
+def ensure_next_watch_list(db: Session, user_id: UUID) -> Watchlist:
+    """QUEUE01: resolve or back-fill the Next Watch system list. If
+    the migration already stamped a row we return it; otherwise we
+    promote the owner's default (name-matched) list; if neither
+    exists we create a new one.
+    """
+    existing = get_next_watch_list(db, user_id)
+    if existing is not None:
+        return existing
+    # Try the historical default list first.
+    candidate = db.scalar(
+        select(Watchlist).where(
+            Watchlist.owner_user_id == user_id,
+            Watchlist.is_default.is_(True),
+            Watchlist.name.ilike("next%watch%"),
+        )
+    )
+    if candidate is not None:
+        candidate.system_role = "next_watch"
+        db.commit()
+        db.refresh(candidate)
+        return candidate
+    # Last resort — create one.
+    row = Watchlist(
+        owner_user_id=user_id,
+        name="Next Watch",
+        description="Future viewing queue.",
+        is_default=True,
+        is_system_list=True,
+        system_role="next_watch",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
 def list_watchlists(db: Session, user_id: UUID) -> list[Watchlist]:
     ensure_default_watchlists(db, user_id)
     return db.scalars(

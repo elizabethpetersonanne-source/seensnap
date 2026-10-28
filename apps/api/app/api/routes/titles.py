@@ -21,7 +21,7 @@ from app.schemas.content import (
     TitleResponse,
 )
 from app.schemas.taste import SwipeRecordCreate, SwipeRecordResponse
-from app.services.taste import build_swipe_feedback, get_social_recommendations, record_swipe
+from app.services.taste import RatingConflictError, build_swipe_feedback, get_social_recommendations, record_swipe
 from app.services.tmdb import (
     TmdbConfigurationError,
     discover_titles_by_genre,
@@ -429,6 +429,18 @@ def record_title_swipe(
             source_surface=payload.source_surface,
             idempotency_key=payload.idempotency_key,
         )
+    except RatingConflictError as exc:
+        # SWIPE01: 409 so the mobile client knows this was a
+        # conflict (vs. network error) and can show the Change
+        # rating / Cancel swipe prompt.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                "error": "rating_conflict",
+                "existing_score": exc.existing_score,
+                "title_id": str(exc.title_id),
+            },
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     feedback = build_swipe_feedback(db, current_user.id, payload.title_id, payload.direction)

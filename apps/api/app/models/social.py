@@ -100,6 +100,11 @@ class Watchlist(Base):
     description: Mapped[str | None] = mapped_column(String(280))
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     is_system_list: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Oct-27 personalization brief QUEUE01: immutable system role.
+    # null = custom list. "next_watch" = canonical Next Watch queue.
+    # "favorites" = canonical Favorites set. At most one list per
+    # owner per non-null role. Resolver uses this, NOT name/is_default.
+    system_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Oct-27 followup A69: list audience. "private" (owner only),
     # "followers" (owner's followers can read), "public" (anyone with
     # the share link). Default private — explicit publish required.

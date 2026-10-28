@@ -98,6 +98,13 @@ class SwipeRecord(Base):
     # user disabled it via the SceneDNA correction UI. Taste recompute
     # filters WHERE influence_disabled_at IS NULL.
     influence_disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Oct-27 personalization brief TASTE05: semantic version of the
+    # swipe meaning at write time. v1 = Up meant "Watch Now".
+    # v2 = Up means "Watched + rate", Down means "Watched + didn't
+    # like". Historical rows default to v1 so reprocessing never
+    # retroactively reinterprets them as the new semantic. New
+    # writes always set v2.
+    action_version: Mapped[int] = mapped_column(Integer, default=1, nullable=False, server_default="1")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 

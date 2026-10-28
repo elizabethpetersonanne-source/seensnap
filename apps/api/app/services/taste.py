@@ -73,6 +73,18 @@ LABEL_RULES: dict[str, dict[str, object]] = {
     "Survival Horror": {"genres": {"Horror": 0.9, "Action": 0.4, "Thriller": 0.5}},
 }
 
+class RatingConflictError(Exception):
+    """Oct-27 SWIPE01: server-side conflict on down-swipe against a
+    positive existing rating. The route turns this into a 409 so the
+    client can show the "You rated this N/10" prompt + offer Change
+    rating or Cancel swipe."""
+
+    def __init__(self, *, existing_score: int, title_id: UUID) -> None:
+        super().__init__(f"existing rating {existing_score} conflicts with down-swipe")
+        self.existing_score = existing_score
+        self.title_id = title_id
+
+
 SWIPE_DIRECTION_WEIGHTS: dict[str, float] = {
     "left": -3.5,     # Pass — weak negative, context-dependent
     "right": 5.0,     # Save — positive interest, no viewing fact
@@ -1960,6 +1972,25 @@ def record_swipe(
         if existing is not None:
             return existing
 
+    # SWIPE01: transactional conflict check for Down. If the user
+    # has an existing positive rating (>= 7) on this title, reject
+    # the dislike with a recoverable error. The mobile preflight
+    # does the same check, but we enforce it on the server too so a
+    # race between devices can't flip Watched state against a newer
+    # rating.
+    if direction == "down":
+        rating = db.scalar(
+            select(Rating).where(
+                Rating.user_id == user_id,
+                Rating.content_title_id == title_id,
+            )
+        )
+        if rating is not None and rating.score is not None and rating.score >= 7:
+            raise RatingConflictError(
+                existing_score=int(round(float(rating.score))),
+                title_id=title_id,
+            )
+
     record = SwipeRecord(
         user_id=user_id,
         content_title_id=title_id,
@@ -1969,6 +2000,10 @@ def record_swipe(
         reason=reason,
         source_surface=source_surface,
         idempotency_key=idempotency_key,
+        # TASTE05: v2 is the Oct-27 four-direction semantic.
+        # Historical rows stay at v1 so any reprocessing can
+        # distinguish ambiguous Up actions.
+        action_version=2,
     )
     db.add(record)
     db.flush()

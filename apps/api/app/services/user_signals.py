@@ -47,7 +47,18 @@ SIGNAL_WEIGHTS: dict[str, float] = {
     "rating_7": 1.5,
     "saved": 3.0,
     "swipe_right": 2.0,
-    "swipe_up": 3.0,  # "more like this" — stronger than plain right
+    # Oct-27 personalization brief TASTE01: v2 Up means Watched. On
+    # its own that is a VIEWING FACT, not a positive preference —
+    # the explicit rating editor carries the real preference signal.
+    # Weight stays near zero so a dismissed rating prompt doesn't
+    # masquerade as "more like this." v1 Up (legacy Watch Now) still
+    # exists in the DB but the computation path below gates on
+    # action_version so historical rows keep their original meaning.
+    "swipe_up_v2": 0.5,
+    "swipe_up_v1": 3.0,  # legacy "more like this"
+    # TASTE02: v2 Down is an explicit qualitative dislike — carries
+    # a real negative preference. No automatic numeric rating.
+    "swipe_down_v2": -3.5,
     "detail_opened": 1.0,
     "swipe_left": -3.0,
     "rating_low": -3.0,  # <=4
@@ -210,10 +221,19 @@ def _collect_interactions(
     for swipe, title in swipes:
         if title is None:
             continue
+        # TASTE05: branch on action_version so historical v1 Up
+        # (meant "more like this") keeps its old positive weight,
+        # while v2 Up (just means Watched) carries near-zero
+        # preference. Down is v2-only; v1 had no Down direction.
+        version = getattr(swipe, "action_version", 1) or 1
         if swipe.direction == "right":
             interactions.append((title, SIGNAL_WEIGHTS["swipe_right"], swipe.created_at))
         elif swipe.direction == "up":
-            interactions.append((title, SIGNAL_WEIGHTS["swipe_up"], swipe.created_at))
+            key = "swipe_up_v2" if version >= 2 else "swipe_up_v1"
+            interactions.append((title, SIGNAL_WEIGHTS[key], swipe.created_at))
+        elif swipe.direction == "down":
+            # Only v2 can be "down"; v1 had no down direction.
+            interactions.append((title, SIGNAL_WEIGHTS["swipe_down_v2"], swipe.created_at))
         elif swipe.direction == "left":
             interactions.append((title, SIGNAL_WEIGHTS["swipe_left"], swipe.created_at))
 

@@ -201,6 +201,18 @@ def to_team_analytics_response(snapshot: TeamAnalyticsSnapshot) -> TeamAnalytics
 
 
 def _shared_titles(db: Session, user_a: UUID, user_b: UUID) -> list[dict]:
+    """PRIV01: shared evidence must respect audience. Rating-based
+    overlap is safe to surface — ratings are personal state and the
+    SHARED fact alone doesn't leak either user's individual score.
+    List-based overlap is NOT safe when either side's list is
+    private: naming a title would disclose both users saved it to
+    somewhere, which can leak the viewer's private list membership
+    to the other user and vice versa.
+
+    Resolve by: only rating-based shared titles for compat
+    explanation. Dropping the saved-list fallback is deliberate per
+    the Oct-27 personalization brief.
+    """
     rated_a = db.execute(
         select(ContentTitle)
         .join(Rating, Rating.content_title_id == ContentTitle.id)
@@ -212,24 +224,6 @@ def _shared_titles(db: Session, user_a: UUID, user_b: UUID) -> list[dict]:
         .where(Rating.user_id == user_b, Rating.score >= 7.5)
     ).scalars().all()
     shared_by_id = {title.id: title for title in rated_a if title.id in {other.id for other in rated_b}}
-    if not shared_by_id:
-        saved_a = set(
-            db.scalars(
-                select(WatchlistItem.content_title_id)
-                .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-                .where(Watchlist.owner_user_id == user_a)
-            ).all()
-        )
-        saved_b = set(
-            db.scalars(
-                select(WatchlistItem.content_title_id)
-                .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-                .where(Watchlist.owner_user_id == user_b)
-            ).all()
-        )
-        ids = list(saved_a.intersection(saved_b))[:4]
-        if ids:
-            shared_by_id = {title.id: title for title in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(ids))).all()}
     return [
         {"title_id": str(title.id), "title_name": title.title, "poster_url": title.poster_url}
         for title in list(shared_by_id.values())[:4]
