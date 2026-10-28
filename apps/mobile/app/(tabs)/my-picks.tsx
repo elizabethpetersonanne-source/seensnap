@@ -267,9 +267,16 @@ export default function MyPicksScreen() {
           </Text>
         ) : null}
         {activeCategory === "ranked_favorites" && (data?.rated_unplaced_count ?? 0) > 0 ? (
-          <Text style={styles.sectionKickerCount}>
-            {"  ·  "}{data?.rated_unplaced_count} NOT YET PLACED
-          </Text>
+          <Pressable
+            onPress={() => router.push("/favorites/unplaced")}
+            hitSlop={4}
+            accessibilityRole="button"
+            accessibilityLabel="Open rated titles not yet placed in your ranking"
+          >
+            <Text style={[styles.sectionKickerCount, styles.sectionKickerCountLink]}>
+              {"  ·  "}{data?.rated_unplaced_count} NOT YET PLACED
+            </Text>
+          </Pressable>
         ) : null}
         <View style={{ flex: 1 }} />
         {activeCategory === "ranked_favorites" ? (
@@ -438,6 +445,10 @@ const styles = StyleSheet.create({
     color: colors.muted,
     fontSize: 11,
     letterSpacing: 1.2,
+  },
+  sectionKickerCountLink: {
+    color: colors.accent,
+    textDecorationLine: "underline",
   },
   newListBtn: {
     flexDirection: "row",

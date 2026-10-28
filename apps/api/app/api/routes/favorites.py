@@ -358,6 +358,137 @@ class AddRequest(BaseModel):
     position: int | None = Field(default=None, ge=1, le=1000)
 
 
+# ─── Rated-but-not-ranked (Oct-27 follow-up R05–R06) ───────────────────
+
+
+class UnplacedRow(BaseModel):
+    title_id: UUID
+    tmdb_id: int | None = None
+    title: str
+    poster_url: str | None = None
+    year: int | None = None
+    media_type: str
+    personal_score: int
+
+
+class UnplacedResponse(BaseModel):
+    items: list[UnplacedRow]
+    total: int
+
+
+@router.get("/ranked/unplaced", response_model=UnplacedResponse)
+def get_unplaced_rated(
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(default=200, ge=1, le=500),
+) -> UnplacedResponse:
+    """Return rated titles the viewer hasn't placed in Ranked Favorites.
+    Owner-only. Ordered by score desc, then updated_at desc.
+    """
+    ranked_ids = set(db.scalars(
+        select(RankedFavorite.content_title_id).where(RankedFavorite.user_id == current_user.id)
+    ).all())
+
+    rated_rows = db.execute(
+        select(Rating, ContentTitle)
+        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
+        .where(Rating.user_id == current_user.id)
+        .order_by(Rating.score.desc(), Rating.updated_at.desc())
+    ).all()
+
+    unplaced: list[UnplacedRow] = []
+    for r, t in rated_rows:
+        if t.id in ranked_ids:
+            continue
+        unplaced.append(UnplacedRow(
+            title_id=t.id,
+            tmdb_id=t.tmdb_id,
+            title=t.title,
+            poster_url=t.poster_url,
+            year=t.release_date.year if t.release_date else None,
+            media_type=t.content_type,
+            personal_score=int(round(float(r.score))),
+        ))
+
+    total = len(unplaced)
+    return UnplacedResponse(items=unplaced[:limit], total=total)
+
+
+class BulkAddRequest(BaseModel):
+    """Append every unplaced rated title to the END of the user's
+    current ranking, ordered by score desc + stable tie-breaker.
+    Never reorders existing manually ranked titles."""
+    # Optional subset — if omitted, append ALL unplaced rated titles.
+    title_ids: list[UUID] | None = Field(default=None, max_length=500)
+
+
+@router.post("/ranked/append-unplaced", response_model=RankedFavoritesResponse)
+def append_unplaced_rated(
+    payload: BulkAddRequest,
+    current_user: CurrentUser,
+    db: DbSession,
+) -> RankedFavoritesResponse:
+    """R06: Add remaining rated titles by score. Appends only — the
+    existing manual positions are untouched."""
+    ranked = db.scalars(
+        select(RankedFavorite)
+        .where(RankedFavorite.user_id == current_user.id)
+        .order_by(RankedFavorite.position.asc())
+    ).all()
+    ranked_ids = {r.content_title_id for r in ranked}
+
+    rated_rows = db.execute(
+        select(Rating, ContentTitle)
+        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
+        .where(Rating.user_id == current_user.id)
+        .order_by(Rating.score.desc(), Rating.updated_at.desc(), ContentTitle.id.asc())
+    ).all()
+
+    # Candidate list in canonical order (score desc, updated desc, id asc).
+    candidate_ids: list[UUID] = []
+    allowed_set: set[UUID] | None = set(payload.title_ids) if payload.title_ids else None
+    for r, t in rated_rows:
+        if t.id in ranked_ids:
+            continue
+        if allowed_set is not None and t.id not in allowed_set:
+            continue
+        candidate_ids.append(t.id)
+
+    if not candidate_ids:
+        return RankedFavoritesResponse(items=_hydrate(db, current_user.id, ranked), total=len(ranked))
+
+    # Enforce the 500-row ranking cap when appending.
+    remaining = 500 - len(ranked)
+    if remaining <= 0:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ranked list is full (500 entries)")
+    to_add = candidate_ids[:remaining]
+
+    now = datetime.now(timezone.utc)
+    next_position = len(ranked) + 1
+    for tid in to_add:
+        db.add(RankedFavorite(
+            id=uuid4(),
+            user_id=current_user.id,
+            content_title_id=tid,
+            position=next_position,
+            version=1,
+            created_at=now,
+            updated_at=now,
+        ))
+        next_position += 1
+    db.commit()
+
+    final_rows = db.scalars(
+        select(RankedFavorite)
+        .where(RankedFavorite.user_id == current_user.id)
+        .order_by(RankedFavorite.position.asc())
+    ).all()
+    total = int(db.scalar(
+        select(func.count()).select_from(RankedFavorite).where(RankedFavorite.user_id == current_user.id)
+    ) or 0)
+    return RankedFavoritesResponse(items=_hydrate(db, current_user.id, final_rows), total=total)
+
+
 @router.post("/ranked", response_model=RankedFavoritesResponse)
 def add_ranked_favorite(
     payload: AddRequest,

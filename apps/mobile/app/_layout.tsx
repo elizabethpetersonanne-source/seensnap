@@ -156,6 +156,8 @@ function AuthGate() {
         <Stack.Screen name="share/t/[kind]/[id]" options={{ headerShown: false, animation: "fade" }} />
         {/* PICKS-01: dedicated New List surface for My Picks → My Lists. */}
         <Stack.Screen name="favorites/new-list" options={{ animation: "slide_from_bottom" }} />
+        {/* R05: rated-but-not-ranked list + bulk-add surface. */}
+        <Stack.Screen name="favorites/unplaced" options={{ animation: "slide_from_right" }} />
       </Stack>
       {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
       <DidYouWatchPrompt />
