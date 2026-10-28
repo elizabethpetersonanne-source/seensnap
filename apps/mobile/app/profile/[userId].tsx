@@ -30,6 +30,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Avatar } from "@/components/avatar";
+import { CompatibilitySheet } from "@/components/compatibility-sheet";
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
@@ -106,6 +107,7 @@ export default function PublicProfileScreen() {
   const [lists, setLists] = useState<PublicList[]>([]);
   const [posts, setPosts] = useState<PublicPost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showCompatSheet, setShowCompatSheet] = useState(false);
 
   const [titleModalId, setTitleModalId] = useState<string | null>(null);
   const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
@@ -262,6 +264,7 @@ export default function PublicProfileScreen() {
                       listRef.current?.scrollToIndex({ index: 0, animated: true });
                     }
                   }}
+                  onViewCompat={() => setShowCompatSheet(true)}
                 />
               );
             }
@@ -349,6 +352,12 @@ export default function PublicProfileScreen() {
           setUniversalTitle(null);
         }}
       />
+      <CompatibilitySheet
+        visible={showCompatSheet}
+        userId={profile?.user_id ?? null}
+        displayName={profile?.display_name ?? profile?.username ?? null}
+        onClose={() => setShowCompatSheet(false)}
+      />
     </SafeAreaView>
   );
 }
@@ -363,6 +372,7 @@ function IdentityPage({
   onOpenTitle,
   onEditProfile,
   onLoop,
+  onViewCompat,
 }: {
   height: number;
   profile: PublicProfile;
@@ -372,6 +382,7 @@ function IdentityPage({
   onOpenTitle: (id: string) => void;
   onEditProfile: () => void;
   onLoop: () => void;
+  onViewCompat?: () => void;
 }) {
   // Hero backdrop from top poster or avatar — avoids a blank header
   // when no cover image is present. Spec image 1 shows a cinematic
@@ -411,7 +422,13 @@ function IdentityPage({
               <Text style={styles.counterLabel}>Following</Text>
             </View>
             {profile.compatibility ? (
-              <View style={styles.counterCol}>
+              <Pressable
+                style={styles.counterCol}
+                onPress={() => onViewCompat?.()}
+                hitSlop={4}
+                accessibilityRole="button"
+                accessibilityLabel="View SceneDNA match details"
+              >
                 {profile.compatibility.compatibility != null ? (
                   <>
                     <Text style={[styles.counterValue, { color: colors.accent }]}>
@@ -427,7 +444,7 @@ function IdentityPage({
                     <Text style={styles.counterLabel}>Still learning your taste</Text>
                   </>
                 )}
-              </View>
+              </Pressable>
             ) : null}
           </View>
 

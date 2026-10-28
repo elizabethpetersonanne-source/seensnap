@@ -18,6 +18,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import { Avatar } from "@/components/avatar";
+import { CompatibilitySheet } from "@/components/compatibility-sheet";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
@@ -44,6 +45,7 @@ export function TasteMatchesCarousel() {
   const [followedIds, setFollowedIds] = useState<Set<string>>(new Set());
   const [pendingFollowIds, setPendingFollowIds] = useState<Set<string>>(new Set());
   const [loaded, setLoaded] = useState(false);
+  const [detailFor, setDetailFor] = useState<{ userId: string; displayName: string | null } | null>(null);
 
   const load = useCallback(async () => {
     if (!sessionToken) return;
@@ -158,15 +160,32 @@ export function TasteMatchesCarousel() {
             >
               <View style={styles.cardTop}>
                 <Avatar uri={card.avatar_url} label={label} size={48} />
-                {card.compatibility != null ? (
-                  <View style={styles.compatBadge}>
-                    <Text style={styles.compatBadgeText}>{card.compatibility}%</Text>
-                  </View>
-                ) : (
-                  <View style={styles.compatBadgeMuted}>
-                    <Text style={styles.compatBadgeMutedText}>Learning</Text>
-                  </View>
-                )}
+                {/* Tap the compat badge to open the detail sheet.
+                    stopPropagation keeps the parent card press from
+                    firing a profile navigation. */}
+                <Pressable
+                  onPress={(e) => {
+                    e.stopPropagation();
+                    setDetailFor({ userId: card.user_id, displayName: label });
+                  }}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel={
+                    card.compatibility != null
+                      ? `${card.compatibility} percent match with ${label}. View details.`
+                      : `Match evidence for ${label} is still learning. View details.`
+                  }
+                >
+                  {card.compatibility != null ? (
+                    <View style={styles.compatBadge}>
+                      <Text style={styles.compatBadgeText}>{card.compatibility}%</Text>
+                    </View>
+                  ) : (
+                    <View style={styles.compatBadgeMuted}>
+                      <Text style={styles.compatBadgeMutedText}>Learning</Text>
+                    </View>
+                  )}
+                </Pressable>
               </View>
               <Text style={styles.name} numberOfLines={1}>{label}</Text>
               {card.username ? (
@@ -200,6 +219,12 @@ export function TasteMatchesCarousel() {
           );
         })}
       </ScrollView>
+      <CompatibilitySheet
+        visible={detailFor !== null}
+        userId={detailFor?.userId ?? null}
+        displayName={detailFor?.displayName ?? null}
+        onClose={() => setDetailFor(null)}
+      />
     </View>
   );
 }
