@@ -100,6 +100,10 @@ class Watchlist(Base):
     description: Mapped[str | None] = mapped_column(String(280))
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     is_system_list: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Oct-27 followup A69: list audience. "private" (owner only),
+    # "followers" (owner's followers can read), "public" (anyone with
+    # the share link). Default private — explicit publish required.
+    visibility: Mapped[str] = mapped_column(String(16), default="private")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

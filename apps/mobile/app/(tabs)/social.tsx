@@ -78,9 +78,17 @@ type PostList = {
   share_token: string | null;
 };
 
+type RankChangePayload = {
+  previous_rank: number | null;
+  new_rank: number | null;
+  label: string | null;
+  direction: "new" | "up" | "down" | "same" | null;
+  accessibility_label: string | null;
+};
+
 type SocialPost = {
   id: string;
-  post_type: "title_share" | "rating_share" | "review_share" | "list_share" | "list_publish";
+  post_type: "title_share" | "rating_share" | "review_share" | "list_share" | "list_publish" | "wall_post" | "rank_change";
   visibility: "public" | "followers" | "private";
   caption: string | null;
   created_at: string;
@@ -90,6 +98,10 @@ type SocialPost = {
   list: PostList | null;
   engagement: { like_count: number; comment_count: number };
   viewer_state: { liked: boolean; following_author: boolean; is_author: boolean };
+  // Oct-27 SOC-01: snapshotted directional label for rank-change posts.
+  // Server computes this from previous_rank + new_rank at publish time;
+  // never recomputed from the author's current ranking.
+  rank_change?: RankChangePayload | null;
 };
 
 type FeedResponse = {
@@ -937,6 +949,14 @@ function FeedCard({
           ) : null}
           <View style={styles.cardTitleShade} />
           <View style={styles.cardTitleBody}>
+            {post.rank_change?.label ? (
+              <View
+                style={styles.rankChangePill}
+                accessibilityLabel={post.rank_change.accessibility_label ?? post.rank_change.label}
+              >
+                <Text style={styles.rankChangePillText}>{post.rank_change.label}</Text>
+              </View>
+            ) : null}
             <Text style={styles.cardTitleName} numberOfLines={2}>{post.title.title}</Text>
             {post.rating?.score !== undefined && post.rating?.score !== null ? (
               <View style={styles.ratingBadge}>
@@ -1189,6 +1209,14 @@ function formatPostType(post: SocialPost): string {
     case "review_share": return "reviewed";
     case "list_share": return "shared a list";
     case "list_publish": return "published a list";
+    case "wall_post": return "posted";
+    case "rank_change": {
+      const dir = post.rank_change?.direction;
+      if (dir === "new") return "ranked a new favorite";
+      if (dir === "up") return "moved up a favorite";
+      if (dir === "down") return "moved down a favorite";
+      return "updated a ranking";
+    }
     default: return post.post_type;
   }
 }
@@ -1442,6 +1470,20 @@ const styles = StyleSheet.create({
     lineHeight: 28,
     letterSpacing: -0.3,
     flex: 1,
+  },
+  rankChangePill: {
+    alignSelf: "flex-start",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 999,
+    backgroundColor: colors.accent,
+    marginBottom: 6,
+  },
+  rankChangePillText: {
+    color: colors.background,
+    fontSize: 11,
+    letterSpacing: 1,
+    fontFamily: fonts.monoSemiBold,
   },
   ratingBadge: {
     minWidth: 44,

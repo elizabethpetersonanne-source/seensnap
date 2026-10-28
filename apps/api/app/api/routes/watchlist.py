@@ -75,6 +75,7 @@ def get_watchlist_lists(current_user: CurrentUser, db: DbSession) -> list[Watchl
             description=list_item.description,
             is_default=list_item.is_default,
             is_system_list=list_item.is_system_list,
+            visibility=list_item.visibility,
             title_count=int(counts.get(list_item.id, 0)),
             updated_at=list_item.updated_at,
             preview_posters=previews.get(list_item.id, []),
@@ -106,7 +107,13 @@ def create_watchlist_list(
     current_user: CurrentUser,
     db: DbSession,
 ) -> WatchlistResponse:
-    watchlist = create_watchlist(db, current_user.id, name=payload.name, description=payload.description)
+    watchlist = create_watchlist(
+        db,
+        current_user.id,
+        name=payload.name,
+        description=payload.description,
+        visibility=payload.visibility,
+    )
     return _watchlist_response(db, watchlist)
 
 
@@ -118,7 +125,13 @@ def patch_watchlist_list(
     db: DbSession,
 ) -> WatchlistResponse:
     watchlist = get_watchlist_record(db, current_user.id, list_id)
-    updated = update_watchlist(db, watchlist, name=payload.name, description=payload.description)
+    updated = update_watchlist(
+        db,
+        watchlist,
+        name=payload.name,
+        description=payload.description,
+        visibility=payload.visibility,
+    )
     return _watchlist_response(db, updated)
 
 
@@ -237,6 +250,7 @@ def _watchlist_response(db: DbSession, watchlist: Watchlist) -> WatchlistRespons
         description=watchlist.description,
         is_default=watchlist.is_default,
         is_system_list=watchlist.is_system_list,
+        visibility=watchlist.visibility,
         items=[
             WatchlistItemResponse(
                 id=item.id,

@@ -107,10 +107,22 @@ def get_watchlist(db: Session, user_id: UUID, list_id: UUID) -> Watchlist:
     return watchlist
 
 
-def create_watchlist(db: Session, user_id: UUID, *, name: str, description: str | None) -> Watchlist:
+_ALLOWED_VISIBILITIES = {"private", "followers", "public"}
+
+
+def create_watchlist(
+    db: Session,
+    user_id: UUID,
+    *,
+    name: str,
+    description: str | None,
+    visibility: str = "private",
+) -> Watchlist:
     clean_name = name.strip()
     if len(clean_name) < 2:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="List name must be at least 2 characters")
+    if visibility not in _ALLOWED_VISIBILITIES:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown visibility: {visibility}")
     duplicate = db.scalar(
         select(Watchlist).where(
             Watchlist.owner_user_id == user_id,
@@ -125,11 +137,10 @@ def create_watchlist(db: Session, user_id: UUID, *, name: str, description: str 
         description=description.strip() if description else None,
         is_default=False,
         is_system_list=False,
+        visibility=visibility,
     )
     db.add(watchlist)
     db.flush()
-    # Oct-18 brief §3 fix 8: new lists are private by default. The
-    # user explicitly publishes via POST /me/watchlist/lists/{id}/share.
     db.commit()
     db.refresh(watchlist)
     return watchlist
@@ -141,6 +152,7 @@ def update_watchlist(
     *,
     name: str | None,
     description: str | None,
+    visibility: str | None = None,
 ) -> Watchlist:
     if name is not None:
         clean_name = name.strip()
@@ -151,6 +163,10 @@ def update_watchlist(
         watchlist.name = clean_name
     if description is not None:
         watchlist.description = description.strip() if description.strip() else None
+    if visibility is not None:
+        if visibility not in _ALLOWED_VISIBILITIES:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown visibility: {visibility}")
+        watchlist.visibility = visibility
     watchlist.updated_at = datetime.now(UTC)
     db.commit()
     db.refresh(watchlist)

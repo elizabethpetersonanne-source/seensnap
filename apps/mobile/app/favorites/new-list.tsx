@@ -6,9 +6,9 @@
  * Private), with description if already supported. It must persist a
  * real list and return to the correct section."
  *
- * Visibility isn't a persisted field on Watchlist yet — the UI
- * surfaces it for the user's intent but we only emit a TODO toast
- * when the user picks Public, so we don't claim support we don't have.
+ * Visibility is now persisted on Watchlist (migration 0033). The
+ * mobile client sends it in the create request; the backend defaults
+ * to private if the field is omitted so older clients remain safe.
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -51,6 +51,7 @@ export default function NewListScreen() {
         body: JSON.stringify({
           name: trimmed,
           description: description.trim() || null,
+          visibility,
         }),
       });
       router.back();
@@ -125,8 +126,8 @@ export default function NewListScreen() {
         </View>
         {visibility === "public" ? (
           <Text style={styles.visWarn}>
-            Public visibility isn't fully wired up server-side yet; the list will be
-            created privately for now and can be shared via a signed link.
+            Anyone with the share link can view this list. You can change the
+            audience at any time.
           </Text>
         ) : null}
 
