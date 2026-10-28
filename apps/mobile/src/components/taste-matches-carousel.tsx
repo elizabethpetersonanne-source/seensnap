@@ -33,12 +33,26 @@ type TasteMatchCard = {
   reason: string | null;
 };
 
-type EmptyState = "ok" | "no_eligible" | "viewer_cold" | "no_candidates";
+type EmptyState =
+  | "ok"
+  | "no_eligible"
+  | "viewer_cold"
+  | "no_candidates"
+  | "all_followed";
+
+type TasteMatchesDiagnostics = {
+  eligible_total: number;
+  scored_total: number;
+  scored_with_evidence: number;
+  scored_learning: number;
+  viewer_rated_count: number;
+};
 
 type TasteMatchesResponse = {
   items: TasteMatchCard[];
   has_evidence: boolean;
   empty_state?: EmptyState;
+  diagnostics?: TasteMatchesDiagnostics;
 };
 
 
@@ -116,17 +130,23 @@ export function TasteMatchesCarousel() {
           cta: "Rate titles",
           onPress: () => router.push("/(tabs)/swipe"),
         }
-      : state === "no_candidates"
+      : state === "all_followed"
         ? {
-            body: "We don't have discoverable people yet. Invite a friend or try again later.",
+            body: "You already follow everyone we can match you with. Dismiss or unfollow to see new ones.",
             cta: "Find people",
             onPress: () => router.push("/social/people"),
           }
-        : {
-            body: "No new taste matches yet. Follow or dismiss cards and check back.",
-            cta: "Find people",
-            onPress: () => router.push("/social/people"),
-          };
+        : state === "no_candidates"
+          ? {
+              body: "No one with a public profile has rated enough titles to match yet. Invite a friend or try again later.",
+              cta: "Find people",
+              onPress: () => router.push("/social/people"),
+            }
+          : {
+              body: "No new taste matches yet. Follow or dismiss cards and check back.",
+              cta: "Find people",
+              onPress: () => router.push("/social/people"),
+            };
     return (
       <View style={styles.wrap}>
         <View style={styles.headRow}>
@@ -145,6 +165,11 @@ export function TasteMatchesCarousel() {
           <Pressable onPress={copy.onPress} style={styles.emptyCta}>
             <Text style={styles.emptyCtaLabel}>{copy.cta}</Text>
           </Pressable>
+          {data?.diagnostics ? (
+            <Text style={styles.diagLine}>
+              {data.diagnostics.eligible_total} discoverable · {data.diagnostics.scored_with_evidence} matched · you've rated {data.diagnostics.viewer_rated_count}
+            </Text>
+          ) : null}
         </View>
       </View>
     );
@@ -383,6 +408,13 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
     borderRadius: 999,
     backgroundColor: colors.accent,
+  },
+  diagLine: {
+    marginTop: 8,
+    fontFamily: fonts.mono,
+    color: colors.muted2,
+    fontSize: 10,
+    letterSpacing: 0.3,
   },
   emptyCtaLabel: {
     fontFamily: fonts.sansSemiBold,

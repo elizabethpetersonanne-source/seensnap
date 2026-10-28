@@ -408,11 +408,19 @@ class TasteMatchCard(BaseModel):
     reason: str | None = None
 
 
+class TasteMatchesDiagnostics(BaseModel):
+    """Non-privacy-sensitive counts so a user who sees an empty
+    carousel can report what's actually zero. These are counts,
+    never names — safe to surface in the UI."""
+    eligible_total: int = 0
+    scored_total: int = 0
+    scored_with_evidence: int = 0
+    scored_learning: int = 0
+    viewer_rated_count: int = 0
+
+
 class TasteMatchesResponse(BaseModel):
     items: list[TasteMatchCard]
-    # Cold-start / low-evidence hint for the client to show "Rate more
-    # titles to find people with similar taste" instead of a sparse
-    # carousel.
     has_evidence: bool = True
     # MATCH02: distinguish empty states so the mobile copy is honest.
     # "ok"               — items present (len(items) > 0)
@@ -421,6 +429,7 @@ class TasteMatchesResponse(BaseModel):
     # "no_candidates"    — zero eligible candidates (new user with
     #                      no discoverable people)
     empty_state: str = "ok"
+    diagnostics: TasteMatchesDiagnostics = TasteMatchesDiagnostics()
 
 
 @router.get("/people/taste-matches", response_model=TasteMatchesResponse)
@@ -446,11 +455,27 @@ def get_taste_matches(
     ) or 0)
 
     eligible = _eligible_candidate_ids(db, current_user.id, exclude_followed=True)
+    # Also peek at the pool INCLUDING followed users so we can tell
+    # the user "You already follow all your eligible matches" when
+    # that's the actual reason the new-connections carousel is empty.
+    eligible_including_followed = _eligible_candidate_ids(
+        db, current_user.id, exclude_followed=False,
+    )
     if not eligible:
+        empty = "viewer_cold" if viewer_rated_count < 5 else "no_candidates"
+        if eligible_including_followed and empty == "no_candidates":
+            empty = "all_followed"
         return TasteMatchesResponse(
             items=[],
             has_evidence=False,
-            empty_state="viewer_cold" if viewer_rated_count < 5 else "no_candidates",
+            empty_state=empty,
+            diagnostics=TasteMatchesDiagnostics(
+                eligible_total=0,
+                scored_total=0,
+                scored_with_evidence=0,
+                scored_learning=0,
+                viewer_rated_count=viewer_rated_count,
+            ),
         )
 
     # Preselect candidates who are themselves "scorable" — users with
@@ -530,6 +555,8 @@ def get_taste_matches(
                 reason=reason,
             )
         )
+    scored_with_evidence = sum(1 for s in scored if s[0] is not None)
+    scored_learning = sum(1 for s in scored if s[0] is None)
     empty_state = (
         "ok" if items
         else "viewer_cold" if viewer_rated_count < 5
@@ -539,4 +566,11 @@ def get_taste_matches(
         items=items,
         has_evidence=len(items) > 0,
         empty_state=empty_state,
+        diagnostics=TasteMatchesDiagnostics(
+            eligible_total=len(eligible),
+            scored_total=len(scored),
+            scored_with_evidence=scored_with_evidence,
+            scored_learning=scored_learning,
+            viewer_rated_count=viewer_rated_count,
+        ),
     )
