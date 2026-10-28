@@ -24,6 +24,7 @@ import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
 import { ConciergeEmptyState } from "@/components/concierge-empty-state";
+import { ConciergeListPicker } from "@/components/concierge-list-picker";
 import { ConciergeResult } from "@/components/concierge-result";
 import { DiscoverSection, MediaToggle, type DiscoverTitle } from "@/components/discover-section";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
@@ -355,6 +356,7 @@ export default function DiscoverScreen() {
   // Oct-18 §4 Concierge
   const entitlement = useEntitlement(sessionToken);
   const [conciergeDecision, setConciergeDecision] = useState<ConciergeDecisionResponse | null>(null);
+  const [showListPicker, setShowListPicker] = useState(false);
 
   // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
   const [nowInTheatersItems, setNowInTheatersItems] = useState<TitleItem[]>([]);
@@ -876,6 +878,13 @@ export default function DiscoverScreen() {
               onApplyAdjustment={async (prompt) => {
                 if (!sessionToken || !prompt.trim()) return;
                 trackEvent("concierge_adjustment_applied", { status_detail: conciergeDecision.status_detail });
+                // Chunk E completion: for "from my saved list" asks
+                // without a named list, open the picker instead of
+                // re-firing another needs_list_selection.
+                if (conciergeDecision.status_detail === "needs_list_selection") {
+                  setShowListPicker(true);
+                  return;
+                }
                 try {
                   const idempotency_key = `concierge-adj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
                   const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
@@ -890,6 +899,34 @@ export default function DiscoverScreen() {
               }}
             />
           ) : null}
+
+          <ConciergeListPicker
+            visible={showListPicker}
+            onCancel={() => setShowListPicker(false)}
+            onPick={async (listId, listName) => {
+              setShowListPicker(false);
+              if (!sessionToken) return;
+              trackEvent("concierge_list_pick", { list_id: listId });
+              const prompt =
+                conciergeDecision?._intent ??
+                `Help me pick from my list "${listName}".`;
+              try {
+                const idempotency_key = `concierge-list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+                const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
+                  method: "POST",
+                  token: sessionToken,
+                  body: JSON.stringify({
+                    intent: prompt,
+                    collection_list_id: listId,
+                    idempotency_key,
+                  }),
+                });
+                setConciergeDecision({ ...res, _intent: prompt });
+              } catch {
+                // Keep whatever's on screen so the user can retry.
+              }
+            }}
+          />
 
           {/* Oct-27 spec DISC-01: shortcut row removed. Concierge
               input + For You / Trending / Now in Theaters sections

@@ -286,6 +286,7 @@ def resolve_concierge_decision(
     intent: str,
     *,
     refinement_of_decision_id: UUID | None = None,
+    collection_list_id: UUID | None = None,
 ) -> ConciergeDecision:
     """Resolve a natural-language intent to a typed decision + grounded
     titles. Returns an honest unavailable state if no provider is
@@ -382,6 +383,14 @@ def resolve_concierge_decision(
     # comfort rewatch" are HARD source constraints — we never silently
     # fall back to the general catalog.
     constraints = _resolve_collection_scope(constraints, intent)
+
+    # Chunk E completion: if the caller supplied an explicit list id
+    # (named-list picker UX), that wins over whatever the intent
+    # language suggested. Ownership is validated inside
+    # _retrieve_candidates — a non-owned list_id returns empty.
+    if collection_list_id is not None:
+        constraints.collection_scope = "named_list"
+        constraints.collection_list_id = str(collection_list_id)
 
     # Ground results in the catalog. The adapter MAY suggest titles by
     # name; we never return them unless they resolve to a real

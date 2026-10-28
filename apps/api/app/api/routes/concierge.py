@@ -39,6 +39,11 @@ class ConciergeDecisionRequest(BaseModel):
     # If present, this request REFINES the given decision — does not
     # consume a second allowance slot.
     refinement_of_decision_id: UUID | None = None
+    # Oct-27 Concierge chunk E: when the user picks a specific list
+    # for a "from my saved list" ask, the client resolves that id
+    # upfront and sends it here. Server validates ownership and
+    # forces collection_scope="named_list".
+    collection_list_id: UUID | None = None
     # Client-side generated UUID; retries use the same key.
     idempotency_key: str = Field(min_length=8, max_length=96)
 
@@ -171,7 +176,12 @@ def post_concierge_decision(
             )
 
     # Resolve intent via the AI adapter.
-    decision = resolve_concierge_decision(db, current_user.id, payload.intent)
+    decision = resolve_concierge_decision(
+        db,
+        current_user.id,
+        payload.intent,
+        collection_list_id=payload.collection_list_id,
+    )
 
     # Successful means we actually produced grounded results.
     successful = decision.status == "ready" and bool(decision.title_ids)
