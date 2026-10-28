@@ -61,7 +61,7 @@ class ConciergeTitleCard(BaseModel):
 
 class ConciergeDecisionResponse(BaseModel):
     decision_id: UUID | None
-    status: str  # "ready" | "unavailable" | "empty" | "error" | "allowance_exhausted"
+    status: str  # "ready" | "partial" | "unavailable" | "empty" | "error" | "allowance_exhausted"
     status_detail: str = ""
     rationale: str = ""
     constraints: dict | None = None
@@ -69,6 +69,12 @@ class ConciergeDecisionResponse(BaseModel):
     allowance_remaining: int | None = None
     allowance_cap: int | None = None
     resets_at: str | None = None
+    # CON01/CON02/CON04: let the client distinguish an exhausted
+    # retrieval from a display-cap stop, show "N of M requested"
+    # partial state and offer Show more when more candidates exist.
+    retrieval_exhausted: bool = True
+    exact_match_count: int = 0
+    requested_count: int = 5
 
 
 def _hydrate_decision_titles(db, title_ids: list[UUID]) -> list[ConciergeTitleCard]:
@@ -217,6 +223,9 @@ def post_concierge_decision(
         allowance_remaining=remaining,
         allowance_cap=cap,
         resets_at=allowance.resets_at.isoformat() if allowance and allowance.resets_at else None,
+        retrieval_exhausted=decision.retrieval_exhausted,
+        exact_match_count=decision.exact_match_count,
+        requested_count=decision.requested_count,
     )
 
 
@@ -376,6 +385,9 @@ def post_concierge_refinement(
         allowance_remaining=None,
         allowance_cap=entitlement.concierge_monthly_cap,
         resets_at=None,
+        retrieval_exhausted=decision.retrieval_exhausted,
+        exact_match_count=decision.exact_match_count,
+        requested_count=decision.requested_count,
     )
 
 

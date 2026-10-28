@@ -87,8 +87,22 @@ class ConciergeDecision:
     constraints: ConciergeConstraints
     rationale: str  # 1-2 sentences explaining why these results fit
     title_ids: list[UUID]  # grounded; may be empty if nothing fits
-    status: Literal["ready", "unavailable", "empty", "error"]
+    # Oct-27 personalization brief CON01/CON02: distinguish Ready
+    # (>= requested_count), Partial (1..requested_count-1) and Empty.
+    status: Literal["ready", "unavailable", "empty", "error", "partial"]
     status_detail: str = ""
+    # CON04: did retrieval genuinely exhaust eligible candidates, or
+    # did we stop at the display cap? The client can show "Show more"
+    # when retrieval_exhausted=False.
+    retrieval_exhausted: bool = True
+    # How many of the returned titles were EXACT matches (vs. padded
+    # near-matches). Right now we only return exact matches so this
+    # equals len(title_ids); kept as a separate field for the near-
+    # match slot in a later chunk.
+    exact_match_count: int = 0
+    # The default minimum we aim for. Clients can request a specific
+    # count; today this is a server-side default.
+    requested_count: int = 5
 
 
 # ─── Personal context (Concierge brief chunk B) ─────────────────────
@@ -418,14 +432,29 @@ def resolve_concierge_decision(
             title_ids=[],
             status="empty",
             status_detail=_empty_detail_for(constraints),
+            retrieval_exhausted=True,
+            exact_match_count=0,
         )
 
+    # CON01/CON02: ≥ 5 → ready; 1..4 → partial so the UI can surface
+    # the specific limitation and offer scoped adjustments.
+    target = 5
+    status: Literal["ready", "partial"] = "ready" if len(grounded_ids) >= target else "partial"
+    status_detail = "" if status == "ready" else _empty_detail_for(constraints)
     return ConciergeDecision(
         decision_id=None,
         constraints=constraints,
         rationale=rationale,
         title_ids=grounded_ids,
-        status="ready",
+        status=status,
+        status_detail=status_detail,
+        # Retrieval was NOT exhausted only if we hit the display cap
+        # (currently 8). Under that cap, we did run the top-up pass
+        # and still had this many — so the pool is effectively empty
+        # at the exact-match level.
+        retrieval_exhausted=len(grounded_ids) < 8,
+        exact_match_count=len(grounded_ids),
+        requested_count=target,
     )
 
 
@@ -650,7 +679,39 @@ def _retrieve_candidates(
     # constraints strictly. If the hard constraints eliminate
     # everything we return empty — the previous "soft fallback that
     # drops filters" is explicitly forbidden by the Concierge brief.
-    return _ground_suggestions(db, suggested_names, constraints)
+    grounded = _ground_suggestions(db, suggested_names, constraints)
+
+    # Oct-27 personalization brief CON01/CON03: default target is 5
+    # distinct eligible titles. If the model-suggested names ground
+    # fewer than that, top up from the SceneDNA-personalized rec
+    # service, filtering by the same hard constraints. The hard
+    # constraints are never relaxed to fill the layout.
+    if len(grounded) < 5:
+        try:
+            from app.services.recommendation_service import recommend_for_user as _rec
+            top_up = _rec(
+                db,
+                user_id,
+                mode="perfect",
+                limit=25,
+                surface="concierge_top_up",
+                media_type=constraints.media_type if constraints.media_type != "any" else None,
+                include_watched=constraints.rewatch_intent,
+            )
+        except Exception:
+            top_up = []
+        existing = set(grounded)
+        for item in top_up:
+            t = item.get("title")
+            if t is None or t.id in existing:
+                continue
+            if not _passes_constraints(t, constraints):
+                continue
+            grounded.append(t.id)
+            existing.add(t.id)
+            if len(grounded) >= 8:
+                break
+    return grounded
 
 
 _PERSONAL_NUMBER_ONE_PATTERNS = (
@@ -1050,4 +1111,7 @@ def decision_to_dict(d: ConciergeDecision) -> dict:
         "title_ids": [str(t) for t in d.title_ids],
         "status": d.status,
         "status_detail": d.status_detail,
+        "retrieval_exhausted": d.retrieval_exhausted,
+        "exact_match_count": d.exact_match_count,
+        "requested_count": d.requested_count,
     }

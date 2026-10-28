@@ -498,16 +498,33 @@ def recommend_for_user(
     limit: int = 20,
     session_id: str | None = None,
     surface: str = "recommendations",
+    media_type: str | None = None,
+    include_watched: bool = False,
 ) -> list[dict]:
     """Return ranked recommendations for a user + mode. Every result is a
     dict with `title`, `score`, `confidence`, `reasons`, `mode`, and
     `impression_id` (the persisted RecommendationImpression row id so the
-    client can later post feedback tied to the exact rec)."""
+    client can later post feedback tied to the exact rec).
+
+    Oct-27 personalization brief DISC01/DISC02/DISC04:
+      - `media_type` is a HARD filter applied to the candidate pool
+        BEFORE ranking and limits. "movie" | "series" | None.
+      - `include_watched=False` is the default For You contract —
+        watched + explicitly disliked titles never appear. Set True
+        only for explicit rewatch requests.
+    """
     if mode not in MODES:
         mode = "perfect"
     config = MODES[mode]
+    want_content_type: str | None = None
+    if media_type:
+        norm = media_type.strip().lower()
+        if norm in ("movie", "film"):
+            want_content_type = "movie"
+        elif norm in ("series", "tv", "show"):
+            want_content_type = "series"
 
-    exclude = _exclude_ids(db, user_id)
+    exclude = _exclude_ids(db, user_id) if not include_watched else set()
     negative_titles = _negative_evidence_set(db, user_id)
     exclude |= negative_titles
 
@@ -588,6 +605,14 @@ def recommend_for_user(
     # Hidden Gems mode: apply low-popularity filter on top of the candidate
     # pool. Uses TMDB popularity from metadata_raw as the threshold signal.
     titles = db.scalars(select(ContentTitle).where(ContentTitle.id.in_(candidate_ids))).all()
+
+    # DISC01: hard media-type filter applied AFTER candidate selection
+    # but BEFORE ranking + limit. A TV request can never fall through
+    # to movies via diversity/limit slicing.
+    if want_content_type is not None:
+        titles = [t for t in titles if t.content_type == want_content_type]
+        if not titles:
+            return []
     if mode == "hidden-gems":
         filtered_titles = []
         for t in titles:

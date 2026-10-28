@@ -86,8 +86,11 @@ export default function CollectionSeeAllScreen() {
     try {
       let path = "";
       if (validKey === "for-you") {
-        // Backend caps limit at 60 for this endpoint.
-        path = `/titles/recommendations/for-me?limit=40`;
+        // DISC01/02: server-filter For You by media before ranking +
+        // limit. mediaFilter is "movie" | "tv"; backend param is
+        // "movie" | "show".
+        const preferredType = mediaFilter === "movie" ? "movie" : "show";
+        path = `/titles/recommendations/for-me?limit=40&preferred_type=${preferredType}`;
       } else if (validKey === "trending") {
         // Backend caps limit at 20 for trending until the next deploy
         // raises it; staying under the cap avoids a 422.
@@ -119,11 +122,20 @@ export default function CollectionSeeAllScreen() {
           return null;
         })
         .filter((t): t is CollectionTitle => t !== null && !!t.id);
-      const filtered = normalized.filter((t) => {
-        if (mediaFilter === "movie") return t.content_type === "movie";
-        return t.content_type !== "movie";
-      });
-      setItems(filtered.length > 0 ? filtered : normalized);
+      // DISC01: For You already filtered server-side via
+      // preferred_type. Trending + Now in Theaters still arrive
+      // mixed; filter client-side but DO NOT fall back to the
+      // unfiltered set when a filtered result is empty — "A TV
+      // request cannot return movies as an empty-state fallback."
+      if (validKey === "for-you") {
+        setItems(normalized);
+      } else {
+        const filtered = normalized.filter((t) => {
+          if (mediaFilter === "movie") return t.content_type === "movie";
+          return t.content_type !== "movie";
+        });
+        setItems(filtered);
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load this collection.");
     } finally {

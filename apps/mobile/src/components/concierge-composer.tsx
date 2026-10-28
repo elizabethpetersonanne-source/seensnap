@@ -53,7 +53,7 @@ export type ConciergeTitleCard = {
 
 export type ConciergeDecisionResponse = {
   decision_id: string | null;
-  status: "ready" | "unavailable" | "empty" | "error" | "allowance_exhausted";
+  status: "ready" | "partial" | "unavailable" | "empty" | "error" | "allowance_exhausted";
   status_detail: string;
   rationale: string;
   constraints: Record<string, unknown> | null;
@@ -61,6 +61,10 @@ export type ConciergeDecisionResponse = {
   allowance_remaining: number | null;
   allowance_cap: number | null;
   resets_at: string | null;
+  // CON01/CON02/CON04 partial-state fields.
+  retrieval_exhausted?: boolean;
+  exact_match_count?: number;
+  requested_count?: number;
   // Chunk D: the composer may stash the original intent on the
   // response so the empty-state recovery UI can rebuild adjustment
   // prompts without plumbing the raw string through Discover state.

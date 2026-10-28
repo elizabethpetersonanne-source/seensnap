@@ -1,7 +1,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { router } from "expo-router";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Animated,
@@ -369,6 +369,11 @@ export default function DiscoverScreen() {
 
   // Media-type toggles for For You + Trending (mock A).
   const [forYouMedia, setForYouMedia] = useState<"movie" | "tv">("movie");
+  // DISC01/02: server-filtered For You source. Fetched on media
+  // toggle so the result is authoritative instead of a local filter
+  // over a mixed-media mixed response.
+  const [forYouFiltered, setForYouFiltered] = useState<RecommendationItem[] | null>(null);
+  const [forYouLoading, setForYouLoading] = useState(false);
   const [trendingMedia, setTrendingMedia] = useState<"movie" | "tv">("movie");
 
   const searchInputRef = useRef<TextInput>(null);
@@ -411,8 +416,12 @@ export default function DiscoverScreen() {
   async function loadRecommendations() {
     if (!sessionToken) return;
     try {
+      // DISC01/02: server-side media filter BEFORE candidate limit
+      // and ranking. We pass preferred_type through so a TV request
+      // never falls back to movies by filtering a small mixed set.
+      const preferredType = forYouMedia === "movie" ? "movie" : "show";
       const result = await apiRequest<RecommendationItem[]>(
-        "/titles/recommendations/for-me?limit=12",
+        `/titles/recommendations/for-me?limit=12&preferred_type=${preferredType}`,
         { token: sessionToken }
       );
       setRecommendations(result);
@@ -420,6 +429,35 @@ export default function DiscoverScreen() {
       // silently degrade — module hidden when empty
     }
   }
+
+  // DISC01/02/03: whenever the For You media toggle changes, fetch
+  // a server-filtered rec list. This replaces the previous local
+  // filter + unfiltered fallback that could show movies when the
+  // user asked for TV.
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFiltered() {
+      if (!sessionToken) {
+        setForYouFiltered(null);
+        return;
+      }
+      setForYouLoading(true);
+      try {
+        const preferredType = forYouMedia === "movie" ? "movie" : "show";
+        const result = await apiRequest<RecommendationItem[]>(
+          `/titles/recommendations/for-me?limit=12&preferred_type=${preferredType}`,
+          { token: sessionToken },
+        );
+        if (!cancelled) setForYouFiltered(result);
+      } catch {
+        if (!cancelled) setForYouFiltered([]);
+      } finally {
+        if (!cancelled) setForYouLoading(false);
+      }
+    }
+    void loadFiltered();
+    return () => { cancelled = true; };
+  }, [forYouMedia, sessionToken]);
 
   async function loadDiscoverFeed() {
     if (!sessionToken) return;
@@ -823,7 +861,7 @@ export default function DiscoverScreen() {
           ) : null}
 
           {/* Concierge result — hero + four small posters + follow-up chips. */}
-          {conciergeDecision && conciergeDecision.status === "ready" && conciergeDecision.titles.length > 0 ? (
+          {conciergeDecision && (conciergeDecision.status === "ready" || conciergeDecision.status === "partial") && conciergeDecision.titles.length > 0 ? (
             <ConciergeResult
               rationale={conciergeDecision.rationale}
               titles={conciergeDecision.titles}
@@ -963,20 +1001,19 @@ export default function DiscoverScreen() {
               is a section header + hero backdrop with title overlay +
               row of four portrait posters with uppercase captions. */}
 
-          {/* 1 · For You — explicitly SceneDNA-driven. Subtitle names
-              the signal when the backend returns because_you, so the
-              user can see WHY these picks surfaced. */}
+          {/* 1 · For You — explicitly SceneDNA-driven. DISC01/02/03:
+              uses the server-filtered forYouFiltered source so a TV
+              request never falls back to movies. The /discover/feed
+              module is kept as a secondary source for its subtitle
+              label when available. */}
           {(() => {
             const forYouModule = discoverFeed?.modules.find(
               (m) => m.type === "personalized_rail" || m.type === "because_you",
             );
-            if (forYouModule && "items" in forYouModule && forYouModule.items.length > 0) {
-              const items = forYouModule.items.filter((item) => {
-                const t = item.title.content_type;
-                return forYouMedia === "movie" ? t === "movie" : t !== "movie";
-              });
-              const effective = items.length > 0 ? items : forYouModule.items;
-              const subtitle = forYouModule.type === "because_you"
+            // Primary source is the server-filtered rec list.
+            const serverItems = forYouFiltered ?? [];
+            if (serverItems.length > 0) {
+              const subtitle = forYouModule?.type === "because_you"
                 ? `${forYouModule.label} — tuned to your SceneDNA`
                 : "Tuned to your SceneDNA";
               return (
@@ -984,8 +1021,8 @@ export default function DiscoverScreen() {
                   kicker="FOR YOU"
                   subtitle={subtitle}
                   rightSlot={<MediaToggle value={forYouMedia} onChange={setForYouMedia} />}
-                  hero={feedItemToDiscover(effective[0])}
-                  four={effective.slice(1, 5).map(feedItemToDiscover)}
+                  hero={titleItemToDiscover(serverItems[0].title)}
+                  four={serverItems.slice(1, 5).map((r) => titleItemToDiscover(r.title))}
                   onPressTitle={(t) => {
                     trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
                     void openTitleModal(t.id);
@@ -997,7 +1034,7 @@ export default function DiscoverScreen() {
                 />
               );
             }
-            if (discoverFeedLoading) {
+            if (forYouLoading || discoverFeedLoading) {
               return (
                 <View style={styles.moduleLoading}>
                   <ActivityIndicator color={colors.accent} size="small" />
@@ -1007,10 +1044,15 @@ export default function DiscoverScreen() {
             return (
               <View style={styles.coldStartCard}>
                 <Text style={styles.coldStartKicker}>FOR YOU</Text>
-                <Text style={styles.coldStartTitle}>Your SceneDNA is still forming.</Text>
+                <Text style={styles.coldStartTitle}>
+                  {forYouMedia === "tv"
+                    ? "No TV picks yet."
+                    : "Your SceneDNA is still forming."}
+                </Text>
                 <Text style={styles.coldStartBody}>
-                  Rate titles, save them, and swipe through a few. The more you tell us, the sharper
-                  your recommendations get.
+                  {forYouMedia === "tv"
+                    ? "Rate a few TV shows and your series recommendations will fill in. Movies may be ready right now — flip the toggle."
+                    : "Rate titles, save them, and swipe through a few. The more you tell us, the sharper your recommendations get."}
                 </Text>
                 <Pressable onPress={() => router.push("/(tabs)/swipe")} style={styles.coldStartCta}>
                   <Text style={styles.coldStartCtaLabel}>START SWIPING</Text>
