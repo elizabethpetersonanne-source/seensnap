@@ -2,6 +2,7 @@ import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  Alert,
   Animated,
   Image,
   Linking,
@@ -424,6 +425,14 @@ export default function SwipeTab() {
     outputRange: [1, 0.3, 0],
     extrapolate: "clamp",
   });
+  // W02: direction label as gesture approaches commitment. Opacity
+  // ramps from 0 → full as the pan reaches the commit threshold so
+  // the user sees what they're about to do before letting go.
+  const downLabelOpacity = pan.y.interpolate({
+    inputRange: [0, 30, 80],
+    outputRange: [0, 0.3, 1],
+    extrapolate: "clamp",
+  });
   const backdropParallax = pan.x.interpolate({
     inputRange: [-250, 0, 250],
     outputRange: [10, 0, -10],
@@ -531,6 +540,48 @@ export default function SwipeTab() {
       // server-side; this surface never writes a watched event without
       // a user action.
       setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
+    }
+    // W03: if the user down-swipes a title they've already rated
+    // positively (score >= 7), ask them to resolve the conflict
+    // before we record the dislike. "An existing numeric score must
+    // never be overwritten or cleared silently."  — spec.
+    //
+    // The server-side swipe path WON'T touch the rating anyway, but
+    // leaving both signals in place is contradictory. Prompt for
+    // Change rating / Cancel. Watched state stays either way.
+    if (direction === "down") {
+      void (async () => {
+        try {
+          type RatingResp = { score: number | null };
+          const current = await apiRequest<RatingResp>(`/me/ratings/${item.title.id}`, { token: sessionToken });
+          const score = typeof current?.score === "number" ? current.score : null;
+          if (score !== null && score >= 7) {
+            // Reverse the local progress so the card can be
+            // restored or the user can re-rate.
+            setSwipes((prev) => prev.slice(0, -1));
+            setCurrentIndex((prev) => Math.max(0, prev - 1));
+            Alert.alert(
+              "You rated this " + score + "/10",
+              "A thumbs-down swipe conflicts with your existing positive rating. Change the rating, or cancel this swipe?",
+              [
+                {
+                  text: "Cancel swipe",
+                  style: "cancel",
+                  // Nothing further — local state is already restored.
+                },
+                {
+                  text: "Change rating",
+                  onPress: () => {
+                    setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
+                  },
+                },
+              ],
+            );
+          }
+        } catch {
+          // Non-fatal — if we can't check, don't block the swipe.
+        }
+      })();
     }
     // DOWN handled by the backend swipe-record path alone: it writes
     // the SwipeRecord with direction=down and calls mark_watched. No
@@ -1404,10 +1455,13 @@ export default function SwipeTab() {
               <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
             </Animated.View>
             <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}>
-              <Text style={styles.deckEdgeChipTextRight}>MORE LIKE THIS</Text>
+              <Text style={styles.deckEdgeChipTextRight}>SAVE</Text>
             </Animated.View>
             <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipTop, { opacity: upLabelOpacity }]}>
-              <Text style={styles.deckEdgeChipTextTop}>WATCH NOW</Text>
+              <Text style={styles.deckEdgeChipTextTop}>WATCHED + RATE</Text>
+            </Animated.View>
+            <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipBottom, { opacity: downLabelOpacity }]}>
+              <Text style={styles.deckEdgeChipTextBottom}>DIDN'T LIKE</Text>
             </Animated.View>
           </Animated.View>
 
@@ -1546,15 +1600,18 @@ export default function SwipeTab() {
                     </View>
                   )}
 
-                  {/* Directional feedback — restrained per spec §9. */}
+                  {/* Directional feedback — W02 commit labels. */}
                   <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipLeft, { opacity: leftLabelOpacity }]}>
                     <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
                   </Animated.View>
                   <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}>
-                    <Text style={styles.deckEdgeChipTextRight}>MORE LIKE THIS</Text>
+                    <Text style={styles.deckEdgeChipTextRight}>SAVE</Text>
                   </Animated.View>
                   <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipTop, { opacity: upLabelOpacity }]}>
-                    <Text style={styles.deckEdgeChipTextTop}>WATCH NOW</Text>
+                    <Text style={styles.deckEdgeChipTextTop}>WATCHED + RATE</Text>
+                  </Animated.View>
+                  <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipBottom, { opacity: downLabelOpacity }]}>
+                    <Text style={styles.deckEdgeChipTextBottom}>DIDN'T LIKE</Text>
                   </Animated.View>
                 </Animated.View>
               ) : (
@@ -2593,11 +2650,20 @@ const styles = StyleSheet.create({
   deckEdgeChipTop: {
     top: 16,
     left: "50%",
-    marginLeft: -50,
-    width: 100,
+    marginLeft: -70,
+    width: 140,
     alignItems: "center",
     borderColor: colors.accent,
     backgroundColor: "rgba(255,230,0,0.14)",
+  },
+  deckEdgeChipBottom: {
+    bottom: 16,
+    left: "50%",
+    marginLeft: -70,
+    width: 140,
+    alignItems: "center",
+    borderColor: colors.danger,
+    backgroundColor: "rgba(224,42,70,0.14)",
   },
   deckEdgeChipTextLeft: {
     fontFamily: fonts.monoSemiBold,
@@ -2616,6 +2682,12 @@ const styles = StyleSheet.create({
     fontSize: 10,
     letterSpacing: 1.4,
     color: colors.accent,
+  },
+  deckEdgeChipTextBottom: {
+    fontFamily: fonts.monoSemiBold,
+    fontSize: 10,
+    letterSpacing: 1.4,
+    color: colors.danger,
   },
 
   // Details + controls block — used in both narrow (below deck) and

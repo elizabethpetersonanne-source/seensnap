@@ -23,6 +23,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
 import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { subscribeTitleState } from "@/lib/title-state";
 import { useCyclingBackdrop, useFallbackBackdrop } from "@/lib/backdrop-pool";
 import { PosterMosaic } from "@/components/poster-mosaic";
 import { RatingCircle, RatingPicker } from "@/components/rating";
@@ -127,6 +128,30 @@ export default function FeedScreen() {
   const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [savedTitleIds, setSavedTitleIds] = useState<Set<string>>(new Set());
+
+  // A46–A47: subscribe to shared title-state so a save triggered
+  // on another surface (My Picks, Concierge result, title modal)
+  // flips the Save icon in the feed card without a re-fetch.
+  useEffect(() => {
+    const unsub = subscribeTitleState((snapshot) => {
+      if (snapshot.saved === true) {
+        setSavedTitleIds((current) => {
+          if (current.has(snapshot.title_id)) return current;
+          const next = new Set(current);
+          next.add(snapshot.title_id);
+          return next;
+        });
+      } else if (snapshot.saved === false) {
+        setSavedTitleIds((current) => {
+          if (!current.has(snapshot.title_id)) return current;
+          const next = new Set(current);
+          next.delete(snapshot.title_id);
+          return next;
+        });
+      }
+    });
+    return unsub;
+  }, []);
 
   const [attachedTitle, setAttachedTitle] = useState<Title | null>(null);
   const [showAddToTeam, setShowAddToTeam] = useState(false);

@@ -11,7 +11,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { router } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -29,8 +29,9 @@ import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context"
 
 import { AppHeader } from "@/components/headers/app-header";
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
-import { RatingEditor, type RatingSnapshot } from "@/components/rating-editor";
+import { RatingEditor, type RatingSnapshot, subscribeRatingChanges } from "@/components/rating-editor";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
+import { subscribeTitleState } from "@/lib/title-state";
 import { EmptyView, LoadingView } from "@/components/state-views";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, spacing } from "@/constants/theme";
@@ -101,6 +102,15 @@ export default function MyPicksScreen() {
   // hero without routing through the full title modal.
   const [rateTarget, setRateTarget] = useState<{ titleId: string; titleName: string; snapshot: RatingSnapshot | null } | null>(null);
 
+  const refetch = useCallback(() => {
+    if (!sessionToken) return () => {};
+    let cancelled = false;
+    fetchPicksCollections(sessionToken)
+      .then((res) => { if (!cancelled) setData(res); })
+      .catch(() => { /* keep whatever's already shown */ });
+    return () => { cancelled = true; };
+  }, [sessionToken]);
+
   useFocusEffect(
     useCallback(() => {
       let cancelled = false;
@@ -113,6 +123,26 @@ export default function MyPicksScreen() {
       return () => { cancelled = true; };
     }, [sessionToken]),
   );
+
+  // A46–A47: subscribe to the shared title-state pub/sub so a save
+  // or watched flip triggered from another surface (feed card,
+  // concierge result, title modal) refreshes My Picks without
+  // waiting for a tab-away/tab-back cycle. Debounced via a timer
+  // ref so a burst of changes collapses into one refetch.
+  const refetchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    const scheduleRefetch = () => {
+      if (refetchTimerRef.current) clearTimeout(refetchTimerRef.current);
+      refetchTimerRef.current = setTimeout(() => { refetch(); }, 300);
+    };
+    const unsubState = subscribeTitleState(() => scheduleRefetch());
+    const unsubRating = subscribeRatingChanges(() => scheduleRefetch());
+    return () => {
+      unsubState();
+      unsubRating();
+      if (refetchTimerRef.current) clearTimeout(refetchTimerRef.current);
+    };
+  }, [refetch]);
 
   const reservedBottomNav = 56 + insets.bottom + 48; // tab bar + pill nav
   const sectionHeight = height - insets.top - reservedBottomNav;
