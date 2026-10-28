@@ -65,6 +65,14 @@ export type ConciergeDecisionResponse = {
   retrieval_exhausted?: boolean;
   exact_match_count?: number;
   requested_count?: number;
+  // Typed CON04 partial reason — one of source_exhausted,
+  // upstream_failure, retrieval_budget_reached, metadata_unavailable,
+  // pick_one_intentional, or null.
+  partial_reason?: string | null;
+  // C16: per-title "why this fits" short strings keyed by title_id.
+  // The featured title's rationale is shown so promoting a thumbnail
+  // changes the explanation.
+  title_rationales?: Record<string, string>;
   // Chunk D: the composer may stash the original intent on the
   // response so the empty-state recovery UI can rebuild adjustment
   // prompts without plumbing the raw string through Discover state.

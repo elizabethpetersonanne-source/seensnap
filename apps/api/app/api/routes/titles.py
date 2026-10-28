@@ -380,15 +380,9 @@ def undo_title_swipe(
     if record.direction == "right":
         # Un-save: delete the WatchlistItem on the default Next
         # Watch list for this title ONLY if it exists and was added
-        # around this swipe time.
-        from app.models.social import Watchlist as _Watchlist
-        next_watch_list = db.scalar(
-            select(_Watchlist).where(
-                _Watchlist.owner_user_id == current_user.id,
-                _Watchlist.is_default.is_(True),
-                _Watchlist.name.ilike("next%watch%"),
-            )
-        )
+        # around this swipe time. QUEUE01: canonical resolver by role.
+        from app.services.watchlists import get_next_watch_list as _get_next_watch
+        next_watch_list = _get_next_watch(db, current_user.id)
         if next_watch_list is not None:
             item = db.scalar(
                 select(WatchlistItem).where(

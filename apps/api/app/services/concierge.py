@@ -77,6 +77,14 @@ class ConciergeConstraints:
     collection_scope: Literal["any", "my_next_watch", "watched", "named_list"] = "any"
     # When collection_scope == "named_list", the resolved list id.
     collection_list_id: str | None = None
+    # Region used for provider availability checks (ISO2). Resolved
+    # from UserPreferences at decision time; constants rendered via
+    # repr() so serialization is stable.
+    region_code: str = "US"
+    # If True, "on my subscription" semantics: only flatrate / free /
+    # ads providers count as access. If False, any availability
+    # (incl. rent/buy) satisfies the provider requirement.
+    subscription_access_only: bool = True
     # Original natural-language intent, kept verbatim for display.
     raw_intent: str = ""
 
@@ -103,6 +111,22 @@ class ConciergeDecision:
     # The default minimum we aim for. Clients can request a specific
     # count; today this is a server-side default.
     requested_count: int = 5
+    # CON04 typed partial reason. Only populated when status != "ready".
+    # One of: source_exhausted | metadata_unavailable | upstream_failure
+    # | retrieval_budget_reached | pick_one_intentional | None.
+    partial_reason: str | None = None
+    # Per-title "why this fits" short strings, keyed by title_id. The
+    # client surfaces the current featured title's rationale, so
+    # promoting a thumbnail changes the explanation per Oct-27 brief.
+    title_rationales: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class RetrievalResult:
+    """Internal: pipeline-level result of `_retrieve_candidates`."""
+    title_ids: list[UUID]
+    exhausted: bool  # True only when the authorized source actually drained
+    partial_reason: str | None = None
 
 
 # ─── Personal context (Concierge brief chunk B) ─────────────────────
@@ -199,14 +223,11 @@ def build_personal_context(db: Session, user_id: UUID) -> PersonalContext:
             _title_dict(t, extra={"rank": rf.position}) for rf, t in ranked_rows
         ]
 
-    # My Next Watch — real queue of saved-not-yet-watched intent.
-    next_watch_list = db.scalar(
-        select(Watchlist).where(
-            Watchlist.owner_user_id == user_id,
-            Watchlist.is_default.is_(True),
-            Watchlist.name.ilike("next%watch%"),
-        )
-    )
+    # My Next Watch — canonical queue via system_role (QUEUE01).
+    # NEVER name/is_default inference: display name is editable; identity
+    # lives in Watchlist.system_role.
+    from app.services.watchlists import get_next_watch_list as _get_next_watch
+    next_watch_list = _get_next_watch(db, user_id)
     if next_watch_list is not None:
         ctx.next_watch_total = int(db.scalar(
             select(sqlfunc.count()).select_from(WatchlistItem).where(WatchlistItem.watchlist_id == next_watch_list.id)
@@ -246,20 +267,19 @@ def build_personal_context(db: Session, user_id: UUID) -> PersonalContext:
         if regions:
             ctx.region = regions[0]
 
-    # SceneDNA — bounded to 6 signal labels.
-    try:
-        from app.models.taste import UserSignal
-        signals = db.scalars(
-            select(UserSignal)
-            .where(UserSignal.user_id == user_id)
-            .order_by(UserSignal.weight.desc())
-            .limit(6)
-        ).all()
-        ctx.scene_dna_signals = [s.label for s in signals if s.label]
-    except Exception:
-        # Signal table shape has evolved — degrade silently rather
-        # than break the whole Concierge request.
-        pass
+    # SceneDNA — bounded to 6 signal names. C12: UserSignal uses
+    # `score` and `signal_name` (not `weight` / `label`). Previously
+    # the mismatch was silently caught, which made every established
+    # user look like a cold start to the model. Let real schema errors
+    # surface — only an empty profile is a normal cold start.
+    from app.models.taste import UserSignal
+    signals = db.scalars(
+        select(UserSignal)
+        .where(UserSignal.user_id == user_id)
+        .order_by(UserSignal.score.desc())
+        .limit(6)
+    ).all()
+    ctx.scene_dna_signals = [s.signal_name for s in signals if s.signal_name]
 
     return ctx
 
@@ -385,6 +405,22 @@ def resolve_concierge_decision(
     constraints = _constraints_from_raw(raw, intent)
     rationale = (raw.get("rationale") or "").strip()[:280]
 
+    # C07 region wiring: provider availability is region-scoped. If
+    # the user has a region preference we respect it; otherwise we
+    # fall back to US (the catalog's dominant region).
+    if context.region:
+        constraints.region_code = context.region.upper()
+
+    # Interpret "on" (vs "rent" / "buy") as subscription-access-only.
+    # Explicit "available to rent/buy" could flip this later; today
+    # the default matches the brief: "on my subscription" must not
+    # silently mean paid rental.
+    low = intent.lower()
+    if any(p in low for p in ("rent or buy", "rent/buy", "available to rent", "can rent")):
+        constraints.subscription_access_only = False
+    else:
+        constraints.subscription_access_only = True
+
     # Chunk B: resolve "my number one" / "my #1" / "my top pick" from
     # the user's actual manual ranking, no matter what the model said.
     # If the model already added a canonical anchor we leave it alone;
@@ -416,13 +452,25 @@ def resolve_concierge_decision(
         s.strip() for s in (raw.get("suggested_titles") or [])
         if isinstance(s, str) and s.strip()
     ][:12]
-    grounded_ids = _retrieve_candidates(
+    # CON04: explicit "pick one" / "just choose" / "surprise me with
+    # one" intent lowers requested_count to 1 and treats a 1-result
+    # return as "ready", not "partial".
+    low_intent = intent.lower()
+    pick_one = any(
+        p in low_intent
+        for p in ("pick one", "just one", "just choose", "surprise me", "choose one for me")
+    )
+    target = 1 if pick_one else 5
+
+    retrieval = _retrieve_candidates(
         db,
         user_id=user_id,
         suggested_names=suggested_names,
         constraints=constraints,
         context=context,
+        target=target,
     )
+    grounded_ids = retrieval.title_ids
 
     if not grounded_ids:
         return ConciergeDecision(
@@ -432,15 +480,38 @@ def resolve_concierge_decision(
             title_ids=[],
             status="empty",
             status_detail=_empty_detail_for(constraints),
-            retrieval_exhausted=True,
+            retrieval_exhausted=retrieval.exhausted,
             exact_match_count=0,
+            requested_count=target,
+            partial_reason=retrieval.partial_reason or (
+                "source_exhausted" if retrieval.exhausted else None
+            ),
         )
 
-    # CON01/CON02: ≥ 5 → ready; 1..4 → partial so the UI can surface
-    # the specific limitation and offer scoped adjustments.
-    target = 5
+    # CON01/CON02: ≥ requested_count → ready; otherwise partial so the
+    # UI can surface the specific limitation and offer scoped
+    # adjustments. For an explicit "pick one", 1 is ready.
     status: Literal["ready", "partial"] = "ready" if len(grounded_ids) >= target else "partial"
     status_detail = "" if status == "ready" else _empty_detail_for(constraints)
+    partial_reason = None
+    if status == "partial":
+        if retrieval.partial_reason:
+            partial_reason = retrieval.partial_reason
+        elif retrieval.exhausted:
+            partial_reason = "source_exhausted"
+
+    # C16: per-title rationales so promoting a thumbnail changes the
+    # explanation. Pulled from the title's own metadata, not fabricated.
+    title_rationales: dict[str, str] = {}
+    if grounded_ids:
+        hydrated = db.scalars(
+            select(ContentTitle).where(ContentTitle.id.in_(grounded_ids))
+        ).all()
+        for t in hydrated:
+            r = _per_title_rationale(t, constraints)
+            if r:
+                title_rationales[str(t.id)] = r
+
     return ConciergeDecision(
         decision_id=None,
         constraints=constraints,
@@ -448,13 +519,11 @@ def resolve_concierge_decision(
         title_ids=grounded_ids,
         status=status,
         status_detail=status_detail,
-        # Retrieval was NOT exhausted only if we hit the display cap
-        # (currently 8). Under that cap, we did run the top-up pass
-        # and still had this many — so the pool is effectively empty
-        # at the exact-match level.
-        retrieval_exhausted=len(grounded_ids) < 8,
+        retrieval_exhausted=retrieval.exhausted,
         exact_match_count=len(grounded_ids),
         requested_count=target,
+        partial_reason=partial_reason,
+        title_rationales=title_rationales,
     )
 
 
@@ -525,10 +594,16 @@ def _resolve_collection_scope(constraints: ConciergeConstraints, intent: str) ->
     return constraints
 
 
-def _passes_constraints(row: ContentTitle, constraints: ConciergeConstraints) -> bool:
+def _passes_constraints(
+    row: ContentTitle,
+    constraints: ConciergeConstraints,
+    *,
+    db: Session | None = None,
+) -> bool:
     """Hard constraint gate. Unknown metadata is NEVER treated as a
     pass — e.g. a title with no runtime fails an "under 90 min" ask
-    rather than slipping through."""
+    rather than slipping through. C06/C07/C08: required_providers,
+    region and subscription_access_only are enforced here."""
     if constraints.media_type != "any":
         want = "movie" if constraints.media_type == "movie" else "series"
         if row.content_type != want:
@@ -539,6 +614,10 @@ def _passes_constraints(row: ContentTitle, constraints: ConciergeConstraints) ->
     if constraints.year_max:
         if row.release_date is None or row.release_date.year > constraints.year_max:
             return False
+    # C06 runtime: unknown runtime on movies fails; unknown runtime on
+    # series (TV episode runtime is often absent) is explicitly handled
+    # — we treat series without declared runtime as failing a runtime
+    # constraint rather than slipping through.
     if constraints.runtime_min:
         if row.runtime_minutes is None or row.runtime_minutes < constraints.runtime_min:
             return False
@@ -556,6 +635,34 @@ def _passes_constraints(row: ContentTitle, constraints: ConciergeConstraints) ->
         for e in excl:
             if e in row_name or e in row_genres:
                 return False
+    # C07/C08: required_providers in the user's region. Unknown
+    # availability is NEVER treated as "yes it's on your service."
+    if constraints.required_providers:
+        if db is None:
+            # Provider enforcement requires a session; refuse rather
+            # than silently pass. Callers must thread db through.
+            return False
+        from app.models.content import ContentAvailability
+        wanted = {p.strip().lower() for p in constraints.required_providers if p}
+        region = (constraints.region_code or "US").upper()
+        allowed_monetization = (
+            {"flatrate", "free", "ads"}
+            if constraints.subscription_access_only
+            else {"flatrate", "free", "ads", "rent", "buy"}
+        )
+        rows = db.scalars(
+            select(ContentAvailability).where(
+                ContentAvailability.content_title_id == row.id,
+                ContentAvailability.region_code == region,
+            )
+        ).all()
+        hits = [
+            a for a in rows
+            if a.provider_code and a.provider_code.lower() in wanted
+            and (a.monetization_type or "").lower() in allowed_monetization
+        ]
+        if not hits:
+            return False
     return True
 
 
@@ -582,10 +689,17 @@ def _retrieve_candidates(
     suggested_names: list[str],
     constraints: ConciergeConstraints,
     context: PersonalContext,
-) -> list[UUID]:
+    target: int = 5,
+) -> RetrievalResult:
     """Pull candidates from the correct source collection, then
     enforce hard constraints. The model's suggested titles SUPPLEMENT
-    retrieval; they are not the sole source."""
+    retrieval; they are not the sole source.
+
+    Returns a RetrievalResult: title_ids plus a truthful `exhausted`
+    flag. `exhausted=True` means the authorized source genuinely has
+    no more eligible candidates to consider; it does NOT mean we hit
+    an internal display cap or retrieval budget.
+    """
     from app.models.social import (
         RankedFavorite,
         Rating,
@@ -617,25 +731,27 @@ def _retrieve_candidates(
         )
         return [r for r in rows if r.id not in watched_ids]
 
-    # Hard source: My Next Watch
+    # Hard source: My Next Watch (QUEUE01 canonical resolver). We walk
+    # the ENTIRE queue — no 500-row ceiling — then filter and take the
+    # display slice (C10). Source exhaustion is unambiguous: if we read
+    # every row, we know we read every row.
     if scope == "my_next_watch":
-        next_watch_list = db.scalar(
-            select(Watchlist).where(
-                Watchlist.owner_user_id == user_id,
-                Watchlist.is_default.is_(True),
-                Watchlist.name.ilike("next%watch%"),
-            )
-        )
+        from app.services.watchlists import get_next_watch_list as _get_next_watch
+        next_watch_list = _get_next_watch(db, user_id)
         if next_watch_list is None:
-            return []
+            return RetrievalResult(title_ids=[], exhausted=True)
         rows = list(db.execute(
             select(ContentTitle)
             .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
             .where(WatchlistItem.watchlist_id == next_watch_list.id)
         ).scalars().all())
         rows = _apply_watched_policy(rows)
-        passing = [r for r in rows if _passes_constraints(r, constraints)]
-        return [r.id for r in passing[:8]]
+        passing = [r for r in rows if _passes_constraints(r, constraints, db=db)]
+        picked = [r.id for r in passing[:8]]
+        return RetrievalResult(
+            title_ids=picked,
+            exhausted=len(passing) <= 8,
+        )
 
     # Hard source: Watched (comfort rewatch) — only Watched titles the
     # user liked (score >= 7) count as "comfort."
@@ -649,31 +765,41 @@ def _retrieve_candidates(
                 Rating.score >= 7,
             )
         ).scalars().all())
-        passing = [r for r in rows if _passes_constraints(r, constraints)]
-        return [r.id for r in passing[:8]]
+        passing = [r for r in rows if _passes_constraints(r, constraints, db=db)]
+        picked = [r.id for r in passing[:8]]
+        return RetrievalResult(
+            title_ids=picked,
+            exhausted=len(passing) <= 8,
+        )
 
     # Hard source: named list — if the composer couldn't resolve a
     # specific list_id (list picker UX), return empty so the client
     # surfaces the selector.
     if scope == "named_list" and not constraints.collection_list_id:
-        return []
+        return RetrievalResult(title_ids=[], exhausted=False)
     if scope == "named_list" and constraints.collection_list_id:
         try:
             list_uuid = UUID(constraints.collection_list_id)
         except (TypeError, ValueError):
-            return []
+            return RetrievalResult(title_ids=[], exhausted=True)
         wl = db.scalar(
             select(Watchlist).where(Watchlist.id == list_uuid, Watchlist.owner_user_id == user_id)
         )
+        # C11: a foreign list ID returns empty without disclosing
+        # existence — same code path as "list not found".
         if wl is None:
-            return []
+            return RetrievalResult(title_ids=[], exhausted=True)
         rows = list(db.execute(
             select(ContentTitle)
             .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
             .where(WatchlistItem.watchlist_id == wl.id)
         ).scalars().all())
-        passing = [r for r in rows if _passes_constraints(r, constraints)]
-        return [r.id for r in passing[:8]]
+        passing = [r for r in rows if _passes_constraints(r, constraints, db=db)]
+        picked = [r.id for r in passing[:8]]
+        return RetrievalResult(
+            title_ids=picked,
+            exhausted=len(passing) <= 8,
+        )
 
     # Broad catalog: start from the model's suggestions, apply hard
     # constraints strictly. If the hard constraints eliminate
@@ -681,37 +807,74 @@ def _retrieve_candidates(
     # drops filters" is explicitly forbidden by the Concierge brief.
     grounded = _ground_suggestions(db, suggested_names, constraints)
 
-    # Oct-27 personalization brief CON01/CON03: default target is 5
-    # distinct eligible titles. If the model-suggested names ground
-    # fewer than that, top up from the SceneDNA-personalized rec
-    # service, filtering by the same hard constraints. The hard
-    # constraints are never relaxed to fill the layout.
-    if len(grounded) < 5:
+    # CON01/CON03/C15: when model-suggested names ground fewer than
+    # the target, fill from an INTENT-MATCHED catalog query — NOT
+    # from the personalized recommender. The previous top-up pulled
+    # SceneDNA-ranked titles that often had nothing to do with the
+    # search (user bug report: "the bottom four are not related to
+    # the search"). Request relevance precedes personal match.
+    #
+    # The intent-matched top-up runs in bounded batches until we
+    # have the target OR the catalog is drained OR we hit the budget.
+    exhausted = False
+    partial_reason: str | None = None
+    existing = set(grounded)
+
+    # Compute the exclusion set once — watched + user dislikes.
+    try:
+        from app.services.recommendation_service import _exclude_ids as _rec_exclude
+        exclude_set = _rec_exclude(db, user_id) if not constraints.rewatch_intent else set()
+    except Exception:
+        exclude_set = set()
+
+    # Walk candidate pages until target met or source drained.
+    # Each page is 40 catalog rows pre-filtered by media_type + genre
+    # + year; we then enforce the full hard-constraint gate (provider,
+    # runtime, etc.). This matches "retrieve an overcomplete eligible
+    # candidate pool from the requested source".
+    page = 0
+    PAGE_SIZE = 40
+    MAX_PAGES = 6  # retrieval budget
+    while len(grounded) < 8 and page < MAX_PAGES:
+        offset = page * PAGE_SIZE
         try:
-            from app.services.recommendation_service import recommend_for_user as _rec
-            top_up = _rec(
+            batch = _intent_matched_catalog_batch(
                 db,
-                user_id,
-                mode="perfect",
-                limit=25,
-                surface="concierge_top_up",
-                media_type=constraints.media_type if constraints.media_type != "any" else None,
-                include_watched=constraints.rewatch_intent,
+                constraints=constraints,
+                exclude=exclude_set | existing,
+                offset=offset,
+                limit=PAGE_SIZE,
             )
         except Exception:
-            top_up = []
-        existing = set(grounded)
-        for item in top_up:
-            t = item.get("title")
-            if t is None or t.id in existing:
+            # Database-level failure is NOT catalog exhaustion.
+            partial_reason = "upstream_failure"
+            break
+        if not batch:
+            # Pre-filtered pool genuinely empty at this offset.
+            exhausted = True
+            break
+        for t in batch:
+            if t.id in existing:
                 continue
-            if not _passes_constraints(t, constraints):
+            if not _passes_constraints(t, constraints, db=db):
                 continue
             grounded.append(t.id)
             existing.add(t.id)
             if len(grounded) >= 8:
                 break
-    return grounded
+        page += 1
+
+    if len(grounded) < 8 and page >= MAX_PAGES and not exhausted:
+        partial_reason = "retrieval_budget_reached"
+
+    # Report exhausted=True only when we KNOW the authorized source
+    # has nothing more to offer. Hitting the display cap of 8 is NOT
+    # exhaustion — those extra candidates can be shown via "Show more".
+    return RetrievalResult(
+        title_ids=grounded,
+        exhausted=exhausted and len(grounded) < 8,
+        partial_reason=partial_reason,
+    )
 
 
 _PERSONAL_NUMBER_ONE_PATTERNS = (
@@ -760,6 +923,117 @@ def _resolve_personal_references(
 # ─── Catalog grounding ───────────────────────────────────────────────
 
 
+def _intent_matched_catalog_batch(
+    db: Session,
+    *,
+    constraints: ConciergeConstraints,
+    exclude: set[UUID],
+    offset: int,
+    limit: int,
+) -> list[ContentTitle]:
+    """Pull a page of catalog rows pre-filtered by the intent's hard
+    constraints (media_type + genre + year window), ordered by
+    tmdb_vote_average desc so better-reviewed titles surface first.
+
+    This is the "intent-matched top-up" source — DISTINCT from
+    personalized recommendations. Request relevance comes first; the
+    personalized ranker is NOT appropriate for filling slots in a
+    search that is explicitly about tone/genre/runtime rather than
+    about the viewer's history.
+    """
+    stmt = select(ContentTitle)
+    if constraints.media_type != "any":
+        want = "movie" if constraints.media_type == "movie" else "series"
+        stmt = stmt.where(ContentTitle.content_type == want)
+    if constraints.year_min:
+        from datetime import date
+        stmt = stmt.where(ContentTitle.release_date >= date(constraints.year_min, 1, 1))
+    if constraints.year_max:
+        from datetime import date
+        stmt = stmt.where(ContentTitle.release_date <= date(constraints.year_max, 12, 31))
+    if constraints.genres:
+        # Genres is JSONB; use PG's ?| ("any of these keys") operator
+        # via text() so we filter in SQL rather than Python.
+        from sqlalchemy import text as _sql_text
+        # Convert canonical lowercase genre to Title Case variants
+        # TMDB uses. We OR the lowercase set the model emits against
+        # the row's genres array — case-insensitive via lower().
+        casefolded = [g.lower() for g in constraints.genres]
+        titlecased = [g.title() for g in constraints.genres]
+        # Build a parameterized ANY-of filter against the JSONB array.
+        # Postgres: genres ?| array[...]. Both case variants.
+        stmt = stmt.where(
+            _sql_text("genres ?| :genre_keys").bindparams(
+                genre_keys=list({*casefolded, *titlecased}),
+            )
+        )
+    if exclude:
+        stmt = stmt.where(ContentTitle.id.notin_(exclude))
+    # Only consider titles with real metadata — a 0-vote row is
+    # usually a stub. Order by vote desc so quality titles surface
+    # first, with a tie-breaker on tmdb_id so pagination is stable.
+    stmt = (
+        stmt.where(ContentTitle.tmdb_vote_average.is_not(None))
+        .order_by(
+            ContentTitle.tmdb_vote_average.desc(),
+            ContentTitle.tmdb_id.asc(),
+        )
+        .offset(offset)
+        .limit(limit)
+    )
+    return list(db.scalars(stmt).all())
+
+
+def _per_title_rationale(row: ContentTitle, constraints: ConciergeConstraints) -> str:
+    """Short, grounded reason this title fits the intent. We pull
+    evidence from the title's own metadata — runtime, genre match,
+    year — rather than a model fabrication. Max 2 clauses so it
+    stays readable in the hero band.
+    """
+    bits: list[str] = []
+    if constraints.runtime_max and row.runtime_minutes:
+        if row.runtime_minutes <= constraints.runtime_max:
+            bits.append(f"{row.runtime_minutes} min")
+    elif constraints.runtime_min and row.runtime_minutes:
+        if row.runtime_minutes >= constraints.runtime_min:
+            bits.append(f"{row.runtime_minutes} min")
+    row_genres = {str(g).lower() for g in (row.genres or [])}
+    matched_genre = next((g for g in constraints.genres if g in row_genres), None)
+    if matched_genre:
+        bits.append(matched_genre.title())
+    if constraints.year_min and row.release_date and row.release_date.year >= constraints.year_min:
+        bits.append(f"{row.release_date.year}")
+    if not bits:
+        # No specific constraint evidence — fall back to a short genre
+        # tag so the UI still has something truthful to show.
+        if row.genres:
+            bits.append(str(row.genres[0]).title())
+    return ", ".join(bits)
+
+
+def _normalize_title_for_match(name: str) -> str:
+    """Strip common punctuation + ampersand/colon variants so a TMDB
+    hit for "The Lord of the Rings: The Fellowship of the Ring" and
+    the model's "Lord of the Rings - Fellowship of the Ring" compare
+    equal. Keeps characters, lowercases, collapses whitespace.
+    """
+    import re
+    s = (name or "").lower()
+    # Normalize separators and punctuation we treat as noise.
+    s = s.replace("&", " and ")
+    # Apostrophes close the word (It's → its); other punctuation
+    # separates words (Mr. & Mrs. → mr and mrs).
+    s = re.sub(r"[\'’`]", "", s)
+    s = re.sub(r"[\-\:\–\—\(\)\[\]\"\.,!?]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    # Drop a leading "the " / "a " for the comparison only.
+    for art in ("the ", "a ", "an "):
+        if s.startswith(art):
+            s = s[len(art):]
+            break
+    return s
+
+
 def _ground_suggestions(
     db: Session,
     suggested_names: list[str],
@@ -806,30 +1080,32 @@ def _ground_suggestions(
     still_missing = [n for n in suggested_names if n.lower() not in found_names]
 
     # Pull missing titles from TMDB and upsert so grounding has real
-    # data to match on. Capped so a hallucinated 8-item list doesn't
-    # fan out to 8 TMDB calls on every Concierge request.
+    # data to match on. Capped so a hallucinated 12-item list doesn't
+    # fan out to 12 TMDB calls on every Concierge request.
+    #
+    # Brief: "TMDB search misses and title-name normalization must
+    # resolve to a verified intended title. Do not accept an
+    # unrelated first search hit merely because exact matching failed."
     if still_missing:
         from app.services.tmdb import search_titles
-        for name in still_missing[:6]:
+        for name in still_missing[:10]:
             try:
                 fetched = search_titles(db, name)
             except Exception:
                 continue
-            # search_titles returns best-match first; take only matches
-            # whose title is a reasonable match to the ask (not pure
-            # relevance from TMDB's own ranker).
-            target_lower = name.lower()
+            target_norm = _normalize_title_for_match(name)
+            matched: ContentTitle | None = None
             for cand in fetched:
-                if cand.title.lower() == target_lower:
-                    rows.append(cand)
-                    found_names.add(cand.title.lower())
+                if _normalize_title_for_match(cand.title) == target_norm:
+                    matched = cand
                     break
-            else:
-                # Accept the top hit if the exact match wasn't there —
-                # TMDB often normalizes punctuation / numerals.
-                if fetched:
-                    rows.append(fetched[0])
-                    found_names.add(fetched[0].title.lower())
+            # If no normalized exact match, do NOT silently accept the
+            # top hit — that routinely surfaces an unrelated title and
+            # breaks C06 constraint enforcement for the model-suggested
+            # branch. Simply drop the suggestion.
+            if matched is not None:
+                rows.append(matched)
+                found_names.add(matched.title.lower())
 
     # Preserve the LLM's suggested order where titles pass hard
     # constraints. Oct-27 Concierge brief chunk C: NO soft fallback
@@ -838,12 +1114,12 @@ def _ground_suggestions(
     # state with specific adjustment chips.
     ordered: list[UUID] = []
     for name in suggested_names:
-        target = name.lower()
+        target = _normalize_title_for_match(name)
         for r in rows:
             if (
-                r.title.lower() == target
+                _normalize_title_for_match(r.title) == target
                 and r.id not in ordered
-                and _passes_constraints(r, constraints)
+                and _passes_constraints(r, constraints, db=db)
             ):
                 ordered.append(r.id)
                 break
@@ -883,11 +1159,13 @@ def _constraints_from_raw(raw: dict, intent: str) -> ConciergeConstraints:
 # ─── Provider adapters ───────────────────────────────────────────────
 
 
-_PROMPT_TEMPLATE = """You are SeenSnap's movie/TV discovery concierge. The user described what they want to watch. Your job is to translate that into a typed constraint object AND suggest up to 8 real titles that fit.
+_PROMPT_TEMPLATE = """You are SeenSnap's movie/TV discovery concierge. The user described what they want to watch. Your job is to translate that into a typed constraint object AND suggest 10-12 real titles that fit.
 
 Rules:
 - Suggest ONLY real existing movies or TV series by their canonical title.
 - Do not invent titles.
+- Return AT LEAST 10 suggestions when the catalog can plausibly offer them. The display picks the best 5 — more candidates mean better grounding.
+- Each suggestion must plausibly satisfy EVERY hard constraint (media_type, runtime, provider, exclusions). Don't propose a 2-hour movie when the user asked for "under 90 min".
 - Keep rationale to 1-2 sentences — plain, grounded, no hype.
 - `media_type` is "movie" | "series" | "any".
 - `genres` is a short list of lowercase canonical genre names.
@@ -915,7 +1193,7 @@ Context: {context_summary}
   "required_providers": [], "exclusions": [], "like_anchors": [],
   "rewatch_intent": false,
   "rationale": "one or two sentences",
-  "suggested_titles": ["Title One", "Title Two"]
+  "suggested_titles": ["Title One", "Title Two", "Title Three", "Title Four", "Title Five", "Title Six", "Title Seven", "Title Eight", "Title Nine", "Title Ten"]
 }}
 
 User intent: {intent}"""

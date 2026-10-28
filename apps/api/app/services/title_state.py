@@ -47,9 +47,15 @@ from app.models.content import ContentTitle
 from app.models.social import Rating, RankedFavorite, TitleWatchStatus, Watchlist, WatchlistItem
 
 
-# My Next Watch is a canonical watchlist per Sep-22 brief §7. We find
-# or create it on demand so transitions are robust.
-_NEXT_WATCH_NAME = "My Next Watch"
+# My Next Watch is a canonical watchlist per Sep-22 brief §7 and the
+# canonical queue per QUEUE01: identity lives in Watchlist.system_role,
+# NOT in a display name. We route every mutation through the shared
+# resolver in app.services.watchlists so a user who renames their
+# queue (or whose legacy default was named differently) never
+# accidentally spawns a parallel list.
+#
+# S01: changing display name cannot disconnect any Save/Next Watch
+# consumer; the system_role is sticky.
 
 
 @dataclass
@@ -76,23 +82,11 @@ class TitleStateError(Exception):
 
 
 def _get_or_create_next_watch(db: Session, user_id: UUID) -> Watchlist:
-    wl = db.scalar(
-        select(Watchlist).where(
-            Watchlist.owner_user_id == user_id,
-            Watchlist.name == _NEXT_WATCH_NAME,
-        )
-    )
-    if wl is None:
-        wl = Watchlist(
-            owner_user_id=user_id,
-            name=_NEXT_WATCH_NAME,
-            description="Titles you want to watch next.",
-            is_default=False,
-            is_system_list=True,
-        )
-        db.add(wl)
-        db.flush()
-    return wl
+    """Canonical Next Watch — identity by system_role, not display name.
+    Delegates to the shared resolver which handles legacy back-fill
+    atomically with the partial unique index."""
+    from app.services.watchlists import ensure_next_watch_list
+    return ensure_next_watch_list(db, user_id)
 
 
 def _snapshot(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
@@ -112,11 +106,9 @@ def _snapshot(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
     if rating is not None and rating.score is not None:
         score_int = int(round(float(rating.score)))
 
-    # Saved — anywhere in Next Watch
-    nw = db.scalar(select(Watchlist).where(
-        Watchlist.owner_user_id == user_id,
-        Watchlist.name == _NEXT_WATCH_NAME,
-    ))
+    # Saved — in the canonical Next Watch queue (system_role).
+    from app.services.watchlists import get_next_watch_list
+    nw = get_next_watch_list(db, user_id)
     saved = False
     if nw is not None:
         saved = db.scalar(select(WatchlistItem.id).where(
@@ -190,10 +182,8 @@ def save_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot
 
 def unsave_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
     """Remove from Next Watch only. Does NOT clear watched/rating/favorite."""
-    wl = db.scalar(select(Watchlist).where(
-        Watchlist.owner_user_id == user_id,
-        Watchlist.name == _NEXT_WATCH_NAME,
-    ))
+    from app.services.watchlists import get_next_watch_list
+    wl = get_next_watch_list(db, user_id)
     if wl is not None:
         db.execute(
             WatchlistItem.__table__.delete().where(
@@ -237,10 +227,8 @@ def mark_watched(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
 
     # Remove from Next Watch — Watched supersedes Want To Watch intent
     # unless the user has explicitly re-saved after watching.
-    wl = db.scalar(select(Watchlist).where(
-        Watchlist.owner_user_id == user_id,
-        Watchlist.name == _NEXT_WATCH_NAME,
-    ))
+    from app.services.watchlists import get_next_watch_list
+    wl = get_next_watch_list(db, user_id)
     if wl is not None:
         db.execute(
             WatchlistItem.__table__.delete().where(
@@ -298,10 +286,8 @@ def rate_title(
         )
     )
     # Remove from Next Watch.
-    wl = db.scalar(select(Watchlist).where(
-        Watchlist.owner_user_id == user_id,
-        Watchlist.name == _NEXT_WATCH_NAME,
-    ))
+    from app.services.watchlists import get_next_watch_list
+    wl = get_next_watch_list(db, user_id)
     if wl is not None:
         db.execute(
             WatchlistItem.__table__.delete().where(

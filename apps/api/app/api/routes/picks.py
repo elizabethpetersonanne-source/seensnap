@@ -121,14 +121,9 @@ def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksC
         if r.content_title_id in ranked_titles_map
     ]
 
-    # ── My Next Watch — default watchlist named "Next Watch" ─────────
-    next_watch_list = db.scalar(
-        select(Watchlist).where(
-            Watchlist.owner_user_id == uid,
-            Watchlist.is_default.is_(True),
-            Watchlist.name.ilike("next%watch%"),
-        )
-    )
+    # ── My Next Watch — canonical queue via system_role (QUEUE01) ────
+    from app.services.watchlists import get_next_watch_list as _get_next_watch
+    next_watch_list = _get_next_watch(db, uid)
     next_watch_titles: list[PickTitle] = []
     my_next_watch_count = 0
     if next_watch_list is not None:

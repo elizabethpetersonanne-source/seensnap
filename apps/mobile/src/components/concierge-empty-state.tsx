@@ -28,8 +28,35 @@ type DiagnosisBundle = {
 };
 
 
-function diagnosisFor(statusDetail: string | undefined, originalIntent: string | null): DiagnosisBundle {
+function diagnosisFor(
+  statusDetail: string | undefined,
+  originalIntent: string | null,
+  partialReason: string | null | undefined,
+): DiagnosisBundle {
   const intentTail = originalIntent ? ` (${originalIntent.slice(0, 60)}${originalIntent.length > 60 ? "…" : ""})` : "";
+  // CON04: a retrieval failure is NOT a "no matching titles" state.
+  // Say so plainly and offer Retry instead of asking the user to
+  // broaden their request.
+  if (partialReason === "upstream_failure") {
+    return {
+      headline: "I couldn't finish checking the catalog.",
+      body: "The provider timed out while hydrating results. Your request is preserved — Retry to try again.",
+      adjustments: [
+        { id: "retry", label: "Retry", prompt: originalIntent ?? "" },
+        { id: "edit", label: "Edit request", prompt: originalIntent ?? "" },
+      ],
+    };
+  }
+  if (partialReason === "retrieval_budget_reached") {
+    return {
+      headline: "I searched a lot but didn't lock five eligible picks.",
+      body: "I checked everything within this turn's budget. Showing what I did find, or try a narrower ask to get all five.",
+      adjustments: [
+        { id: "retry", label: "Keep looking", prompt: originalIntent ?? "" },
+        { id: "edit", label: "Narrow it", prompt: originalIntent ?? "" },
+      ],
+    };
+  }
   switch (statusDetail) {
     case "empty_next_watch_scope":
       return {
@@ -97,14 +124,16 @@ export function ConciergeEmptyState({
   statusDetail,
   originalIntent,
   rationale,
+  partialReason,
   onApplyAdjustment,
 }: {
   statusDetail: string | undefined;
   originalIntent: string | null;
   rationale?: string | null;
+  partialReason?: string | null;
   onApplyAdjustment: (prompt: string) => void;
 }) {
-  const d = diagnosisFor(statusDetail, originalIntent);
+  const d = diagnosisFor(statusDetail, originalIntent, partialReason);
   // Prefer the server's rationale when it's non-empty — Chunk C may
   // have populated it with a precise explanation; otherwise fall back
   // to the generic copy table.

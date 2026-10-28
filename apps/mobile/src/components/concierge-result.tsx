@@ -35,6 +35,11 @@ export function ConciergeResult({
   titles,
   constraints,
   canUndo,
+  status,
+  partialReason,
+  requestedCount,
+  exactMatchCount,
+  titleRationales,
   onPressFeatured,
   onRefine,
   onSave,
@@ -46,6 +51,16 @@ export function ConciergeResult({
   titles: ConciergeTitleCard[];
   constraints?: Record<string, unknown> | null;
   canUndo?: boolean;
+  // CON04: truthful partial-state banner. When status === "partial"
+  // we show "N of M" with a reason, so the user understands why we
+  // returned fewer than requested.
+  status?: "ready" | "partial" | "unavailable" | "empty" | "error" | "allowance_exhausted";
+  partialReason?: string | null;
+  requestedCount?: number;
+  exactMatchCount?: number;
+  // C16: per-title "why this fits" — rendered under the featured
+  // hero when present so promoting a thumbnail changes the copy.
+  titleRationales?: Record<string, string>;
   onPressFeatured: (t: ConciergeTitleCard) => void;
   onRefine?: (kind: ConciergeRefineKind, extra?: { featured_title_id?: string }) => void;
   // Oct-27 brief: Save / Send / Watch Team / Rate action rail on
@@ -66,6 +81,11 @@ export function ConciergeResult({
   if (titles.length === 0) return null;
   const featured = titles.find((t) => t.title_id === featuredId) ?? titles[0];
   const continuation = titles.filter((t) => t.title_id !== featured.title_id).slice(0, 4);
+  // C16: per-title rationale takes precedence over the shared one so
+  // promoting a thumbnail changes the explanation. Falls back to the
+  // model's shared rationale when none is available for the featured.
+  const featuredRationale = ((titleRationales ?? {})[featured.title_id] ?? "").trim();
+  const effectiveRationale = featuredRationale || rationale;
 
   const runtimeConstrained =
     (constraints && (typeof constraints.runtime_max === "number" || typeof constraints.runtime_min === "number")) ||
@@ -78,10 +98,10 @@ export function ConciergeResult({
         <Text style={styles.kicker}>CONCIERGE RESPONSE</Text>
       </View>
 
-      {rationale ? (
+      {effectiveRationale ? (
         <View style={styles.responseBlock}>
           <View style={styles.responseRule} />
-          <Text style={styles.responseText}>{rationale}</Text>
+          <Text style={styles.responseText}>{effectiveRationale}</Text>
         </View>
       ) : null}
 
@@ -190,9 +210,13 @@ export function ConciergeResult({
         </View>
       ) : null}
 
-      {titles.length < 5 ? (
+      {status === "partial" && (requestedCount ?? 5) > 1 ? (
         <Text style={styles.lowCountNote}>
-          {titles.length === 1 ? "1 result" : `${titles.length} results`} — try an adjustment below for more.
+          {partialNoteFor({
+            titles: exactMatchCount ?? titles.length,
+            requested: requestedCount ?? 5,
+            reason: partialReason ?? null,
+          })}
         </Text>
       ) : null}
 
@@ -234,6 +258,31 @@ function RefineChip({ label, onPress }: { label: string; onPress: () => void }) 
 
 function truncate(s: string, n: number): string {
   return s.length <= n ? s : `${s.slice(0, n - 1)}…`;
+}
+
+
+function partialNoteFor({
+  titles,
+  requested,
+  reason,
+}: {
+  titles: number;
+  requested: number;
+  reason: string | null;
+}): string {
+  const prefix = titles === 1 ? "I found 1 match" : `I found ${titles} of ${requested}`;
+  switch (reason) {
+    case "upstream_failure":
+      return `${prefix}, but couldn't finish checking the others. Retry below.`;
+    case "retrieval_budget_reached":
+      return `${prefix} within this turn's budget. Try an adjustment below for more.`;
+    case "metadata_unavailable":
+      return `${prefix}; some titles were missing metadata and were skipped.`;
+    case "source_exhausted":
+      return `${prefix} in that source. Try broadening or picking a different list.`;
+    default:
+      return `${prefix} — try an adjustment below for more.`;
+  }
 }
 
 

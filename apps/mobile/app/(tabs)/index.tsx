@@ -884,6 +884,11 @@ export default function DiscoverScreen() {
               rationale={conciergeDecision.rationale}
               titles={conciergeDecision.titles}
               constraints={conciergeDecision.constraints ?? undefined}
+              status={conciergeDecision.status}
+              partialReason={conciergeDecision.partial_reason ?? null}
+              requestedCount={conciergeDecision.requested_count ?? 5}
+              exactMatchCount={conciergeDecision.exact_match_count ?? conciergeDecision.titles.length}
+              titleRationales={conciergeDecision.title_rationales ?? {}}
               canUndo={(conciergeDecision as unknown as { _turn_count?: number })._turn_count !== undefined && (conciergeDecision as unknown as { _turn_count?: number })._turn_count! > 1}
               onPressFeatured={(t) => {
                 trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
@@ -948,6 +953,7 @@ export default function DiscoverScreen() {
               statusDetail={conciergeDecision.status_detail}
               originalIntent={conciergeDecision._intent ?? null}
               rationale={conciergeDecision.rationale}
+              partialReason={conciergeDecision.partial_reason ?? null}
               onApplyAdjustment={async (prompt) => {
                 if (!sessionToken || !prompt.trim()) return;
                 trackEvent("concierge_adjustment_applied", { status_detail: conciergeDecision.status_detail });

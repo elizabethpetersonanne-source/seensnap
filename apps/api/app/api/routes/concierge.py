@@ -75,6 +75,13 @@ class ConciergeDecisionResponse(BaseModel):
     retrieval_exhausted: bool = True
     exact_match_count: int = 0
     requested_count: int = 5
+    # CON04 typed reason the result set is partial / empty.
+    # One of: source_exhausted | metadata_unavailable | upstream_failure
+    # | retrieval_budget_reached | pick_one_intentional | None.
+    partial_reason: str | None = None
+    # C16 per-title rationales keyed by title_id — client picks the
+    # featured title's rationale so promoting a thumbnail changes it.
+    title_rationales: dict[str, str] = {}
 
 
 def _hydrate_decision_titles(db, title_ids: list[UUID]) -> list[ConciergeTitleCard]:
@@ -189,8 +196,12 @@ def post_concierge_decision(
         collection_list_id=payload.collection_list_id,
     )
 
-    # Successful means we actually produced grounded results.
-    successful = decision.status == "ready" and bool(decision.title_ids)
+    # CON04/C19: a decision counts as successful if it produced at
+    # least one usable result — including an intentional "pick one"
+    # or a partial set. Empty / error / unavailable responses release
+    # the slot. Retries with the same idempotency_key are deduped at
+    # reserve time.
+    successful = decision.status in ("ready", "partial") and bool(decision.title_ids)
     if allowance is not None and allowance.decision_id is not None:
         finalize_concierge_decision(
             db,
@@ -226,6 +237,8 @@ def post_concierge_decision(
         retrieval_exhausted=decision.retrieval_exhausted,
         exact_match_count=decision.exact_match_count,
         requested_count=decision.requested_count,
+        partial_reason=decision.partial_reason,
+        title_rationales=decision.title_rationales,
     )
 
 
@@ -388,6 +401,8 @@ def post_concierge_refinement(
         retrieval_exhausted=decision.retrieval_exhausted,
         exact_match_count=decision.exact_match_count,
         requested_count=decision.requested_count,
+        partial_reason=decision.partial_reason,
+        title_rationales=decision.title_rationales,
     )
 
 
@@ -457,13 +472,8 @@ def get_suggested_prompts(
         .limit(1)
     )
 
-    next_watch_list = db.scalar(
-        select(Watchlist).where(
-            Watchlist.owner_user_id == uid,
-            Watchlist.is_default.is_(True),
-            Watchlist.name.ilike("next%watch%"),
-        )
-    )
+    from app.services.watchlists import get_next_watch_list as _get_next_watch
+    next_watch_list = _get_next_watch(db, uid)
     next_watch_count = 0
     if next_watch_list is not None:
         next_watch_count = int(db.scalar(
