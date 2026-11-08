@@ -24,6 +24,13 @@ export type NotificationListResult = {
   next_cursor: string | null;
 };
 
+export async function resolveNotificationDestination(sessionToken: string, notificationId: string) {
+  return apiRequest<{ route: string; available: boolean; message: string | null }>(
+    `/notifications/${encodeURIComponent(notificationId)}/open`,
+    { method: "POST", token: sessionToken },
+  );
+}
+
 export type NotificationPrefs = {
   team_activity: boolean;
   direct_engagement: boolean;

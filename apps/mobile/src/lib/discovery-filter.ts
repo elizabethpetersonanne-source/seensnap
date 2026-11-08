@@ -1,76 +1,56 @@
-/**
- * Oct-27 followup W09: one filter session shared by Swipe + Preview.
- *
- * Previously each tab held its own useState for CategoryFilter, so
- * picking Comedy on Swipe did nothing when the user tabbed over to
- * Previews. This module hoists the filter to a module-scoped store
- * with a pub-sub + hook, matching the pattern we already use for
- * title-state and rating-events.
- *
- * The store is intentionally lightweight — no AsyncStorage, no
- * persistence beyond the process. Launching the app clears the
- * filter so a stale "Horror" from a prior session doesn't carry
- * over silently.
- */
+/** Account-scoped, persisted filters shared by Swipe and Preview. */
 import { useEffect, useState } from "react";
-
 import type { CategoryFilter } from "@/components/category-chips";
+import { useAuth } from "@/lib/auth";
+import * as Storage from "@/lib/session-storage";
 
-
-type Listener = (filter: CategoryFilter) => void;
-
-
+type Listener = () => void;
+let account: string | null = null;
+let ready = false;
+let generation = 0;
 let current: CategoryFilter = { media_type: null, genre: null };
 const listeners = new Set<Listener>();
+const notify = () => listeners.forEach((listener) => listener());
+const key = (userId: string) => `discovery_filter_v2_${userId}`;
 
-
-export function getDiscoveryFilter(): CategoryFilter {
-  return current;
-}
-
-
-export function setDiscoveryFilter(next: CategoryFilter): void {
-  // Equality check so identical writes don't rebroadcast.
-  if (
-    current.media_type === next.media_type &&
-    current.genre === next.genre
-  ) {
-    return;
-  }
-  current = { media_type: next.media_type, genre: next.genre };
-  listeners.forEach((l) => {
-    try { l(current); } catch { /* bad listener shouldn't break others */ }
-  });
-}
-
-
-export function subscribeDiscoveryFilter(listener: Listener): () => void {
-  listeners.add(listener);
-  return () => { listeners.delete(listener); };
-}
-
-
-/** React hook — reads the shared filter and re-renders on changes.
- * Returned setter writes through the shared store so Swipe and
- * Preview subscribers both update. */
-export function useDiscoveryFilter(): [CategoryFilter, (next: CategoryFilter) => void] {
-  const [state, setState] = useState<CategoryFilter>(current);
-  useEffect(() => {
-    const unsub = subscribeDiscoveryFilter((next) => setState(next));
-    // Catch up with any changes that happened between first render
-    // and effect run.
-    if (state.media_type !== current.media_type || state.genre !== current.genre) {
-      setState(current);
+async function activate(userId: string | null) {
+  if (account === userId && (ready || account !== null)) return;
+  account = userId; ready = false;
+  current = { media_type: null, genre: null };
+  const version = ++generation;
+  notify();
+  if (!userId) return;
+  try {
+    const raw = await Storage.getItem(key(userId));
+    if (raw && generation === version) {
+      const saved = JSON.parse(raw) as CategoryFilter;
+      if ([null, "movie", "show"].includes(saved.media_type) && (saved.genre === null || typeof saved.genre === "string")) current = saved;
     }
-    return unsub;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  return [state, setDiscoveryFilter];
+  } catch { /* Storage failure does not prevent browsing. */ }
+  if (generation === version) { ready = true; notify(); }
 }
 
-
-/** Clear on logout or explicit "new session" so a filter from a
- *  prior account doesn't bleed over. */
-export function clearDiscoveryFilter(): void {
-  setDiscoveryFilter({ media_type: null, genre: null });
+export function getDiscoveryFilter() { return current; }
+export function setDiscoveryFilter(next: CategoryFilter) {
+  current = { media_type: next.media_type, genre: next.genre };
+  if (account) void Storage.setItem(key(account), JSON.stringify(current)).catch(() => {});
+  notify();
+}
+export function clearDiscoveryFilter() {
+  generation++; account = null; ready = false;
+  current = { media_type: null, genre: null }; notify();
+}
+export function useDiscoveryFilter(): [CategoryFilter, (next: CategoryFilter) => void, boolean] {
+  const { user } = useAuth();
+  const userId = user?.user_id ?? null;
+  const [, render] = useState(0);
+  useEffect(() => {
+    const update = () => render((n) => n + 1);
+    listeners.add(update);
+    void activate(userId);
+    return () => { listeners.delete(update); };
+  }, [userId]);
+  return [account === userId ? current : { media_type: null, genre: null },
+    (next) => { if (account === userId && ready) setDiscoveryFilter(next); },
+    account === userId && ready];
 }

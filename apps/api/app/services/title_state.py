@@ -198,7 +198,7 @@ def unsave_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
     return _snapshot(db, user_id, title_id)
 
 
-def mark_watched(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
+def mark_watched(db: Session, user_id: UUID, title_id: UUID, *, commit: bool = True) -> TitleStateSnapshot:
     """Set watched; remove from Next Watch. Rating optional."""
     db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
@@ -240,7 +240,10 @@ def mark_watched(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
                 WatchlistItem.content_title_id == title_id,
             )
         )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return _snapshot(db, user_id, title_id)
 
 

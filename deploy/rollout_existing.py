@@ -24,6 +24,9 @@ JOB = SERVICE + "-migrate"
 REQUIRED_ROUTES = {
     "/api/v1/me/picks/collections/{category}": "get",
     "/api/v1/me/concierge/decision/{decision_id}": "get",
+    "/api/v1/titles/recommendations/feed": "get",
+    "/api/v1/notifications/{notification_id}/open": "post",
+    "/api/v1/social/posts/{post_id}": "get",
 }
 
 

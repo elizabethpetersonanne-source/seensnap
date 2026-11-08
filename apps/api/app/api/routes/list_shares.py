@@ -1,14 +1,7 @@
-"""List sharing — token-based public access to a user's watchlist.
+"""Share tokens locate lists; current audience and block rules govern every read.
 
-Flow:
-  1. Owner POSTs /me/watchlist/lists/{list_id}/share → server mints a token,
-     returns a shareable URL (constructed against SHARE_BASE_URL).
-  2. Anyone with the token GETs /public/lists/{token} → server returns the
-     list contents (no auth required) unless the share was revoked.
-  3. Owner DELETEs the share → sets revoked_at, future opens 404.
-
-Never exposes private lists without an active token. Track open_count for
-attribution / analytics.
+Only explicitly shared Followers/Public lists receive tokens. Reducing the
+list audience revokes old tokens, including after later republication.
 """
 from __future__ import annotations
 
@@ -20,11 +13,12 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
 
-from app.api.dependencies import CurrentUser, DbSession
+from app.api.dependencies import CurrentUser, DbSession, OptionalCurrentUser
 from app.core.config import settings
 from app.models.content import ContentTitle
 from app.models.social import ListShare, Watchlist, WatchlistItem
 from app.models.user import UserProfile
+from app.services.visibility import can_view_list
 
 router = APIRouter()
 
@@ -82,6 +76,9 @@ def create_or_reuse_list_share(
     if watchlist is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
 
+    if watchlist.visibility == "private":
+        raise HTTPException(status_code=400, detail="Choose Followers or Public in the list's settings before sharing.")
+
     existing = db.scalar(
         select(ListShare)
         .where(
@@ -95,7 +92,7 @@ def create_or_reuse_list_share(
         return ShareCreatedResponse(
             token=existing.token,
             url=_build_share_url(existing.token),
-            visibility=existing.visibility,
+            visibility=watchlist.visibility,
             revoked=False,
             open_count=existing.open_count,
             created_at=existing.created_at,
@@ -114,7 +111,7 @@ def create_or_reuse_list_share(
     return ShareCreatedResponse(
         token=share.token,
         url=_build_share_url(share.token),
-        visibility=share.visibility,
+        visibility=watchlist.visibility,
         revoked=False,
         open_count=0,
         created_at=share.created_at,
@@ -155,10 +152,10 @@ def get_list_share_status(
         )
         .order_by(ListShare.created_at.desc())
     )
-    if share is None:
+    if share is None or watchlist.visibility == "private":
         return ShareStatusResponse(is_public=False)
     return ShareStatusResponse(
-        is_public=True,
+        is_public=watchlist.visibility == "public",
         token=share.token,
         url=_build_share_url(share.token),
         open_count=share.open_count,
@@ -193,15 +190,17 @@ def revoke_list_share(
 
 
 @router.get("/public/lists/{token}", response_model=PublicListResponse)
-def get_public_shared_list(token: str, db: DbSession) -> PublicListResponse:
-    """No-auth public endpoint. Returns list contents for a valid, non-revoked token."""
+def get_public_shared_list(token: str, db: DbSession, current_user: OptionalCurrentUser) -> PublicListResponse:
+    """A token locates a list; its current audience still controls access."""
     share = db.scalar(
         select(ListShare).where(ListShare.token == token, ListShare.revoked_at.is_(None))
     )
     if share is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found or revoked")
     watchlist = db.scalar(select(Watchlist).where(Watchlist.id == share.watchlist_id))
-    if watchlist is None:
+    if watchlist is None or share.created_by_user_id != watchlist.owner_user_id or not can_view_list(
+        db, watchlist.id, current_user.id if current_user else None,
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
 
     items = db.execute(

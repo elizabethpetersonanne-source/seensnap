@@ -105,6 +105,7 @@ def create_wall_post(
             "action_label": "rated a title" if title is not None and rating is not None else "shared an update",
         },
     )
+    event.visibility = "team" if share_to_team_id else "followers"
     db.commit()
     db.refresh(event)
     return event
@@ -112,6 +113,8 @@ def create_wall_post(
 
 def require_event_access(db: Session, event: FeedEvent, user_id: UUID) -> None:
     if event.team_id is None:
+        from app.services.social_feed import require_social_post
+        require_social_post(db, user_id, event.id)
         return
     membership = db.scalar(
         select(TeamMember).where(
@@ -214,14 +217,16 @@ def list_comments(db: Session, event_id: UUID) -> list[FeedComment]:
 
 
 def list_feed_for_you(db: Session, user_id: UUID, limit: int = 50) -> list[FeedEvent]:
+    from app.services.social_feed import _visible_to_viewer_clause, _block_exclusion_clause
     ensure_follows_table(db)
     team_ids = list_user_team_ids(db, user_id)
     segment = FeedEvent.payload["segment"].astext
     stmt = (
         select(FeedEvent)
         .where(
-            ((FeedEvent.team_id.is_(None)) & ((segment != "discover") | segment.is_(None)))
-            | (FeedEvent.team_id.in_(team_ids))
+            _visible_to_viewer_clause(user_id),
+            _block_exclusion_clause(user_id),
+            ((segment != "discover") | segment.is_(None)),
         )
         .order_by(FeedEvent.created_at.desc())
         .limit(limit)
@@ -252,10 +257,13 @@ def list_feed_watch_teams(db: Session, user_id: UUID, team_id: UUID | None, limi
 
 
 def list_feed_discover(db: Session, viewer_user_id: UUID, limit: int = 50) -> list[FeedEvent]:
+    from app.services.social_feed import _visible_to_viewer_clause, _block_exclusion_clause
     stmt = (
         select(FeedEvent)
         .where(
             FeedEvent.team_id.is_(None),
+            _visible_to_viewer_clause(viewer_user_id),
+            _block_exclusion_clause(viewer_user_id),
             FeedEvent.payload["segment"].astext == "discover",
         )
         .order_by(FeedEvent.created_at.desc())

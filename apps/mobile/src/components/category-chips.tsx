@@ -30,8 +30,7 @@ const PRIMARY_GENRES = [
 ];
 
 // "More" sheet — TMDB's common genres, mirrored here as lowercase
-// strings. Kept small; the server does case-insensitive membership
-// against ContentTitle.genres so unknown labels degrade to no filter.
+// strings. Unsupported combinations are never broadened by the server.
 const MORE_GENRES = [
   { label: "Drama", value: "drama" },
   { label: "Romance", value: "romance" },
@@ -49,6 +48,27 @@ const MORE_GENRES = [
   { label: "Western", value: "western" },
 ];
 
+const TV_PRIMARY_GENRES = [
+  { label: "Comedy", value: "comedy" }, { label: "Documentary", value: "documentary" },
+  { label: "Action & Adventure", value: "action & adventure" }, { label: "Drama", value: "drama" },
+];
+const TV_MORE_GENRES = ["Animation", "Crime", "Family", "Kids", "Mystery", "News", "Reality", "Sci-Fi & Fantasy", "Soap", "Talk", "War & Politics", "Western"]
+  .map((label) => ({ label, value: label.toLowerCase() }));
+function forMedia(genre: Genre, type: MediaType): Genre {
+  if (!genre) return null;
+  if (type === "show") {
+    const aliases: Record<string, string> = { action: "action & adventure", adventure: "action & adventure", "science fiction": "sci-fi & fantasy", fantasy: "sci-fi & fantasy", war: "war & politics" };
+    const next = aliases[genre] ?? genre;
+    return [...TV_PRIMARY_GENRES, ...TV_MORE_GENRES].some((g) => g.value === next) ? next : null;
+  }
+  if (type === "movie") {
+    const aliases: Record<string, string> = { "action & adventure": "action", "sci-fi & fantasy": "science fiction", "war & politics": "war" };
+    const next = aliases[genre] ?? genre;
+    return [...PRIMARY_GENRES, ...MORE_GENRES].some((g) => g.value === next) ? next : null;
+  }
+  return genre;
+}
+
 export function CategoryChips({
   value,
   onChange,
@@ -57,6 +77,8 @@ export function CategoryChips({
   onChange: (next: CategoryFilter) => void;
 }) {
   const [showMore, setShowMore] = useState(false);
+  const primaryGenres = value.media_type === "show" ? TV_PRIMARY_GENRES : PRIMARY_GENRES;
+  const moreGenres = value.media_type === "show" ? TV_MORE_GENRES : MORE_GENRES;
   const forYouActive = value.media_type == null && value.genre == null;
 
   return (
@@ -77,7 +99,7 @@ export function CategoryChips({
           onPress={() =>
             onChange({
               media_type: value.media_type === "movie" ? null : "movie",
-              genre: value.genre,
+              genre: forMedia(value.genre, value.media_type === "movie" ? null : "movie"),
             })
           }
         />
@@ -87,11 +109,11 @@ export function CategoryChips({
           onPress={() =>
             onChange({
               media_type: value.media_type === "show" ? null : "show",
-              genre: value.genre,
+              genre: forMedia(value.genre, value.media_type === "show" ? null : "show"),
             })
           }
         />
-        {PRIMARY_GENRES.map((g) => (
+        {primaryGenres.map((g) => (
           <Chip
             key={g.value}
             label={g.label}
@@ -106,7 +128,7 @@ export function CategoryChips({
         ))}
         <Chip
           label="More"
-          active={value.genre != null && !PRIMARY_GENRES.find((g) => g.value === value.genre)}
+          active={value.genre != null && !primaryGenres.find((g) => g.value === value.genre)}
           onPress={() => setShowMore(true)}
           icon="chevron-down"
         />
@@ -121,7 +143,7 @@ export function CategoryChips({
               : ""}
           {value.media_type != null && value.genre != null ? " · " : ""}
           {value.genre != null
-            ? [...PRIMARY_GENRES, ...MORE_GENRES].find((g) => g.value === value.genre)?.label ?? value.genre
+            ? [...primaryGenres, ...moreGenres].find((g) => g.value === value.genre)?.label ?? value.genre
             : ""}
         </Text>
       ) : null}
@@ -141,7 +163,7 @@ export function CategoryChips({
               </Pressable>
             </View>
             <ScrollView contentContainerStyle={styles.moreGrid}>
-              {MORE_GENRES.map((g) => (
+              {moreGenres.map((g) => (
                 <Pressable
                   key={g.value}
                   onPress={() => {
@@ -207,6 +229,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   chip: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 12,
@@ -268,6 +291,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   moreChip: {
+    minHeight: 44,
     paddingHorizontal: 14,
     paddingVertical: 10,
     borderRadius: 999,

@@ -18,6 +18,23 @@ from app.services.push_delivery import send_pending_push_notifications
 router = APIRouter()
 
 
+@router.post("/{notification_id}/open")
+def open_notification(notification_id: UUID, current_user: CurrentUser, db: DbSession) -> dict:
+    from fastapi import HTTPException
+    from app.services.notification_destination import resolve_destination
+    notification = db.scalar(select(Notification).where(
+        Notification.id == notification_id, Notification.user_id == current_user.id,
+    ))
+    if notification is None:
+        raise HTTPException(status_code=404, detail="Notification not found")
+    destination = resolve_destination(db, notification, current_user.id)
+    now = datetime.now(UTC)
+    notification.read_at = notification.read_at or now
+    notification.opened_at = notification.opened_at or now
+    db.commit()
+    return destination
+
+
 @router.get("", response_model=NotificationListResponse)
 def list_notifications(
     current_user: CurrentUser,

@@ -48,6 +48,8 @@ def db():
         "title_watch_status",
         "user_signals",
         "concierge_decisions",
+        "discovery_decisions",
+        "discovery_sessions",
     }
     Base.metadata.create_all(
         engine,

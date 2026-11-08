@@ -21,6 +21,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { apiRequest } from "@/lib/api";
+import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 
@@ -43,6 +44,7 @@ type PublicList = {
 };
 
 export default function SharedListScreen() {
+  const { sessionToken } = useAuth();
   const { token } = useLocalSearchParams<{ token: string }>();
   const [list, setList] = useState<PublicList | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -52,11 +54,12 @@ export default function SharedListScreen() {
     if (!token) return;
     trackEvent("shared_list_opened", { token });
     let cancelled = false;
+    setList(null); setError(null); setLoading(true);
     async function load() {
       try {
         // Public endpoint — no auth required. Increments the share's open_count
         // on the server side for owner attribution.
-        const data = await apiRequest<PublicList>(`/public/lists/${token}`);
+        const data = await apiRequest<PublicList>(`/public/lists/${token}`, { token: sessionToken });
         if (!cancelled) setList(data);
       } catch (err) {
         if (!cancelled) {
@@ -70,7 +73,7 @@ export default function SharedListScreen() {
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, sessionToken]);
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>

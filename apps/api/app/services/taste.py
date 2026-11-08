@@ -1203,8 +1203,13 @@ def _source_social_saves(
     on the blender side — this function returns up to `limit` so the
     blender has choices for diversity/interleave.
     """
+    from app.services.visibility import visible_list_clause, unblocked_owner_clause
     following_ids_row = db.execute(
-        select(UserFollow.following_user_id).where(UserFollow.follower_user_id == user_id)
+        select(UserFollow.following_user_id).join(User, User.id == UserFollow.following_user_id).where(
+            UserFollow.follower_user_id == user_id,
+            User.is_demo.is_(False),
+            unblocked_owner_clause(UserFollow.following_user_id, user_id),
+        )
     ).all()
     following_ids = {row[0] for row in following_ids_row if row[0] is not None}
     if not following_ids:
@@ -1221,6 +1226,7 @@ def _source_social_saves(
         .join(UserProfile, UserProfile.user_id == Watchlist.owner_user_id)
         .where(
             Watchlist.owner_user_id.in_(following_ids),
+            visible_list_clause(user_id),
             WatchlistItem.created_at >= cutoff,
         )
         .order_by(WatchlistItem.created_at.desc())
@@ -1965,6 +1971,20 @@ def record_swipe(
     if direction not in SWIPE_DIRECTION_WEIGHTS:
         raise ValueError(f"Unsupported swipe direction: {direction}")
 
+    from app.models.discovery import DiscoveryDecision
+    from app.services.discovery_decisions import watch_snapshot, create_decision
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
+    if idempotency_key:
+        receipt = db.scalar(select(DiscoveryDecision).where(
+            DiscoveryDecision.user_id == user_id, DiscoveryDecision.idempotency_key == idempotency_key,
+        ))
+        if receipt is not None:
+            if receipt.content_title_id != title_id or receipt.direction != direction:
+                raise ValueError("This retry key belongs to a different decision")
+            if receipt.undone_at:
+                raise ValueError("This decision was undone; use a new decision key")
+            return receipt
+
     # Idempotency per Onboarding spec §12: if the client already
     # posted this key, return the existing record without creating a
     # duplicate signal. Skip when no key was provided (legacy callers).
@@ -1997,6 +2017,16 @@ def record_swipe(
                 title_id=title_id,
             )
 
+    before = watch_snapshot(db, user_id, title_id)
+    if direction in ("up", "down"):
+        from app.services.watchlists import get_next_watch_list
+        queue = get_next_watch_list(db, user_id)
+        item = db.scalar(select(WatchlistItem).where(
+            WatchlistItem.watchlist_id == queue.id, WatchlistItem.content_title_id == title_id,
+        )) if queue else None
+        if item:
+            before["removed_queue_item"] = {"watchlist_id": str(queue.id), "added_via": item.added_via,
+                                            "position": item.position, "notes": item.notes}
     record = SwipeRecord(
         user_id=user_id,
         content_title_id=title_id,
@@ -2030,27 +2060,18 @@ def record_swipe(
     # returned is unambiguous.
     if direction in ("up", "down"):
         from app.services.title_state import mark_watched
-        try:
-            mark_watched(db, user_id, title_id)
-        except Exception:
-            db.delete(record)
-            db.commit()
-            raise
-
-    _prune_old_swipes(db, user_id)
-    refresh_taste_profile(db, user_id)
-    # Also recompute UserSignal rows so the SceneDNA "Strongest Signals"
-    # section reflects reality after every swipe. Without this, signals
-    # only updated on the 6h staleness refresh — heavy swipers saw their
-    # signals stuck at "early / 0 recent titles" for hours after building
-    # substantial history.
+        mark_watched(db, user_id, title_id, commit=False)
+    create_decision(db, record, before, source_surface)
+    db.commit()
+    # Taste refresh is derived work. A failure cannot undo an accepted action.
     try:
+        _prune_old_swipes(db, user_id)
+        refresh_taste_profile(db, user_id)
         from app.services.user_signals import compute_user_signals
         compute_user_signals(db, user_id)
+        db.commit()
     except Exception:
-        # Non-blocking — a signal recompute failure shouldn't reject the
-        # underlying swipe record.
-        pass
+        db.rollback()
     db.refresh(record)
     return record
 

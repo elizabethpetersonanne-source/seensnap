@@ -17,8 +17,8 @@
  */
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
-import { router } from "expo-router";
-import { useCallback, useState } from "react";
+import { router, useLocalSearchParams } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -123,6 +123,8 @@ type UserSearchResult = {
 
 export default function SocialScreen() {
   const { sessionToken } = useAuth();
+  const { post_id: postId } = useLocalSearchParams<{ post_id?: string }>();
+  const feedRequest = useRef(0);
   // Cycling backdrop from the shared trending pool so the header matches the
   // visual weight of Discover / SceneDNA / Teams. Offset 9 is unique to
   // Social so different tabs pull different backdrops from the same pool.
@@ -272,24 +274,29 @@ export default function SocialScreen() {
 
   const loadFeed = useCallback(async () => {
     if (!sessionToken) return;
+    const request = ++feedRequest.current;
     try {
       setError(null);
-      const data = await apiRequest<FeedResponse>("/social/feed?limit=20", {
-        token: sessionToken,
-      });
+      const data: FeedResponse = postId
+        ? { items: [await apiRequest<SocialPost>(`/social/posts/${encodeURIComponent(postId)}`, { token: sessionToken })], next_cursor: null, has_more: false }
+        : await apiRequest<FeedResponse>("/social/feed?limit=20", { token: sessionToken });
+      if (request !== feedRequest.current) return;
       setFeed(data);
     } catch (e) {
+      if (request !== feedRequest.current) return;
+      setFeed(null);
       setError(e instanceof Error ? e.message : "Couldn't load your feed.");
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (request === feedRequest.current) { setLoading(false); setRefreshing(false); }
     }
-  }, [sessionToken]);
+  }, [sessionToken, postId]);
 
   useFocusEffect(
     useCallback(() => {
       trackEvent("social_feed_viewed", {});
+      setLoading(true);
       void loadFeed();
+      return () => { feedRequest.current++; };
     }, [loadFeed]),
   );
 
@@ -607,6 +614,11 @@ export default function SocialScreen() {
           per the brief's "preserve Find People and Create Post in the
           Social content's actions/menu, not a crowded global header." */}
       <AppHeader variant="primary" title="Social" />
+      {postId ? <Pressable
+        onPress={() => router.replace({ pathname: "/(tabs)/social", params: { post_id: "" } })}
+        style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.lg }}
+        accessibilityRole="button"
+      ><Text style={{ color: colors.accent }}>Back to Social feed</Text></Pressable> : null}
 
       {loading ? (
         <View style={styles.centerState}>
@@ -614,7 +626,7 @@ export default function SocialScreen() {
         </View>
       ) : error ? (
         <View style={styles.centerState}>
-          <Text style={styles.errorTitle}>Couldn't load your feed</Text>
+          <Text style={styles.errorTitle}>{postId ? "This post is unavailable" : "Couldn't load your feed"}</Text>
           <Text style={styles.errorBody}>{error}</Text>
           <Pressable onPress={() => void loadFeed()} style={styles.retryBtn}>
             <Text style={styles.retryBtnText}>Try again</Text>
@@ -622,7 +634,7 @@ export default function SocialScreen() {
         </View>
       ) : feed && feed.items.length > 0 ? (
         <FlatList
-          ListHeaderComponent={feedHeader}
+          ListHeaderComponent={postId ? null : feedHeader}
           data={feed.items}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.content}

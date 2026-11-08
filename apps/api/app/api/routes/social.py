@@ -33,6 +33,7 @@ from app.services.social_feed import (
     following_feed,
     hydrate_feed_event,
     list_comments,
+    require_social_post,
     search_users,
     toggle_block,
     toggle_like,
@@ -139,6 +140,11 @@ def get_following_feed(
 # ─── Posts ───────────────────────────────────────────────────────────────────
 
 
+@router.get("/posts/{post_id}")
+def get_post(post_id: UUID, current_user: CurrentUser, db: DbSession) -> dict:
+    return hydrate_feed_event(db, require_social_post(db, current_user.id, post_id), current_user.id)
+
+
 @router.post("/posts", status_code=status.HTTP_201_CREATED)
 def create_post(
     payload: PostCreateRequest,
@@ -191,6 +197,14 @@ def edit_post(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Post not found")
     if event.actor_user_id != current_user.id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the author may edit this post")
+    if event.team_id is not None or event.visibility == "team":
+        raise HTTPException(status_code=400, detail="Team discussions stay private. Create a separate Social post to share.")
+    if payload.visibility is not None and event.list_id is not None:
+        from app.models.social import Watchlist
+        watchlist = db.get(Watchlist, event.list_id)
+        audiences = {"private": 0, "followers": 1, "public": 2}
+        if watchlist is None or audiences[payload.visibility] > audiences.get(watchlist.visibility, 0):
+            raise HTTPException(status_code=400, detail="The post audience cannot be wider than the list's audience.")
     changed = False
     if payload.caption is not None:
         new_caption = payload.caption.strip()
@@ -222,6 +236,7 @@ def like_post(post_id: UUID, current_user: CurrentUser, db: DbSession) -> dict:
 
 @router.get("/posts/{post_id}/comments")
 def get_comments(post_id: UUID, current_user: CurrentUser, db: DbSession) -> dict:
+    require_social_post(db, current_user.id, post_id)
     comments = list_comments(db, post_id)
     author_ids = {c.user_id for c in comments}
     profiles = {

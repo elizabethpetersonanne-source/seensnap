@@ -73,8 +73,13 @@ def _visible_to_viewer_clause(viewer_user_id: UUID | None):
     Team-scoped events (visibility='team') are NEVER returned by the social
     feed — they belong to the team's own pulse.
     """
+    from app.services.visibility import visible_list_clause
+    list_ok = or_(FeedEvent.list_id.is_(None), exists().where(
+        Watchlist.id == FeedEvent.list_id, visible_list_clause(viewer_user_id),
+    ))
+    social_only = and_(FeedEvent.team_id.is_(None), FeedEvent.visibility.in_(SOCIAL_VISIBILITIES), list_ok)
     if viewer_user_id is None:
-        return FeedEvent.visibility == "public"
+        return and_(social_only, FeedEvent.visibility == "public")
 
     own_post = FeedEvent.actor_user_id == viewer_user_id
     followers_ok = and_(
@@ -86,7 +91,19 @@ def _visible_to_viewer_clause(viewer_user_id: UUID | None):
             )
         ),
     )
-    return or_(own_post, FeedEvent.visibility == "public", followers_ok)
+    return and_(social_only, or_(own_post, FeedEvent.visibility == "public", followers_ok))
+
+
+def require_social_post(db: Session, viewer_user_id: UUID | None, event_id: UUID) -> FeedEvent:
+    from fastapi import HTTPException
+    conditions = [FeedEvent.id == event_id, _visible_to_viewer_clause(viewer_user_id)]
+    block = _block_exclusion_clause(viewer_user_id)
+    if block is not None:
+        conditions.append(block)
+    event = db.scalar(select(FeedEvent).where(*conditions))
+    if event is None:
+        raise HTTPException(status_code=404, detail="This post is unavailable or no longer shared with you.")
+    return event
 
 
 def _block_exclusion_clause(viewer_user_id: UUID | None):
@@ -148,12 +165,16 @@ def create_social_post(
         watchlist = db.scalar(select(Watchlist).where(Watchlist.id == list_id))
         if watchlist is None or watchlist.owner_user_id != author_user_id:
             raise ValueError("list_id must reference a list you own")
+        audiences = {"private": 0, "followers": 1, "public": 2}
+        if audiences[visibility] > audiences.get(watchlist.visibility, 0):
+            raise ValueError("The post audience cannot be wider than the list's audience. Update the list's settings first.")
         payload["list_name_at_share"] = watchlist.name
         # Ensure every list_share post is tappable — mint a public share
         # token if one doesn't already exist. Idempotent: reuses the
         # latest active token when present. Without this, feed viewers
         # would see the list card but have no route to open it.
-        _ensure_list_share_token(db, list_id=list_id, author_user_id=author_user_id)
+        if watchlist.visibility != "private":
+            _ensure_list_share_token(db, list_id=list_id, author_user_id=author_user_id)
     if rating_id is not None:
         rating = db.scalar(select(Rating).where(Rating.id == rating_id))
         if rating is None or rating.user_id != author_user_id:
@@ -360,6 +381,7 @@ def toggle_like(db: Session, viewer_user_id: UUID, event_id: UUID) -> bool:
     the post author (dedup by (liker, post) so a rapid unlike/relike doesn't
     spam)."""
     from app.services.notifications import notify_social_like
+    require_social_post(db, viewer_user_id, event_id)
 
     existing = db.scalar(
         select(FeedReaction).where(
@@ -419,6 +441,7 @@ def create_comment(
     """Insert a new comment + notify the post author (not deduped — every
     fresh comment is a fresh notification per §45)."""
     from app.services.notifications import notify_social_comment
+    require_social_post(db, viewer_user_id, event_id)
 
     body = (body or "").strip()
     if not body:
@@ -618,6 +641,9 @@ def hydrate_feed_event(
     list_actual_total = 0
     if event.list_id is not None:
         watchlist = db.scalar(select(Watchlist).where(Watchlist.id == event.list_id))
+        from app.services.visibility import can_view_list
+        if watchlist is not None and not can_view_list(db, watchlist.id, viewer_user_id):
+            watchlist = None
         if watchlist is not None:
             list_actual_total = int(db.scalar(
                 select(func.count(WatchlistItem.id)).where(WatchlistItem.watchlist_id == watchlist.id)
@@ -650,30 +676,7 @@ def hydrate_feed_event(
             )
             if share_row is not None:
                 list_share_token = share_row.token
-            else:
-                # Back-fill: list_share posts created before the auto-mint
-                # code deployed have no ListShare row. Mint one now so
-                # they become clickable. Uses the author's identity —
-                # the token record belongs to them regardless of who's
-                # viewing.
-                list_share_token = _ensure_list_share_token(
-                    db,
-                    list_id=watchlist.id,
-                    author_user_id=watchlist.owner_user_id,
-                )
-                db.commit()
 
-    like_count = int(
-        db.scalar(
-            select(FeedReaction.id).where(
-                FeedReaction.event_id == event.id,
-                FeedReaction.reaction == "like",
-            ).limit(1000).with_only_columns(FeedReaction.id)
-        )
-        or 0
-    )
-    # Actual count via scalar aggregate — the .limit(1000) above returns
-    # a scalar id, so re-query with func.count for accuracy.
     from sqlalchemy import func as sqlfunc
 
     like_count = int(

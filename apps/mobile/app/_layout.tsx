@@ -28,6 +28,7 @@ import { BackdropPoolProvider } from "@/lib/backdrop-pool";
 import { onboardingCompletedKey, subscribeOnboardingCompletion } from "@/lib/onboarding";
 import { UnreadNotificationsProvider } from "@/lib/unread-notifications";
 import { UnreadMessagesProvider } from "@/lib/unread-messages";
+import { resolveNotificationDestination } from "@/lib/notifications";
 
 function BootScreen() {
   return (
@@ -43,30 +44,31 @@ function AuthGate() {
   const inAuthRoute = segments[0] === "sign-in";
   const inOnboarding = segments[0] === "onboarding";
   const responseListener = useRef<{ remove: () => void } | null>(null);
+  const openedNotifications = useRef(new Set<string>());
 
   useEffect(() => {
-    if (isExpoGo) return;
+    if (isExpoGo || !sessionToken) return;
     // Notification response listeners only exist on native — expo-notifications
     // is a no-op module on web and calling these APIs throws.
     if (Platform.OS === "web") return;
 
-    responseListener.current = Notifications.addNotificationResponseReceivedListener((response) => {
-      const route = response.notification.request.content.data?.route as string | undefined;
-      if (route) {
-        try { router.push(route as Parameters<typeof router.push>[0]); } catch { }
-      }
-    });
+    let cancelled = false;
+    async function openResponse(response: Notifications.NotificationResponse | null) {
+      if (!response || !sessionToken) return;
+      const id = response.notification.request.content.data?.notificationId;
+      if (typeof id !== "string" || openedNotifications.current.has(id)) return;
+      try {
+        const destination = await resolveNotificationDestination(sessionToken, id);
+        if (cancelled) return;
+        openedNotifications.current.add(id);
+        router.push((destination.available ? destination.route : "/notifications") as Parameters<typeof router.push>[0]);
+      } catch { if (!cancelled) router.push("/notifications"); }
+    }
+    responseListener.current = Notifications.addNotificationResponseReceivedListener((r) => { void openResponse(r); });
+    void Notifications.getLastNotificationResponseAsync().then(openResponse).catch(() => {});
 
-    void Notifications.getLastNotificationResponseAsync().then((response) => {
-      if (!response) return;
-      const route = response.notification.request.content.data?.route as string | undefined;
-      if (route) {
-        try { router.push(route as Parameters<typeof router.push>[0]); } catch { }
-      }
-    });
-
-    return () => { responseListener.current?.remove(); };
-  }, [isExpoGo]);
+    return () => { cancelled = true; responseListener.current?.remove(); };
+  }, [isExpoGo, sessionToken]);
 
   const [onboardingStatus, setOnboardingStatus] = useState<"unknown" | "completed" | "pending">("unknown");
 
