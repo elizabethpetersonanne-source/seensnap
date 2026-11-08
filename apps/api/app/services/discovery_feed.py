@@ -21,10 +21,11 @@ from app.models.discovery import DiscoverySession
 from app.models.taste import TitleFeatures
 from app.models.user import UserProfile
 from app.services.discovery_decisions import excluded_title_ids
-from app.services.recommendation_service import _build_signal_index, _personal_score, MODES
+from app.services.title_compatibility import scorer_for_user
 from app.services.tmdb import _fetch_genre_map, _match_genre_id, _tmdb_headers, _upsert_title_from_tmdb_result, fetch_title_videos, TmdbConfigurationError
 
-ALGORITHM = "discovery_v2"
+from app.core.scenedna_config import SCORE_VERSION
+ALGORITHM = "discovery_v3:" + SCORE_VERSION
 WEIGHTS = (0.50, 0.30, 0.15, 0.05)
 
 
@@ -129,8 +130,6 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     region = region.upper()
     genre = (genre or "").strip().casefold() or None
     fp = fingerprint(preferred_type, genre, region, mode, surface)
-    # This derived-score refresh can commit; do it before locking the cursor.
-    signals = _build_signal_index(db, user_id)
     requested_version = 0
     if cursor:
         try:
@@ -148,6 +147,19 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
             response = dict(session.last_response)
             excluded = excluded_title_ids(db, user_id)
             response["items"] = [item for item in response["items"] if UUID(item.get("title_id") or item["title"]["id"]) not in excluded]
+            rows = db.scalars(select(ContentTitle).where(ContentTitle.id.in_([
+                UUID(item.get("title_id") or item["title"]["id"]) for item in response["items"]
+            ]))).all()
+            scorer = scorer_for_user(db, user_id, rows)
+            matches = {str(row.id):scorer.score(row).model_dump(mode="json") for row in rows}
+            for item in response["items"]:
+                key = str(item.get("title_id") or item["title"]["id"])
+                if key in matches:
+                    previous = item.get("scenedna") if "title_id" in item else item["title"].get("scenedna")
+                    if previous and {k:v for k,v in previous.items() if k != "computed_at"} == {k:v for k,v in matches[key].items() if k != "computed_at"}:
+                        matches[key] = previous
+                    if "title_id" in item: item["scenedna"] = matches[key]
+                    else: item["title"] = {**item["title"], "scenedna":matches[key]}
             return response
         if requested_version != session.version:
             raise HTTPException(status_code=409, detail={"error": "reset_feed", "message": "This feed cursor is out of date."})
@@ -201,13 +213,10 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
                 title.metadata_raw = metadata
                 if str(title.id) not in served and eligible(title, excluded, preferred_type, genre, region, mode, as_of, now):
                     pending[str(title.id)] = title
-    features = {str(f.content_title_id): f for f in db.scalars(select(TitleFeatures).where(
-        TitleFeatures.content_title_id.in_([t.id for t in pending.values()]),
-    )).all()}
-    scores = {key: _personal_score(title, features.get(key), signals, MODES["perfect"])
-              for key, title in pending.items()}
+    scorer = scorer_for_user(db, user_id, pending.values())
+    scores = {key: scorer.score(title) for key, title in pending.items()}
     bands = {band: sorted([key for key, t in pending.items() if age_band(t.release_date, as_of) == band],
-                         key=lambda key: (-scores[key][0], key)) for band in range(4)}
+                         key=lambda key: (-(scores[key].score if scores[key].score is not None else 50.), key)) for band in range(4)}
     selected, video_cache, checked = [], {}, 0
     counts = list(state["counts"])
     if surface == "preview":
@@ -246,16 +255,18 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
             counts[age_band(title.release_date, as_of)] -= 1
             continue
         served.add(key)
-        reasons = scores[key][1]
-        matching = [r["signal_name"] for r in reasons if r.get("type") == "signal_match"]
-        reason = f"Matches your taste for {matching[0]}" if matching else "Available to stream in your region"
+        compatibility = scores[key]
+        matching = compatibility.score is not None
+        reason = compatibility.explanation if matching else "Available to stream in your region · learning your taste"
         if surface == "preview":
             items.append({"feed_item_id": f"pfi-{title.id}", "title_id": str(title.id), "tmdb_id": title.tmdb_id,
                 "media_type": title.content_type, "title": title.title, "year": title.release_date.year,
                 "poster_url": title.poster_url, "backdrop_url": title.backdrop_url, "overview": title.overview,
-                "video": video_cache[key], "reason": {"type": "signal_match" if matching else "regional_streaming", "label": reason}})
+                "video": video_cache[key], "scenedna": compatibility.model_dump(mode="json"), "reason": {"type": "signal_match" if matching else "regional_streaming", "label": reason}})
         else:
-            items.append({"title": _to_title_response(title).model_dump(mode="json"), "reason": reason,
+            dto = _to_title_response(title)
+            dto.scenedna = compatibility
+            items.append({"title": dto.model_dump(mode="json"), "reason": reason,
                 "reason_type": "signal_match" if matching else "regional_streaming", "seed_title_id": None})
     more = bool(pending) or any(not source["done"] for source in state["sources"].values())
     if upstream_failure and not items:

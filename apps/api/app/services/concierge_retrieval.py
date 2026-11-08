@@ -279,7 +279,7 @@ def catalog_page(db, constraints, page):
 def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, continuation=None):
     from app.services.concierge import RetrievalResult, _ground_suggestions, _intent_matched_catalog_batch, _passes_constraints, _call_configured_model
     from app.models.taste import UserSignal
-    from app.services.recommendation_service import _personal_score, MODES
+    from app.services.title_compatibility import scorer_for_user
     check_budget()
     scope, rows = constraints.collection_scope, []
     complete = scope != "any"
@@ -406,10 +406,10 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
         except (httpx.HTTPError, tmdb.TmdbConfigurationError, ValueError):
             pending = list(dict.fromkeys(batch_ids + pending))
             reason = "upstream_failure"; break
-    signals = db.scalars(select(UserSignal).where(UserSignal.user_id == user_id)).all()
-    index = {(s.signal_type, s.signal_name): float(s.score) for s in signals}
+    scorer = scorer_for_user(db, user_id, cached.values())
+    personal = {key: scorer.score(cached[key]).score for key in approved}
     ordered = sorted(approved, key=lambda key: (-approved[key]["relevance"],
-        -_personal_score(cached[key], None, index, MODES["perfect"])[0], key))
+        -(personal[key] if personal[key] is not None else 50.), key))
     selected = ordered[:target]
     rationales = {key: approved.pop(key)["reason"] for key in selected}
     pending = list(dict.fromkeys([*pending, *failures]))

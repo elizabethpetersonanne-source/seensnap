@@ -4,7 +4,11 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+from app.schemas.scenedna import TitleCompatibility
+
+
 class TitleResponse(BaseModel):
+    scenedna: TitleCompatibility | None = None
     id: UUID
     tmdb_id: int
     content_type: str

@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
+from app.core.scenedna_config import SCORE_VERSION
 from uuid import UUID, uuid4
 
 from sqlalchemy import select
@@ -155,92 +156,14 @@ def _negative_evidence_set(db: Session, user_id: UUID) -> set[UUID]:
     return out
 
 
-def _title_signal_names(title: ContentTitle) -> dict[str, set[str]]:
-    """Same contract as `_signal_names_for_title` in user_signals — kept as a
-    thin re-export so recommendation_service doesn't need to know about the
-    LABEL_RULES / THEME_KEYWORDS layout."""
-    from app.services.user_signals import _signal_names_for_title
-
-    return _signal_names_for_title(title)
-
-
-def _personal_score(
-    title: ContentTitle,
-    features: TitleFeatures | None,
-    signal_index: dict[tuple[str, str], float],
-    mode: ModeConfig,
-) -> tuple[float, list[dict[str, Any]]]:
-    """Compute a title's personal match score for this user + mode. Returns
-    (score, reasons_list) where reasons_list carries structured evidence
-    that the reason layer can turn into user-facing copy WITHOUT invention
-    (brief §14)."""
-    reasons: list[dict[str, Any]] = []
-    total = 0.0
-
-    # 1) UserSignal alignment — sum the user's scores for signals this title
-    # actually carries. This is the personalization core.
-    sig_names = _title_signal_names(title)
-    for stype, names in sig_names.items():
-        for name in names:
-            user_score = signal_index.get((stype, name), 0.0)
-            if user_score <= 0:
-                continue
-            boost = 1.0
-            if mode.signal_boost and stype in mode.signal_boost:
-                boost = mode.signal_boost[stype]
-            contribution = user_score * boost
-            total += contribution
-            # Only surface the highest-value reasons; keep list capped later.
-            reasons.append(
-                {
-                    "type": "signal_match",
-                    "signal_type": stype,
-                    "signal_name": name,
-                    "score": round(contribution, 3),
-                }
-            )
-
-    # 2) Attribute-fit bonus for mode-scoped queries — the title already
-    # passed the filter, but boost when it matches STRONGLY (multiple
-    # matching tags, not just one).
-    if features is not None:
-        if mode.tone_any:
-            tone_hits = len(set(features.tone or []) & mode.tone_any)
-            if tone_hits > 0:
-                bonus = 0.15 * tone_hits
-                total += bonus
-                reasons.append({"type": "tone_match", "hits": tone_hits, "score": bonus})
-        if mode.visual_style_any:
-            vis_hits = len(set(features.visual_style or []) & mode.visual_style_any)
-            if vis_hits > 0:
-                bonus = 0.10 * vis_hits
-                total += bonus
-                reasons.append({"type": "visual_match", "hits": vis_hits, "score": bonus})
-
-    # 3) Quality safety signal — modest boost for well-rated titles so the
-    # scoring never surfaces truly bad matches even when signals align.
-    if title.tmdb_vote_average is not None:
-        vote = float(title.tmdb_vote_average)
-        if vote >= 7.5:
-            total += 0.10
-        elif vote >= 6.8:
-            total += 0.05
-
-    # Keep the top few reasons — sorted by contribution.
-    reasons.sort(key=lambda r: r.get("score", 0), reverse=True)
-    return total, reasons[:5]
-
-
-def _confidence_from_score(score: float) -> str:
-    """Confidence tier maps to the copy strength (brief §13). Honest labeling
-    prevents claiming certainty we don't have."""
-    if score >= 1.5:
+def _confidence_from_compatibility(match) -> str:
+    if match.learning:
+        return "cold-start"
+    if match.confidence >= .7 and (match.percentage or 0) >= 80:
         return "excellent"
-    if score >= 0.8:
+    if match.confidence >= .5 and (match.percentage or 0) >= 65:
         return "strong"
-    if score >= 0.4:
-        return "worth-a-look"
-    return "cold-start"
+    return "worth-a-look"
 
 
 # ─── Diversity + dedup ───────────────────────────────────────────────────────
@@ -269,40 +192,8 @@ def _diversify(
 
 
 def _exclude_ids(db: Session, user_id: UUID) -> set[UUID]:
-    """D02: new discovery excludes watched-with-rating,
-    watched-without-rating AND recently dismissed titles. Saves are
-    NOT excluded — saved-unwatched titles stay eligible for
-    rediscovery (brief: "saved-but-unwatched remain eligible and
-    visibly marked"). Recent left swipes cap at 60 per Swipe brief.
-    """
-    from app.models.social import Rating, TitleWatchStatus
-    watched_rated = set(
-        db.scalars(
-            select(Rating.content_title_id).where(
-                Rating.user_id == user_id,
-                Rating.watched_state == "watched",
-            )
-        ).all()
-    )
-    watched_only = set(
-        db.scalars(
-            select(TitleWatchStatus.content_title_id).where(
-                TitleWatchStatus.user_id == user_id,
-                TitleWatchStatus.watched_state == "watched",
-            )
-        ).all()
-    )
-    recent_dismisses = db.execute(
-        select(SwipeRecord.content_title_id)
-        .where(SwipeRecord.user_id == user_id, SwipeRecord.direction == "left")
-        .order_by(SwipeRecord.created_at.desc())
-        .limit(60)
-    ).all()
-    return (
-        watched_rated
-        | watched_only
-        | {r[0] for r in recent_dismisses if r[0] is not None}
-    )
+    from app.services.discovery_decisions import excluded_title_ids
+    return excluded_title_ids(db, user_id)
 
 
 # ─── Public API ──────────────────────────────────────────────────────────────
@@ -432,13 +323,17 @@ def recommend_for_signal(
         ).all()
         candidates = [t for t in pool if signal_genres & _title_genres_set(t) and t.id not in exclude]
 
+    from app.services.title_compatibility import scorer_for_user
+    title_scorer = scorer_for_user(db, user_id, candidates)
     scored: list[dict] = []
     for title in candidates:
         if title.id in exclude:
             continue
         genre_overlap = signal_genres & _title_genres_set(title) if signal_genres else set()
         features = ensure_title_features(db, title.id)
-        score, reasons = _personal_score(title, features, signal_index, config)
+        compatibility = title_scorer.score(title)
+        score = compatibility.score if compatibility.score is not None else 50.
+        reasons = [{"type":"signal_match" if compatibility.score is not None else "cold_start", "signal_name":compatibility.explanation, "score":score}]
         if genre_overlap:
             score += 0.2 * len(genre_overlap)
         # Feature-filter alignment bonus so titles fitting MORE of the
@@ -477,7 +372,7 @@ def recommend_for_signal(
     surface_key = surface or f"signal_explore:{signal_name}"
     for position, item in enumerate(diversified):
         title = item["title"]
-        confidence = _confidence_from_score(item["score"])
+        confidence = _confidence_from_compatibility(title_scorer.score(title))
         impression = RecommendationImpression(
             id=uuid4(),
             user_id=user_id,
@@ -485,17 +380,18 @@ def recommend_for_signal(
             surface=surface_key,
             mode=f"signal:{signal_name}",
             position=position,
-            score=Decimal(f"{min(item['score'], 9.999):.3f}"),
+            score=Decimal(f"{min(item['score'] / 100, 9.999):.3f}"),
             candidate_source="signal_scoped",
             reason_type="signal_scoped",
-            algorithm_version="reco_service_v1",
+            algorithm_version=SCORE_VERSION,
             session_id=session_id,
             payload={"reasons": item["reasons"], "signal_name": signal_name},
         )
         db.add(impression)
         results.append({
             "title": title,
-            "score": item["score"],
+            "score": item["score"] / 100,
+            "scenedna": title_scorer.score(title),
             "confidence": confidence,
             "reasons": item["reasons"],
             "mode": f"signal:{signal_name}",
@@ -542,8 +438,7 @@ def recommend_for_user(
             want_content_type = "series"
 
     exclude = _exclude_ids(db, user_id) if not include_watched else set()
-    negative_titles = _negative_evidence_set(db, user_id)
-    exclude |= negative_titles
+    # Current state and the durable decision ledger own exclusions.
 
     signal_index = _build_signal_index(db, user_id)
 
@@ -594,10 +489,11 @@ def recommend_for_user(
                     "WHERE tmdb_vote_average IS NOT NULL "
                     "AND tmdb_vote_average >= 6.0 "
                     "AND genres ?| :genres "
+                    "AND (CAST(:media AS text) IS NULL OR content_type = :media) "
                     "ORDER BY tmdb_vote_average DESC "
                     "LIMIT 400"
                 ),
-                {"genres": user_genre_names},
+                {"genres": user_genre_names, "media": want_content_type},
             ).all()
             candidate_ids = [r[0] for r in rows if r[0] not in exclude]
         # Fallback: no signals yet OR too few signal-matched titles.
@@ -605,6 +501,7 @@ def recommend_for_user(
             popular = db.scalars(
                 select(ContentTitle)
                 .where(ContentTitle.tmdb_vote_average.is_not(None), ContentTitle.tmdb_vote_average >= 6.5)
+                .where(ContentTitle.content_type == want_content_type if want_content_type else True)
                 .order_by(ContentTitle.tmdb_vote_average.desc())
                 .limit(400)
             ).all()
@@ -643,10 +540,14 @@ def recommend_for_user(
         titles = filtered_titles
 
     # ── Personal re-ranking ─────────────────────────────────────────────────
+    from app.services.title_compatibility import scorer_for_user
+    title_scorer = scorer_for_user(db, user_id, titles)
     scored: list[dict] = []
     for title in titles:
         features = feature_by_id.get(title.id) or ensure_title_features(db, title.id)
-        score, reasons = _personal_score(title, features, signal_index, config)
+        compatibility = title_scorer.score(title)
+        score = compatibility.score if compatibility.score is not None else 50.
+        reasons = [{"type":"signal_match" if compatibility.score is not None else "cold_start", "signal_name":compatibility.explanation, "score":score}]
         if score <= 0:
             continue
         scored.append({
@@ -661,10 +562,10 @@ def recommend_for_user(
 
     # ── Log impressions ────────────────────────────────────────────────────
     results: list[dict] = []
-    algorithm_version = "reco_service_v1"
+    algorithm_version = SCORE_VERSION
     for position, item in enumerate(diversified):
         title = item["title"]
-        confidence = _confidence_from_score(item["score"])
+        confidence = _confidence_from_compatibility(title_scorer.score(title))
         primary_reason = item["reasons"][0] if item["reasons"] else None
         reason_type = primary_reason["type"] if primary_reason else "signal_match"
         impression = RecommendationImpression(
@@ -674,7 +575,7 @@ def recommend_for_user(
             surface=surface,
             mode=config.key,
             position=position,
-            score=Decimal(f"{min(item['score'], 9.999):.3f}"),
+            score=Decimal(f"{min(item['score'] / 100, 9.999):.3f}"),
             candidate_source="unified_service",
             reason_type=reason_type,
             algorithm_version=algorithm_version,
@@ -698,13 +599,14 @@ def recommend_for_user(
         )
         if top_signal:
             signal_name = str(top_signal.get("signal_name") or "").strip()
-            personalized = f"{config.display_label} — matches your {signal_name.lower()} lean."
+            personalized = signal_name
         else:
             personalized = config.reason_template
 
         results.append({
             "title": title,
-            "score": item["score"],
+            "score": item["score"] / 100,
+            "scenedna": title_scorer.score(title),
             "confidence": confidence,
             "reasons": item["reasons"],
             "mode": config.key,

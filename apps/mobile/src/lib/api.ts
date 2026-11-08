@@ -1,3 +1,4 @@
+import { affectsTaste, publishTasteChange } from "@/lib/taste-events";
 import Constants from "expo-constants";
 import { Platform } from "react-native";
 
@@ -117,6 +118,8 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     const err = new ApiError(body || `Request failed: ${response.status}`, response.status, detail);
     throw err;
   }
+
+  if (options.token && affectsTaste(path, options.method)) publishTasteChange(options.token);
 
   if (response.status === 204) {
     return undefined as T;

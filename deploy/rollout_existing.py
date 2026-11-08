@@ -23,6 +23,8 @@ REGION = "us-central1"
 JOB = SERVICE + "-migrate"
 REQUIRED_ROUTES = {
     "/api/v1/me/onboarding-draft": "put",
+    "/api/v1/me/title-compatibility": "post",
+    "/api/v1/discover/collection/{key}": "get",
     "/api/v1/lists/{list_id}": "get",
     "/api/v1/teams/{team_id}/home/{section}": "get",
     "/api/v1/teams/{team_id}/titles/{title_id}/my-state": "put",

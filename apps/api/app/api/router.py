@@ -88,3 +88,6 @@ api_router.include_router(media_assets.router, prefix="/media-assets", tags=["me
 
 from app.api.routes import onboarding_draft
 api_router.include_router(onboarding_draft.router, prefix="/me/onboarding-draft", tags=["onboarding"])
+
+from app.api.routes import title_compatibility
+api_router.include_router(title_compatibility.router, prefix="/me/title-compatibility", tags=["scenedna"])

@@ -12,7 +12,7 @@
  */
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -30,26 +30,27 @@ import { MediaToggle } from "@/components/discover-section";
 import { EmptyView, LoadingView } from "@/components/state-views";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ApiError } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
-import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
-
+import {
+  fetchUniversalTitle,
+  type UniversalTitle,
+} from "@/lib/universal-title";
 
 const VALID_KEYS = new Set(["for-you", "trending", "now-in-theaters"]);
 
 const COLLECTION_TITLE: Record<string, string> = {
   "for-you": "For You",
-  "trending": "Trending",
+  trending: "Trending",
   "now-in-theaters": "In Theaters Now",
 };
 
 const COLLECTION_SUBTITLE: Record<string, string> = {
-  "for-you": "Tuned to your SceneDNA",
-  "trending": "Popular this week",
+  "for-you": "Picks informed by your ratings and saves",
+  trending: "Popular this week",
   "now-in-theaters": "Movies in theaters now",
 };
-
 
 type CollectionTitle = {
   id: string;
@@ -60,11 +61,13 @@ type CollectionTitle = {
   content_type: string;
 };
 
-
 export default function CollectionSeeAllScreen() {
   const router = useRouter();
   const { sessionToken } = useAuth();
-  const { key, media } = useLocalSearchParams<{ key?: string; media?: string }>();
+  const { key, media } = useLocalSearchParams<{
+    key?: string;
+    media?: string;
+  }>();
   const { width } = useWindowDimensions();
 
   const validKey = typeof key === "string" && VALID_KEYS.has(key) ? key : null;
@@ -72,100 +75,106 @@ export default function CollectionSeeAllScreen() {
     media === "tv" ? "tv" : "movie",
   );
 
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const [sourceLabel, setSourceLabel] = useState("");
+  const [needsReset, setNeedsReset] = useState(false);
+  const scope = `${sessionToken}|${validKey}|${mediaFilter}`;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const activeRequest = useRef<object | null>(null);
+  const titleRequest = useRef(0);
   const [items, setItems] = useState<CollectionTitle[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [titleModalId, setTitleModalId] = useState<string | null>(null);
-  const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
+  const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(
+    null,
+  );
   const [titleLoading, setTitleLoading] = useState(false);
 
-  async function load() {
+  async function load(cursor: string | null = null) {
     if (!sessionToken || !validKey) return;
+    const request = {};
+    activeRequest.current = request;
+    const ownerScope = scope;
     setLoading(true);
     setError(null);
+    setNeedsReset(false);
+    if (!cursor) {
+      setItems([]);
+      setNextCursor(null);
+    }
     try {
-      let path = "";
-      if (validKey === "for-you") {
-        // DISC01/02: server-filter For You by media before ranking +
-        // limit. mediaFilter is "movie" | "tv"; backend param is
-        // "movie" | "show".
-        const preferredType = mediaFilter === "movie" ? "movie" : "show";
-        path = `/titles/recommendations/for-me?limit=40&preferred_type=${preferredType}`;
-      } else if (validKey === "trending") {
-        // D05: Trending See all uses the SAME server media filter as
-        // the landing section. Previously the See-all did a client-
-        // side filter on a small mixed pool, which routinely yielded
-        // a thin TV section for mixed-request users.
-        const mediaParam = mediaFilter === "movie" ? "movie" : "tv";
-        path = `/discover/trending?limit=20&media_type=${mediaParam}`;
-      } else if (validKey === "now-in-theaters") {
-        path = `/discover/now-in-theaters?limit=20`;
-      }
-      const result = await apiRequest<unknown>(path, {
-        token: sessionToken,
-      });
-      // /titles/recommendations/for-me returns a BARE ARRAY of
-      // RecommendationResponse: [{title: ContentTitle, reason: ...}, ...]
-      // /discover/trending + /discover/now-in-theaters return
-      // TrendingResponse: {items: [...TitleItem]}. Accept either shape.
-      const rawItems: unknown[] = Array.isArray(result)
-        ? result
-        : (result as { items?: unknown[] })?.items ?? [];
-      const normalized: CollectionTitle[] = rawItems
-        .map((item: unknown): CollectionTitle | null => {
-          if (!item || typeof item !== "object") return null;
-          const anyItem = item as Record<string, unknown>;
-          const nested = (anyItem.title ?? null) as Record<string, unknown> | null;
-          if (nested && typeof nested === "object" && "id" in nested) {
-            return normalizeTitle(nested);
-          }
-          if ("id" in anyItem || "title_id" in anyItem) {
-            return normalizeTitle(anyItem);
-          }
-          return null;
-        })
-        .filter((t): t is CollectionTitle => t !== null && !!t.id);
-      // DISC01: For You already filtered server-side via
-      // preferred_type. Trending + Now in Theaters still arrive
-      // mixed; filter client-side but DO NOT fall back to the
-      // unfiltered set when a filtered result is empty — "A TV
-      // request cannot return movies as an empty-state fallback."
-      if (validKey === "for-you") {
-        setItems(normalized);
-      } else {
-        const filtered = normalized.filter((t) => {
-          if (mediaFilter === "movie") return t.content_type === "movie";
-          return t.content_type !== "movie";
-        });
-        setItems(filtered);
-      }
+      const result = await apiRequest<{
+        items: Array<Record<string, unknown>>;
+        next_cursor: string | null;
+        display_label: string;
+      }>(
+        `/discover/collection/${validKey}?media=${mediaFilter}${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`,
+        { token: sessionToken, timeoutMs: 50000 },
+      );
+      if (scopeRef.current !== ownerScope || activeRequest.current !== request)
+        return;
+      const incoming = result.items
+        .map(normalizeTitle)
+        .filter((t): t is CollectionTitle => !!t);
+      setItems((previous) => [
+        ...new Map(
+          [...(cursor ? previous : []), ...incoming].map((t) => [t.id, t]),
+        ).values(),
+      ]);
+      setNextCursor(result.next_cursor);
+      setSourceLabel(result.display_label);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load this collection.");
+      if (scopeRef.current !== ownerScope || activeRequest.current !== request)
+        return;
+      setNeedsReset(err instanceof ApiError && err.status === 409);
+      setError("Couldn't load these titles. Please try again.");
     } finally {
-      setLoading(false);
+      if (
+        scopeRef.current === ownerScope &&
+        activeRequest.current === request
+      ) {
+        setLoading(false);
+        activeRequest.current = null;
+      }
     }
   }
 
   useEffect(() => {
+    setUniversalTitle(null);
+    setTitleModalId(null);
+    titleRequest.current++;
+    setSourceLabel("");
     void load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    return () => {
+      activeRequest.current = null;
+      titleRequest.current++;
+    };
   }, [sessionToken, validKey, mediaFilter]);
 
   async function openTitle(titleId: string) {
     if (!sessionToken) return;
+    const request = ++titleRequest.current,
+      ownerScope = scope;
     setTitleModalId(titleId);
+    setUniversalTitle(null);
     setTitleLoading(true);
     try {
       const detail = await fetchUniversalTitle(sessionToken, titleId);
-      setUniversalTitle(detail);
+      if (request === titleRequest.current && scopeRef.current === ownerScope)
+        setUniversalTitle(detail);
     } catch {
-      setUniversalTitle(null);
+      if (request === titleRequest.current) setUniversalTitle(null);
     } finally {
-      setTitleLoading(false);
+      if (request === titleRequest.current) setTitleLoading(false);
     }
   }
 
-  const cols = 2;
+  const cols = Math.max(
+    2,
+    Math.min(5, Math.floor((width - spacing.lg * 2) / 160)),
+  );
   const gap = 10;
   const sidePadding = spacing.lg;
   const posterWidth = (width - sidePadding * 2 - gap * (cols - 1)) / cols;
@@ -174,7 +183,12 @@ export default function CollectionSeeAllScreen() {
   if (!validKey) {
     return (
       <SafeAreaView style={styles.root} edges={[]}>
-        <AppHeader variant="detail" leftKind="back" title="Unavailable" hideProfileAvatar />
+        <AppHeader
+          variant="detail"
+          leftKind="back"
+          title="Unavailable"
+          hideProfileAvatar
+        />
         <EmptyView
           icon="warning-outline"
           title="Collection not available."
@@ -198,13 +212,18 @@ export default function CollectionSeeAllScreen() {
       />
 
       <View style={styles.subhead}>
-        <Text style={styles.subheadText}>{COLLECTION_SUBTITLE[validKey]}</Text>
+        <Text style={styles.subheadText}>
+          {sourceLabel || COLLECTION_SUBTITLE[validKey]}
+        </Text>
         {showToggle ? (
           <MediaToggle
             value={mediaFilter}
             onChange={(next) => {
               setMediaFilter(next);
-              trackEvent("collection_media_toggle", { collection: validKey, media: next });
+              trackEvent("collection_media_toggle", {
+                collection: validKey,
+                media: next,
+              });
             }}
           />
         ) : null}
@@ -212,7 +231,7 @@ export default function CollectionSeeAllScreen() {
 
       {loading && items.length === 0 ? (
         <LoadingView />
-      ) : error ? (
+      ) : error && items.length === 0 ? (
         <EmptyView
           icon="warning-outline"
           title="Couldn't load this collection."
@@ -228,6 +247,41 @@ export default function CollectionSeeAllScreen() {
         />
       ) : (
         <FlatList
+          key={cols}
+          ListFooterComponent={
+            <View style={{ paddingVertical: 20, gap: 12 }}>
+              {error ? (
+                <Text accessibilityRole="alert" style={{ color: colors.muted }}>
+                  {error}
+                </Text>
+              ) : null}
+              {loading ? (
+                <ActivityIndicator color={colors.accent} />
+              ) : nextCursor || needsReset ? (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => void load(needsReset ? null : nextCursor)}
+                  style={{
+                    minHeight: 44,
+                    alignItems: "center",
+                    justifyContent: "center",
+                  }}
+                >
+                  <Text style={{ color: colors.accent }}>
+                    {needsReset
+                      ? "Refresh collection"
+                      : error
+                        ? "Try again"
+                        : "Load more"}
+                  </Text>
+                </Pressable>
+              ) : (
+                <Text style={{ color: colors.muted }}>
+                  You're all caught up.
+                </Text>
+              )}
+            </View>
+          }
           data={items}
           keyExtractor={(item) => item.id}
           numColumns={cols}
@@ -236,22 +290,41 @@ export default function CollectionSeeAllScreen() {
           renderItem={({ item }) => (
             <Pressable
               onPress={() => {
-                trackEvent("collection_item_opened", { collection: validKey, title_id: item.id });
+                trackEvent("collection_item_opened", {
+                  collection: validKey,
+                  title_id: item.id,
+                });
                 void openTitle(item.id);
               }}
-              style={({ pressed }) => [styles.card, { width: posterWidth }, pressed && { opacity: 0.78 }]}
+              style={({ pressed }) => [
+                styles.card,
+                { width: posterWidth },
+                pressed && { opacity: 0.78 },
+              ]}
             >
               <View style={{ width: posterWidth, height: posterHeight }}>
                 {item.poster_url ? (
-                  <Image source={{ uri: item.poster_url }} style={styles.poster} resizeMode="cover" />
+                  <Image
+                    source={{ uri: item.poster_url }}
+                    style={styles.poster}
+                    resizeMode="cover"
+                  />
                 ) : (
                   <View style={[styles.poster, styles.posterFallback]}>
-                    <Ionicons name="film-outline" size={20} color={colors.muted2} />
+                    <Ionicons
+                      name="film-outline"
+                      size={20}
+                      color={colors.muted2}
+                    />
                   </View>
                 )}
               </View>
-              <Text style={styles.cardTitle} numberOfLines={2}>{item.title}</Text>
-              {item.year ? <Text style={styles.cardYear}>{item.year}</Text> : null}
+              <Text style={styles.cardTitle} numberOfLines={2}>
+                {item.title}
+              </Text>
+              {item.year ? (
+                <Text style={styles.cardYear}>{item.year}</Text>
+              ) : null}
             </Pressable>
           )}
         />
@@ -270,14 +343,15 @@ export default function CollectionSeeAllScreen() {
   );
 }
 
-
 function normalizeTitle(src: Record<string, unknown>): CollectionTitle {
   const id = String(src.id ?? src.title_id ?? "");
   const title = String(src.title ?? "");
   const poster = (src.poster_url ?? null) as string | null;
   const backdrop = (src.backdrop_url ?? null) as string | null;
   const release = (src.release_date ?? null) as string | null;
-  const year = release ? new Date(release).getFullYear() : (src.year as number | null) ?? null;
+  const year = release
+    ? new Date(release).getFullYear()
+    : ((src.year as number | null) ?? null);
   const mediaType = (src.content_type ?? src.media_type ?? "movie") as string;
   return {
     id,
@@ -288,7 +362,6 @@ function normalizeTitle(src: Record<string, unknown>): CollectionTitle {
     content_type: mediaType,
   };
 }
-
 
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },

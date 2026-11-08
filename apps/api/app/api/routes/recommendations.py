@@ -20,6 +20,8 @@ from app.api.dependencies import CurrentUser, DbSession
 from app.models.taste import RecommendationImpression, RecommendationFeedback
 from app.services.recommendation_service import MODES, recommend_for_user
 
+from app.schemas.scenedna import TitleCompatibility
+
 router = APIRouter()
 
 
@@ -43,6 +45,7 @@ class RecommendationTitleResponse(BaseModel):
 
 
 class RecommendationItemResponse(BaseModel):
+    scenedna: TitleCompatibility | None = None
     impression_id: UUID
     title: RecommendationTitleResponse
     score: float
@@ -104,6 +107,7 @@ def get_recommendations(
                     genres=item["title"].genres or [],
                 ),
                 score=item["score"],
+                scenedna=item["scenedna"],
                 confidence=item["confidence"],
                 reasons=[RecommendationReasonResponse(**r) for r in item["reasons"]],
                 mode=item["mode"],

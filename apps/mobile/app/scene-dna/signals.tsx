@@ -29,7 +29,7 @@ type SignalRow = {
   title: string;
   poster_url: string | null;
   action: "left" | "right" | "up" | string;
-  action_version?: number;
+  action_version?: number | null;
   influence_active: boolean;
   created_at: string;
 };
@@ -96,7 +96,8 @@ export default function SceneDNASignalsScreen() {
   }
 
   const actionLabel = (row: SignalRow) => {
-    if((row.action_version??1)>=2)return ({right:'Interested',left:'Passed',up:'Watched',down:"Watched · didn't like"} as Record<string,string>)[row.action]??row.action;
+    if(row.action_version == null) return `${row.action[0].toUpperCase()}${row.action.slice(1)} swipe`;
+    if(row.action_version>=2)return ({right:'Interested',left:'Passed',up:'Watched',down:"Watched · didn't like"} as Record<string,string>)[row.action]??row.action;
     return ({right:'Liked',left:'Passed',up:'Watch now',down:'Skipped'} as Record<string,string>)[row.action]??row.action;
   };
 

@@ -20,7 +20,6 @@ def user(db, monkeypatch):
     db.add(UserProfile(user_id=person.id, username=person.id.hex, display_name="Viewer", country_code="US")); db.commit()
     monkeypatch.setattr(taste, "refresh_taste_profile", lambda *a, **k: None)
     monkeypatch.setattr("app.services.user_signals.compute_user_signals", lambda *a, **k: None)
-    monkeypatch.setattr(feed, "_build_signal_index", lambda *a: {})
     return person
 
 

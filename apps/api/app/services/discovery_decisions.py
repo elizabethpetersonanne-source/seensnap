@@ -52,7 +52,7 @@ def create_decision(db, record, before, source_surface):
         sequence = int(db.scalar(select(func.max(DiscoveryDecision.sequence)).where(DiscoveryDecision.user_id == record.user_id)) or 0) + 1
     decision = DiscoveryDecision(
         id=record.id, user_id=record.user_id, content_title_id=record.content_title_id,
-        sequence=sequence, direction=record.direction, idempotency_key=record.idempotency_key,
+        sequence=sequence, direction=record.direction, action_version=record.action_version, idempotency_key=record.idempotency_key,
         state_before=before, state_after=watch_snapshot(db, record.user_id, record.content_title_id),
     )
     db.add(decision)

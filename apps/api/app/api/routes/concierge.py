@@ -31,6 +31,9 @@ from app.services.entitlements import (
 )
 
 
+from app.schemas.scenedna import TitleCompatibility
+from app.services.title_compatibility import scorer_for_user
+
 router = APIRouter()
 
 
@@ -49,6 +52,7 @@ class ConciergeDecisionRequest(BaseModel):
 
 
 class ConciergeTitleCard(BaseModel):
+    scenedna: TitleCompatibility | None = None
     title_id: UUID
     tmdb_id: int
     title: str
@@ -88,7 +92,7 @@ class ConciergeDecisionResponse(BaseModel):
     version: int = 1
 
 
-def _hydrate_decision_titles(db, title_ids: list[UUID]) -> list[ConciergeTitleCard]:
+def _hydrate_decision_titles(db, title_ids: list[UUID], user_id) -> list[ConciergeTitleCard]:
     """Return ConciergeTitleCard rows in the service's order. UUIDs
     without a catalog row are silently dropped — the service already
     grounds every result, so a drop here only reflects a race with
@@ -98,12 +102,14 @@ def _hydrate_decision_titles(db, title_ids: list[UUID]) -> list[ConciergeTitleCa
     rows = {t.id: t for t in db.scalars(
         select(ContentTitle).where(ContentTitle.id.in_(title_ids))
     ).all()}
+    scorer = scorer_for_user(db, user_id, rows.values())
     out: list[ConciergeTitleCard] = []
     for tid in title_ids:
         t = rows.get(tid)
         if t is None:
             continue
         out.append(ConciergeTitleCard(
+            scenedna=scorer.score(t),
             title_id=t.id,
             tmdb_id=t.tmdb_id,
             title=t.title,
@@ -156,15 +162,17 @@ def _validate_selected_list(db, user_id, list_id):
             raise HTTPException(404, detail="This list is no longer available.")
 
 
-def _request_response(request):
+def _request_response(db, request):
     from datetime import datetime, timezone
     if request.state == "processing":
         expired = request.lease_expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)
         return ConciergeDecisionResponse(decision_id=request.decision_id, request_id=request.id,
             status="processing", status_detail="request_interrupted" if expired else "request_in_progress",
             retry_after_seconds=3, can_retry=expired, retrieval_exhausted=False)
-    return ConciergeDecisionResponse.model_validate({**request.response, "request_id": str(request.id),
+    response = ConciergeDecisionResponse.model_validate({**request.response, "request_id": str(request.id),
         "can_retry": request.state == "retryable"})
+    response.titles = _hydrate_decision_titles(db, [t.title_id for t in response.titles], request.user_id)
+    return response
 
 
 @router.get("/requests/{request_key}", response_model=ConciergeDecisionResponse)
@@ -178,7 +186,7 @@ def get_concierge_request(request_key: str, current_user: CurrentUser, db: DbSes
     list_id = (request.response.get("constraints") or {}).get("collection_list_id")
     if list_id:
         _validate_selected_list(db, current_user.id, UUID(list_id))
-    return _request_response(request)
+    return _request_response(db, request)
 
 
 @router.post("/decision", response_model=ConciergeDecisionResponse)
@@ -202,7 +210,7 @@ def post_concierge_decision(payload: ConciergeDecisionRequest, current_user: Cur
     if not run:
         list_id = (request.response.get("constraints") or {}).get("collection_list_id")
         if list_id: _validate_selected_list(db, current_user.id, UUID(list_id))
-        return _request_response(request)
+        return _request_response(db, request)
     request_id, lease_id, attempt = request.id, request.lease_id, request.attempt
     with request_runtime(request_id) as runtime:
         try:
@@ -220,7 +228,7 @@ def post_concierge_decision(payload: ConciergeDecisionRequest, current_user: Cur
                 status_detail="search_interrupted", partial_reason="upstream_failure", retrieval_exhausted=False)
         request = lock_current(db, current_user.id, request_id, lease_id)
         record = _persist_decision_record(db, current_user.id, decision, payload.intent)
-        titles = _hydrate_decision_titles(db, decision.title_ids)
+        titles = _hydrate_decision_titles(db, decision.title_ids, current_user.id)
         successful = decision.status in ("ready", "partial") and bool(titles)
         if allowance and allowance.decision_id:
             finalize_concierge_decision(db, current_user.id, allowance.decision_id, successful=successful)
@@ -406,7 +414,7 @@ def post_concierge_refinement(
     snapshot.update({"intent": new_intent, "turn_type": payload.kind,
                      "idempotency_key": payload.idempotency_key, "request_fingerprint": fingerprint,
                      "at": datetime.now(timezone.utc).isoformat()})
-    titles = _hydrate_decision_titles(db, [UUID(t) for t in snapshot.get("title_ids", [])])
+    titles = _hydrate_decision_titles(db, [UUID(t) for t in snapshot.get("title_ids", [])], current_user.id)
     snapshot["title_ids"] = [str(t.title_id) for t in titles]
     if len(titles) < snapshot.get("requested_count", 5) and snapshot.get("status") in ("ready", "partial"):
         snapshot["status"] = "partial" if titles else "empty"
@@ -427,7 +435,9 @@ def post_concierge_refinement(
 def _response_from_turn(db, decision_id, turn, version):
     allowed = set(ConciergeDecisionResponse.model_fields) - {"decision_id", "titles", "version"}
     values = {key: value for key, value in turn.items() if key in allowed}
-    titles = _hydrate_decision_titles(db, [UUID(t) for t in turn.get("title_ids", [])])
+    from app.models.entitlements import ConciergeDecisionRecord
+    owner = db.get(ConciergeDecisionRecord, decision_id).user_id
+    titles = _hydrate_decision_titles(db, [UUID(t) for t in turn.get("title_ids", [])], owner)
     values["exact_match_count"] = len(titles)
     if len(titles) < values.get("requested_count", 5) and values.get("status") == "ready":
         values["status"] = "partial" if titles else "empty"

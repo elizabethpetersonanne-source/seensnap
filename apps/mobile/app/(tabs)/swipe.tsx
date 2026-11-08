@@ -1,3 +1,4 @@
+import { SceneDnaBadge } from "@/components/scene-dna-badge";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -644,6 +645,7 @@ export default function SwipeTab() {
       <Text style={styles.detailsTitle} numberOfLines={isWide ? 3 : 2}>
         {activeCard.title.title}
       </Text>
+      <SceneDnaBadge titleId={activeCard.title.id} />
       <Text style={styles.detailsMeta}>{buildCardMeta(activeCard, currentDetail)}</Text>
       {activeGenres ? (
         <View style={styles.detailsGenreRow}>

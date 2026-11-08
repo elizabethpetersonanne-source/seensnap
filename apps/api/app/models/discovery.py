@@ -21,6 +21,8 @@ class DiscoveryDecision(Base):
     idempotency_key: Mapped[str | None] = mapped_column(String(80))
     state_before: Mapped[dict] = mapped_column(JSONB, default=dict)
     state_after: Mapped[dict] = mapped_column(JSONB, default=dict)
+    action_version: Mapped[int | None] = mapped_column(Integer, default=2)
+    influence_disabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     undone_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 

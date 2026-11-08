@@ -1,3 +1,4 @@
+import { SceneDnaBadge } from "@/components/scene-dna-badge";
 /**
  * Concierge result — hero + four small posters.
  *
@@ -111,6 +112,7 @@ export function ConciergeResult({
         </View>
       ) : null}
 
+      <SceneDnaBadge titleId={featured.title_id} />
       {/* Featured poster — large, tap opens details. */}
       <Pressable
         onPress={() => onPressFeatured(featured)}

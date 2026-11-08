@@ -85,58 +85,34 @@ def _to_title_response(t: ContentTitle) -> TitleResponse:
 # ---------------------------------------------------------------------------
 
 @router.get("/trending", response_model=TrendingResponse)
-def discover_trending(
-    db: DbSession,
-    _user: CurrentUser,
-    limit: int = Query(default=12, ge=4, le=60),
-    media_type: str | None = Query(default=None),
-) -> TrendingResponse:
-    """Oct-27 personalization brief DISC01: optional media_type
-    hard-filter ("movie" | "series" | "tv" | "show"). The service
-    pulls a wider pool so filtering still yields `limit` eligible
-    results; the result set is clamped to the requested limit after
-    filter."""
-    want: str | None = None
-    if media_type:
-        norm = media_type.strip().lower()
-        if norm in ("movie", "film"):
-            want = "movie"
-        elif norm in ("series", "tv", "show"):
-            want = "series"
-    # Pull 3x the limit so the filter has room to produce `limit`
-    # matching titles. The upstream service caps at 60.
-    pool_size = min(60, limit * 3) if want else limit
-    result = get_trending(db, limit=pool_size)
-    items = result["items"]
-    if want is not None:
-        items = [t for t in items if t.content_type == want]
-    return TrendingResponse(
-        source_mode=result["source_mode"],
-        display_label=result["display_label"],
-        generated_at=result["generated_at"],
-        items=[_to_title_response(t) for t in items[:limit]],
-    )
+def discover_trending(db: DbSession, _user: CurrentUser,
+    limit: int = Query(12, ge=4, le=60),
+    media_type: str | None = Query(None, pattern="^(movie|film|series|tv|show)$")):
+    from app.services.discover_collections import source_landing
+    media = 'movie' if media_type in ('movie', 'film') else 'tv' if media_type else 'all'
+    return _source_response(lambda: source_landing(db, _user.id, 'trending', media, limit))
 
 
 @router.get("/now-in-theaters", response_model=TrendingResponse)
-def discover_now_in_theaters(
-    db: DbSession,
-    _user: CurrentUser,
-    limit: int = Query(default=12, ge=4, le=60),
-    region: str = Query(default="US", min_length=2, max_length=2),
-) -> TrendingResponse:
-    """Oct-19 Discover rebrief: TMDB movie/now_playing for the user's
-    region. Movie-only; no implied verified showtimes — the client
-    should label this as 'In theaters now'."""
-    from datetime import datetime, timezone
-    from app.services.tmdb import fetch_now_playing_titles
-    titles = fetch_now_playing_titles(db, limit=limit, region=region.upper())
-    return TrendingResponse(
-        source_mode="now_in_theaters",
-        display_label=f"In theaters now · {region.upper()}",
-        generated_at=datetime.now(timezone.utc).isoformat(),
-        items=[_to_title_response(t) for t in titles],
-    )
+def discover_now_in_theaters(db: DbSession, _user: CurrentUser,
+    limit: int = Query(12, ge=4, le=60), region: str | None = Query(None, pattern="^[A-Za-z]{2}$")):
+    from app.services.discover_collections import source_landing
+    return _source_response(lambda: source_landing(db, _user.id, 'now-in-theaters', 'movie', limit, region.upper() if region else None))
+
+
+def _source_response(load):
+    import httpx
+    from app.services.tmdb import TmdbConfigurationError
+    try: return load()
+    except (TmdbConfigurationError, httpx.HTTPError):
+        raise HTTPException(503, detail='This collection could not load. Please retry.')
+
+
+@router.get('/collection/{key}')
+def discover_collection(key: str, db: DbSession, current_user: CurrentUser,
+    media: str = Query('movie', pattern='^(movie|tv)$'), cursor: str | None = Query(None, max_length=100)):
+    from app.services.discover_collections import collection_page
+    return _source_response(lambda: collection_page(db, current_user.id, key, media, cursor))
 
 
 @router.get("/home", response_model=DiscoverHomeResponse)

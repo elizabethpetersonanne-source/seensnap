@@ -310,17 +310,11 @@ def get_my_recommendations(
     genre: str | None = Query(default=None, max_length=40),
     session_id: str | None = Query(default=None, max_length=80),
 ) -> list[RecommendationResponse]:
+    from app.services.for_you import for_you_recommendations
     try:
-        return get_social_recommendations(
-            db,
-            current_user.id,
-            limit=limit,
-            preferred_type=preferred_type,
-            genre_filter=genre,
-            session_id=session_id,
-        )
-    except TmdbConfigurationError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        return for_you_recommendations(db, current_user.id, limit=limit, preferred_type=preferred_type, genre=genre)
+    except (TmdbConfigurationError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=503, detail="Your picks could not load right now. Please retry.") from exc
 
 
 class SwipeUndoResponse(BaseModel):

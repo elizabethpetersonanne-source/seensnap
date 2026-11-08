@@ -1,3 +1,4 @@
+import { COUNTRIES } from "@/lib/countries";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { router } from "expo-router";
@@ -367,7 +368,7 @@ export default function DiscoverScreen() {
   const [conciergeDraft, setConciergeDraft] = useState("");
   const recoveryScope = useRef<{ intent: string; listId?: string } | null>(null);
   const [conciergeAction, setConciergeAction] = useState<TitleActionTarget | null>(null);
-  const [conciergeRating, setConciergeRating] = useState<ConciergeTitleCard | null>(null);
+  const [conciergeRating, setConciergeRating] = useState<Pick<ConciergeTitleCard, "title_id" | "title"> | null>(null);
   const [conciergeDecision, setConciergeDecision] = useState<ConciergeDecisionResponse | null>(null);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
@@ -467,6 +468,7 @@ export default function DiscoverScreen() {
   }
 
   // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
+  const [theaterRegion, setTheaterRegion] = useState<string | null>(null);
   const [nowInTheatersItems, setNowInTheatersItems] = useState<TitleItem[]>([]);
   const [nowInTheatersLoading, setNowInTheatersLoading] = useState(true);
   // Oct-27 spec CON-01: Concierge background = highest-ranked MOVIE
@@ -490,8 +492,21 @@ export default function DiscoverScreen() {
 
   // ── Load discover content ─────────────────────────────────────────────────
 
+  const trendingRequest = useRef(0);
+  const theaterRequest = useRef(0);
+  const sourceScope = `${sessionToken}|${trendingMedia}`;
+  const sourceScopeRef = useRef(sourceScope); sourceScopeRef.current = sourceScope;
+  const accountScopeRef = useRef(sessionToken); accountScopeRef.current = sessionToken;
+  function handleDiscoverAction(action: "save" | "send" | "team" | "rate", title: DiscoverTitle) {
+    if (action === "save") { setSaveTitleId(title.id); setShowSaveSheet(true); }
+    else if (action === "rate") setConciergeRating({ title_id: title.id, title: title.title });
+    else setConciergeAction({ action, id: title.id, title: title.title, poster: title.poster_url });
+  }
+
   async function loadTrending(mediaOverride?: "movie" | "tv") {
     if (!sessionToken) return;
+    const request = ++trendingRequest.current, scope = sourceScope;
+    setTrending(null);
     try {
       const media = mediaOverride ?? trendingMedia;
       // DISC01: server-filtered trending so the toggle produces a
@@ -501,11 +516,11 @@ export default function DiscoverScreen() {
         `/discover/trending?limit=12&media_type=${media === "movie" ? "movie" : "tv"}`,
         { token: sessionToken },
       );
-      setTrending(result);
+      if (request === trendingRequest.current && sourceScopeRef.current === scope) setTrending(result);
     } catch {
       // silently degrade — trending stays null
     } finally {
-      setTrendingLoading(false);
+      if (request === trendingRequest.current && sourceScopeRef.current === scope) setTrendingLoading(false);
     }
   }
 
@@ -565,6 +580,7 @@ export default function DiscoverScreen() {
         return;
       }
       setForYouLoading(true);
+      setForYouFiltered(null);
       try {
         const preferredType = forYouMedia === "movie" ? "movie" : "show";
         const result = await apiRequest<RecommendationItem[]>(
@@ -604,17 +620,21 @@ export default function DiscoverScreen() {
 
   async function loadNowInTheaters() {
     if (!sessionToken) return;
+    const request = ++theaterRequest.current, scope = sessionToken;
+    setNowInTheatersItems([]);
     setNowInTheatersLoading(true);
     setNowInTheatersError(null);
     try {
       const result = await apiRequest<TrendingResponse>("/discover/now-in-theaters?limit=12", {
         token: sessionToken,
       });
+      if (request !== theaterRequest.current || accountScopeRef.current !== scope) return;
       setNowInTheatersItems(result.items ?? []);
+      setTheaterRegion(result.display_label.split("·").pop()?.trim() ?? null);
     } catch (err) {
-      setNowInTheatersError(err instanceof Error ? err.message : "Could not load now in theaters");
+      if (request === theaterRequest.current && accountScopeRef.current === scope) setNowInTheatersError("Could not load now in theaters. Please retry.");
     } finally {
-      setNowInTheatersLoading(false);
+      if (request === theaterRequest.current && accountScopeRef.current === scope) setNowInTheatersLoading(false);
     }
   }
 
@@ -1099,16 +1119,15 @@ export default function DiscoverScreen() {
             // Primary source is the server-filtered rec list.
             const serverItems = forYouFiltered ?? [];
             if (serverItems.length > 0) {
-              const subtitle = forYouModule?.type === "because_you"
-                ? `${forYouModule.label} — tuned to your SceneDNA`
-                : "Tuned to your SceneDNA";
+              const subtitle = serverItems[0].reason || "Learning your taste";
               return (
                 <DiscoverSection
+                  onAction={handleDiscoverAction}
                   kicker="FOR YOU"
                   subtitle={subtitle}
                   rightSlot={<MediaToggle value={forYouMedia} onChange={setForYouMedia} />}
                   hero={titleItemToDiscover(serverItems[0].title)}
-                  four={serverItems.slice(1, 5).map((r) => titleItemToDiscover(r.title))}
+                  four={serverItems.slice(1).map((r) => titleItemToDiscover(r.title))}
                   onPressTitle={(t) => {
                     trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
                     void openTitleModal(t.id);
@@ -1150,11 +1169,12 @@ export default function DiscoverScreen() {
           {/* 2 · Trending — dedicated /discover/trending (TMDB weekly) */}
           {trending && trending.items && trending.items.length > 0 ? (
             <DiscoverSection
+                  onAction={handleDiscoverAction}
               kicker="TRENDING"
               subtitle="Popular this week"
               rightSlot={<MediaToggle value={trendingMedia} onChange={setTrendingMedia} />}
               hero={titleItemToDiscover(trending.items[0])}
-              four={trending.items.slice(1, 5).map(titleItemToDiscover)}
+              four={trending.items.slice(1).map(titleItemToDiscover)}
               onPressTitle={(t) => {
                 trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
                 void openTitleModal(t.id);
@@ -1189,10 +1209,11 @@ export default function DiscoverScreen() {
           {/* 3 · In Theaters Now — /discover/now-in-theaters */}
           {nowInTheatersItems.length > 0 ? (
             <DiscoverSection
+                  onAction={handleDiscoverAction}
               kicker="NOW IN THEATERS"
-              locationLabel="United States"
+              locationLabel={COUNTRIES.find(country => country.code === theaterRegion)?.name ?? theaterRegion}
               hero={titleItemToDiscover(nowInTheatersItems[0])}
-              four={nowInTheatersItems.slice(1, 5).map(titleItemToDiscover)}
+              four={nowInTheatersItems.slice(1).map(titleItemToDiscover)}
               onPressTitle={(t) => {
                 trackEvent("discover_item_clicked", { module: "now_in_theaters", content_id: t.id });
                 void openTitleModal(t.id);
@@ -1233,7 +1254,7 @@ export default function DiscoverScreen() {
           }}
         />
       )}
-      <TitleActionSheets target={conciergeAction} token={sessionToken} source="concierge" onClose={() => setConciergeAction(null)} />
+      <TitleActionSheets target={conciergeAction} token={sessionToken} source="discover" onClose={() => setConciergeAction(null)} />
       <RatingEditor visible={conciergeRating !== null} token={sessionToken} titleId={conciergeRating?.title_id ?? null}
         titleName={conciergeRating?.title} initial={null} onClose={() => setConciergeRating(null)} />
       <SaveToListSheet

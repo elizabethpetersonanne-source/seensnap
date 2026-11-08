@@ -1,3 +1,4 @@
+import { SceneDnaBadge } from "@/components/scene-dna-badge";
 /** Continuous previews with shared filters, stable list order and direct title actions. */
 import { usePlaybackMute } from "@/lib/playback-preference";
 import { Ionicons } from "@expo/vector-icons";
@@ -338,6 +339,7 @@ export default function PreviewsScreen() {
                       {item.video.official ? "  ·  OFFICIAL" : ""}
                     </Text>
                     <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
+                    {isActive ? <SceneDnaBadge titleId={item.title_id} /> : null}
                     <Text style={styles.subMeta}>
                       {[
                         item.media_type === "movie" ? "FILM" : "SERIES",

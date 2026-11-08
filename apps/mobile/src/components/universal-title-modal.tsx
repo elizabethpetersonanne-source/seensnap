@@ -1,3 +1,4 @@
+import { SceneDnaBadge } from "@/components/scene-dna-badge";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
@@ -569,6 +570,7 @@ export function UniversalTitleModal({
                     </View>
                     <View style={styles.heroCopy}>
                       <Text style={styles.heroTitle}>{currentTitle?.title ?? "Title"}</Text>
+                      {currentTitle ? <SceneDnaBadge titleId={currentTitle.id} /> : null}
                       <Text style={styles.heroFacts}>
                         {[
                           currentTitle?.year ?? "Unknown",

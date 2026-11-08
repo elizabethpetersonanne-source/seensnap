@@ -2077,106 +2077,17 @@ def record_swipe(
 
 
 def _collect_title_signals(db: Session, user_id: UUID) -> tuple[defaultdict[str, float], list[dict], list[int]]:
+    from app.services.user_signals import _collect_interactions
     genre_scores: defaultdict[str, float] = defaultdict(float)
-    title_refs: dict[UUID, dict] = {}
-    release_years: list[int] = []
-    team_ids = [team.id for team, _ in list_user_teams(db, user_id)]
-
-    def apply_title(title: ContentTitle | None, weight: float) -> None:
-        if title is None:
-            return
-        for genre in _title_genres(title):
-            genre_scores[genre] += weight
-        if title.id not in title_refs:
-            title_refs[title.id] = {
-                "title_id": str(title.id),
-                "title_name": title.title,
-                "poster_url": title.poster_url,
-                "weight": 0.0,
-            }
-        title_refs[title.id]["weight"] += weight
-        if title.release_date is not None:
-            release_years.append(title.release_date.year)
-
-    ratings = db.execute(
-        select(Rating, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        .where(Rating.user_id == user_id)
-    ).all()
-    for rating, title in ratings:
-        # Oct-18 brief §3 fix 3: unify signal semantics across the
-        # recommendation stack. The old `max(score - 4.5, 0.5) * 6`
-        # formula floored every rating to a positive contribution, so
-        # a 1/10 rating still added +3 affinity for that title's
-        # traits — contradicting user_signals.py which (correctly)
-        # treats score <= 4 as negative evidence. Switch to a
-        # symmetric mapping centered at 5.5:
-        #   10 →  +27   7 →  +9    5 →  -3
-        #    1 →  -27   4 →  -9    6 →  +3
-        # so low ratings REDUCE affinity in this consumer the same way
-        # they do in user_signals.py's weight table.
-        apply_title(title, (float(rating.score) - 5.5) * 6)
-
-    reviews = db.execute(
-        select(Review, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Review.content_title_id)
-        .where(Review.user_id == user_id)
-    ).all()
-    for review, title in reviews:
-        apply_title(title, 5 if review.body else 3)
-
-    watchlist_items = db.execute(
-        select(WatchlistItem, Watchlist, ContentTitle)
-        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id)
-    ).all()
-    for item, watchlist, title in watchlist_items:
-        bonus = 14 if watchlist.name.lower() == "favorites" else 10 if watchlist.is_default else 8
-        if item.position is not None:
-            bonus += max(10 - item.position, 1)
-        apply_title(title, bonus)
-
-    # Team curation is not the viewer's personal rating evidence.
-
-    reactions = db.scalar(select(func.count(FeedReaction.id)).where(FeedReaction.user_id == user_id)) or 0
-    if reactions and genre_scores:
-        lead_genre = max(genre_scores.items(), key=lambda item: item[1])[0]
-        genre_scores[lead_genre] += reactions * 0.35
-
-    comments = db.scalar(select(func.count(FeedComment.id)).where(FeedComment.user_id == user_id)) or 0
-    if comments and genre_scores:
-        lead_genre = max(genre_scores.items(), key=lambda item: item[1])[0]
-        genre_scores[lead_genre] += comments * 0.5
-
-    swipe_rows = db.execute(
-        select(SwipeRecord, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == SwipeRecord.content_title_id)
-        .where(SwipeRecord.user_id == user_id)
-        .order_by(SwipeRecord.created_at.desc())
-        .limit(250)
-    ).all()
-    for swipe, title in swipe_rows:
-        if title is None:
-            continue
-        # S04: branch on action_version so legacy v1 Up events keep
-        # their original "more like this" semantics but current v2 Up
-        # contributes near-neutral weight (watching ≠ liking).
-        version = getattr(swipe, "action_version", 1) or 1
-        if swipe.direction == "up":
-            weight = SWIPE_UP_V1_WEIGHT if version < 2 else SWIPE_DIRECTION_WEIGHTS["up"]
-        else:
-            weight = SWIPE_DIRECTION_WEIGHTS.get(swipe.direction, 0.0)
+    title_refs, release_years = [], []
+    for title, weight, _at in _collect_interactions(db, user_id):
+        genres = _title_genres(title)
+        for genre in genres: genre_scores[genre] += weight / max(1, len(genres))
         if weight > 0:
-            apply_title(title, weight)
-            continue
-        for genre in _title_genres(title):
-            genre_scores[genre] += weight
-            if genre_scores[genre] < 0:
-                genre_scores[genre] = 0
-
-    ordered_titles = sorted(title_refs.values(), key=lambda item: item["weight"], reverse=True)
-    return genre_scores, ordered_titles, release_years
+            title_refs.append({"title_id":str(title.id), "title_name":title.title, "poster_url":title.poster_url, "weight":weight})
+            if title.release_date: release_years.append(title.release_date.year)
+    title_refs.sort(key=lambda item: (-item['weight'],item['title_id']))
+    return genre_scores, title_refs, release_years
 
 
 def _derive_themes(genre_scores: dict[str, float]) -> list[str]:

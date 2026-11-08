@@ -1,3 +1,5 @@
+import { useState } from "react";
+import { SceneDnaBadge } from "@/components/scene-dna-badge";
 /**
  * Oct-19 Discover simplified mock (mock A — Cinematic Concierge).
  *
@@ -13,6 +15,7 @@
 import { Ionicons } from "@expo/vector-icons";
 import {
   Image,
+  ScrollView,
   Pressable,
   StyleSheet,
   Text,
@@ -22,7 +25,6 @@ import {
 
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 
-
 export type DiscoverTitle = {
   id: string;
   title: string;
@@ -30,7 +32,6 @@ export type DiscoverTitle = {
   backdrop_url: string | null;
   year: number | null;
 };
-
 
 export function DiscoverSection({
   kicker,
@@ -40,6 +41,7 @@ export function DiscoverSection({
   hero,
   four,
   onPressTitle,
+  onAction,
   onSeeAll,
 }: {
   kicker: string;
@@ -49,12 +51,24 @@ export function DiscoverSection({
   hero: DiscoverTitle | null;
   four: DiscoverTitle[];
   onPressTitle: (t: DiscoverTitle) => void;
+  onAction?: (
+    action: "save" | "send" | "team" | "rate",
+    title: DiscoverTitle,
+  ) => void;
   onSeeAll?: () => void;
 }) {
   const { width } = useWindowDimensions();
+  const [featuredId, setFeaturedId] = useState<string | null>(null);
+  const [stripWidth, setStripWidth] = useState(width);
+  const [browseOffset, setBrowseOffset] = useState(0);
+  const candidates = [...(hero ? [hero] : []), ...four].filter(
+    (item, i, all) => all.findIndex((x) => x.id === item.id) === i,
+  );
+  const featured = candidates.find((t) => t.id === featuredId) ?? hero;
+  const remaining = candidates.filter((t) => t.id !== featured?.id);
   const sidePadding = spacing.lg;
   const gap = 8;
-  const smallWidth = (width - sidePadding * 2 - gap * 3) / 4;
+  const smallWidth = Math.min(140, Math.max(64, (stripWidth - gap * 3) / 4));
   const smallHeight = smallWidth * (3 / 2);
   const heroHeight = Math.min(220, (width - sidePadding * 2) * 0.56);
 
@@ -74,18 +88,22 @@ export function DiscoverSection({
         {rightSlot ?? null}
       </View>
 
-      {hero ? (
+      {featured ? (
         <Pressable
-          onPress={() => onPressTitle(hero)}
+          onPress={() => onPressTitle(featured)}
+          accessibilityRole="button"
+          accessibilityLabel={`Open details for ${featured.title}`}
           style={({ pressed }) => [
             styles.hero,
             { height: heroHeight },
             pressed && { opacity: 0.9 },
           ]}
         >
-          {(hero.backdrop_url || hero.poster_url) ? (
+          {featured.backdrop_url || featured.poster_url ? (
             <Image
-              source={{ uri: hero.backdrop_url || hero.poster_url || "" }}
+              source={{
+                uri: featured.backdrop_url || featured.poster_url || "",
+              }}
               style={StyleSheet.absoluteFillObject}
               resizeMode="cover"
             />
@@ -93,39 +111,111 @@ export function DiscoverSection({
           <View style={styles.heroShade} />
           <View style={styles.heroCaption}>
             <Text style={styles.heroTitle} numberOfLines={2}>
-              {hero.title}
+              {featured.title}
             </Text>
           </View>
         </Pressable>
       ) : null}
 
-      {four.length > 0 ? (
-        <View style={[styles.fourRow, { gap }]}>
-          {four.slice(0, 4).map((t) => (
+      {featured ? <SceneDnaBadge titleId={featured.id} /> : null}
+      {featured && onAction ? (
+        <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+          {(
+            [
+              { action: "save", label: "Save", icon: "bookmark-outline" },
+              { action: "send", label: "Send", icon: "paper-plane-outline" },
+              { action: "team", label: "Watch Team", icon: "people-outline" },
+              { action: "rate", label: "Rate", icon: "star-outline" },
+            ] as const
+          ).map((button) => (
             <Pressable
-              key={t.id}
-              onPress={() => onPressTitle(t)}
-              style={({ pressed }) => [styles.smallCard, { width: smallWidth }, pressed && { opacity: 0.85 }]}
+              key={button.action}
+              accessibilityRole="button"
+              accessibilityLabel={`${button.label}: ${featured.title}`}
+              onPress={() => onAction(button.action, featured)}
+              style={{
+                minWidth: 64,
+                minHeight: 44,
+                flex: 1,
+                alignItems: "center",
+                justifyContent: "center",
+                gap: 4,
+              }}
             >
-              <View style={{ width: smallWidth, height: smallHeight }}>
-                {t.poster_url ? (
-                  <Image source={{ uri: t.poster_url }} style={styles.smallPoster} resizeMode="cover" />
-                ) : (
-                  <View style={[styles.smallPoster, styles.smallFallback]}>
-                    <Ionicons name="film-outline" size={16} color={colors.muted2} />
-                  </View>
-                )}
-              </View>
-              <Text style={styles.smallCaption} numberOfLines={2}>
-                {t.title}
+              <Ionicons name={button.icon} size={18} color={colors.ink} />
+              <Text
+                style={{ color: colors.ink, fontSize: 12, textAlign: "center" }}
+              >
+                {button.label}
               </Text>
             </Pressable>
           ))}
         </View>
       ) : null}
+      {remaining.length > 0 ? (
+        <View onLayout={(e) => setStripWidth(e.nativeEvent.layout.width)}>
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            onScroll={(e) =>
+              setBrowseOffset(
+                Math.floor(e.nativeEvent.contentOffset.x / (smallWidth + gap)),
+              )
+            }
+            scrollEventThrottle={100}
+            contentContainerStyle={[styles.fourRow, { gap }]}
+          >
+            {remaining.map((t) => (
+              <Pressable
+                key={t.id}
+                onPress={() => setFeaturedId(t.id)}
+                accessibilityRole="button"
+                accessibilityLabel={`Feature ${t.title}`}
+                style={({ pressed }) => [
+                  styles.smallCard,
+                  { width: smallWidth },
+                  pressed && { opacity: 0.85 },
+                ]}
+              >
+                <View style={{ width: smallWidth, height: smallHeight }}>
+                  {t.poster_url ? (
+                    <Image
+                      source={{ uri: t.poster_url }}
+                      style={styles.smallPoster}
+                      resizeMode="cover"
+                    />
+                  ) : (
+                    <View style={[styles.smallPoster, styles.smallFallback]}>
+                      <Ionicons
+                        name="film-outline"
+                        size={16}
+                        color={colors.muted2}
+                      />
+                    </View>
+                  )}
+                </View>
+                <Text style={styles.smallCaption} numberOfLines={2}>
+                  {t.title}
+                </Text>
+              </Pressable>
+            ))}
+          </ScrollView>
+          {remaining.length > 4 ? (
+            <Text style={styles.locationLabel}>
+              {Math.min(browseOffset + 1, remaining.length)}–
+              {Math.min(browseOffset + 4, remaining.length)} of{" "}
+              {remaining.length} · Swipe to browse
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
 
       {onSeeAll ? (
-        <Pressable onPress={onSeeAll} hitSlop={6} style={styles.seeAllRow}>
+        <Pressable
+          onPress={onSeeAll}
+          hitSlop={6}
+          style={[styles.seeAllRow, { minHeight: 44 }]}
+        >
           <Text style={styles.seeAllLabel}>See all</Text>
           <Ionicons name="arrow-forward" size={13} color={colors.accent} />
         </Pressable>
@@ -133,7 +223,6 @@ export function DiscoverSection({
     </View>
   );
 }
-
 
 export function MediaToggle({
   value,
@@ -152,7 +241,9 @@ export function MediaToggle({
             onPress={() => onChange(opt)}
             style={[styles.toggleOpt, active && styles.toggleOptActive]}
           >
-            <Text style={[styles.toggleLabel, active && styles.toggleLabelActive]}>
+            <Text
+              style={[styles.toggleLabel, active && styles.toggleLabelActive]}
+            >
               {opt === "movie" ? "Movies" : "TV"}
             </Text>
           </Pressable>
@@ -161,7 +252,6 @@ export function MediaToggle({
     </View>
   );
 }
-
 
 const styles = StyleSheet.create({
   section: {
