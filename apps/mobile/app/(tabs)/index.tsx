@@ -30,7 +30,7 @@ import { ConciergeResult } from "@/components/concierge-result";
 import { DiscoverSection, MediaToggle, type DiscoverTitle } from "@/components/discover-section";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useEntitlement } from "@/lib/entitlement";
 import { Avatar } from "@/components/avatar";
@@ -356,6 +356,8 @@ export default function DiscoverScreen() {
 
   // Oct-18 §4 Concierge
   const entitlement = useEntitlement(sessionToken);
+  const [conciergeActionError, setConciergeActionError] = useState<string | null>(null);
+  const conciergeRefining = useRef(false);
   const [conciergeDecision, setConciergeDecision] = useState<ConciergeDecisionResponse | null>(null);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
@@ -912,12 +914,14 @@ export default function DiscoverScreen() {
                 void openTitleModal(t.title_id);
               }}
               onRefine={async (kind, extra) => {
-                if (!sessionToken || !conciergeDecision.decision_id) return;
+                if (!sessionToken || !conciergeDecision.decision_id || conciergeRefining.current) return;
                 trackEvent("concierge_refine", { kind, decision_id: conciergeDecision.decision_id });
                 if (kind === "new_search") {
                   setConciergeDecision(null);
                   return;
                 }
+                conciergeRefining.current = true;
+                setConciergeActionError(null);
                 try {
                   const idempotency_key = `concierge-refine-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
                   const res = await apiRequest<ConciergeDecisionResponse>(
@@ -925,7 +929,9 @@ export default function DiscoverScreen() {
                     {
                       method: "POST",
                       token: sessionToken,
+                      timeoutMs: 120000,
                       body: JSON.stringify({
+                        expected_version: conciergeDecision.version,
                         kind,
                         featured_title_id: extra?.featured_title_id,
                         idempotency_key,
@@ -935,18 +941,26 @@ export default function DiscoverScreen() {
                   // Carry a turn counter forward so the Undo chip can
                   // show after the first refinement.
                   const priorTurns = (conciergeDecision as unknown as { _turn_count?: number })._turn_count ?? 1;
-                  setConciergeDecision({
+                  setConciergeDecision((current) => current?.decision_id === conciergeDecision.decision_id ? {
                     ...res,
                     _intent: conciergeDecision._intent ?? null,
                     _turn_count: priorTurns + 1,
-                  } as unknown as ConciergeDecisionResponse);
-                } catch {
-                  // Keep the current result; the user can retry.
-                }
+                  } : current);
+                } catch (error) {
+                  if (error instanceof ApiError && error.status === 409) {
+                    try {
+                      const latest = await apiRequest<ConciergeDecisionResponse>(`/me/concierge/decision/${conciergeDecision.decision_id}`, { token: sessionToken });
+                      setConciergeDecision((current) => current?.decision_id === conciergeDecision.decision_id ? { ...latest, _intent: current._intent } : current);
+                    } catch { /* Preserve the displayed results for retry. */ }
+                    setConciergeActionError("Your search changed elsewhere. Review the latest results and try again.");
+                  } else setConciergeActionError("Couldn't refine this search. Your results are still here; please try again.");
+                } finally { conciergeRefining.current = false; }
+
               }}
             />
           ) : null}
 
+          {conciergeActionError ? <Text accessibilityRole="alert" style={{ color: colors.accent, padding: 16 }}>{conciergeActionError}</Text> : null}
           {/* Chunk D: empty / no-exact-match → diagnosis + adjustment chips */}
           {conciergeDecision && conciergeDecision.status === "empty" ? (
             <ConciergeEmptyState
@@ -969,6 +983,7 @@ export default function DiscoverScreen() {
                   const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
                     method: "POST",
                     token: sessionToken,
+                  timeoutMs: 120000,
                     body: JSON.stringify({ intent: prompt, idempotency_key }),
                   });
                   setConciergeDecision({ ...res, _intent: prompt });
@@ -994,6 +1009,7 @@ export default function DiscoverScreen() {
                 const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
                   method: "POST",
                   token: sessionToken,
+                  timeoutMs: 120000,
                   body: JSON.stringify({
                     intent: prompt,
                     collection_list_id: listId,

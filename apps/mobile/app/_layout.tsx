@@ -25,7 +25,7 @@ import { DidYouWatchPrompt } from "@/components/did-you-watch-prompt";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { apiRequest } from "@/lib/api";
 import { BackdropPoolProvider } from "@/lib/backdrop-pool";
-import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
+import { onboardingCompletedKey, subscribeOnboardingCompletion } from "@/lib/onboarding";
 import { UnreadNotificationsProvider } from "@/lib/unread-notifications";
 import { UnreadMessagesProvider } from "@/lib/unread-messages";
 
@@ -38,7 +38,7 @@ function BootScreen() {
 }
 
 function AuthGate() {
-  const { isLoading, sessionToken, isExpoGo } = useAuth();
+  const { isLoading, sessionToken, isExpoGo, user } = useAuth();
   const segments = useSegments();
   const inAuthRoute = segments[0] === "sign-in";
   const inOnboarding = segments[0] === "onboarding";
@@ -70,8 +70,12 @@ function AuthGate() {
 
   const [onboardingStatus, setOnboardingStatus] = useState<"unknown" | "completed" | "pending">("unknown");
 
+  useEffect(() => subscribeOnboardingCompletion((userId) => {
+    if (userId === user?.user_id) setOnboardingStatus("completed");
+  }), [user?.user_id]);
+
   useEffect(() => {
-    if (!sessionToken) {
+    if (!sessionToken || !user?.user_id) {
       setOnboardingStatus("unknown");
       return;
     }
@@ -80,7 +84,7 @@ function AuthGate() {
 
     async function checkOnboarding() {
       try {
-        const cached = await SessionStorage.getItem(ONBOARDING_COMPLETED_KEY);
+        const cached = await SessionStorage.getItem(onboardingCompletedKey(user!.user_id));
         if (cached === "true") {
           if (!cancelled) setOnboardingStatus("completed");
           return;
@@ -90,7 +94,7 @@ function AuthGate() {
         });
         if (!cancelled) {
           if (prefs.onboarding_completed) {
-            await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
+            await SessionStorage.setItem(onboardingCompletedKey(user!.user_id), "true");
             setOnboardingStatus("completed");
           } else {
             setOnboardingStatus("pending");
@@ -106,7 +110,7 @@ function AuthGate() {
     return () => {
       cancelled = true;
     };
-  }, [sessionToken]);
+  }, [sessionToken, user?.user_id]);
 
   if (isLoading || (sessionToken && onboardingStatus === "unknown")) {
     return <BootScreen />;

@@ -481,14 +481,7 @@ export default function SocialScreen() {
     }
   }
 
-  return (
-    <SafeAreaView style={styles.safeArea} edges={[]}>
-      {/* Oct-19 Header Standardization — compact shared app bar. Find
-          People + Create Post relocated into the Social content below
-          per the brief's "preserve Find People and Create Post in the
-          Social content's actions/menu, not a crowded global header." */}
-      <AppHeader variant="primary" title="Social" />
-
+  const feedHeader = (<>
       {/* Oct-27 follow-up S01–S04: Your taste matches carousel sits
           immediately below the header and above Stories, per brief. */}
       <TasteMatchesCarousel />
@@ -605,6 +598,16 @@ export default function SocialScreen() {
         </View>
       ) : null}
 
+  </>);
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={[]}>
+      {/* Oct-19 Header Standardization — compact shared app bar. Find
+          People + Create Post relocated into the Social content below
+          per the brief's "preserve Find People and Create Post in the
+          Social content's actions/menu, not a crowded global header." */}
+      <AppHeader variant="primary" title="Social" />
+
       {loading ? (
         <View style={styles.centerState}>
           <ActivityIndicator color={colors.accent} />
@@ -619,6 +622,7 @@ export default function SocialScreen() {
         </View>
       ) : feed && feed.items.length > 0 ? (
         <FlatList
+          ListHeaderComponent={feedHeader}
           data={feed.items}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.content}
@@ -652,6 +656,7 @@ export default function SocialScreen() {
         // Real empty state per §69 — no seeded activity, functional paths to
         // find people the user actually cares about.
         <ScrollView contentContainerStyle={styles.emptyRoot}>
+          {feedHeader}
           <View style={styles.emptyIcon}>
             <Ionicons name="people-outline" size={40} color={colors.accent} />
           </View>

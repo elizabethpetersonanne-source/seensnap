@@ -71,6 +71,7 @@ export function FullBleedPosterSection({
   // Oct-27: tapping the section kicker navigates somewhere (list
   // detail, see-all, etc). When undefined, the kicker is text-only.
   onPressKicker,
+  onEndReached,
 }: {
   hero: FullBleedTitle | null;
   four: FullBleedTitle[];
@@ -82,6 +83,7 @@ export function FullBleedPosterSection({
   overlay?: React.ReactNode;
   continuationBottomOffset?: number;
   onPressKicker?: () => void;
+  onEndReached?: () => void;
 }) {
   const { width, height } = useWindowDimensions();
   const resolvedHeroHeight = heroHeight ?? Math.min(height * 0.78, 820);
@@ -197,6 +199,10 @@ export function FullBleedPosterSection({
         <View style={[styles.continuationScrollWrap, { height: smallHeight + 40, bottom: (continuationBottomOffset ?? 0) + spacing.sm }]}>
           <ScrollView
             horizontal
+            scrollEventThrottle={200}
+            onScroll={({ nativeEvent: { layoutMeasurement, contentOffset, contentSize } }) => {
+              if (layoutMeasurement.width + contentOffset.x >= contentSize.width - 160) onEndReached?.();
+            }}
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.continuationScrollContent}
           >

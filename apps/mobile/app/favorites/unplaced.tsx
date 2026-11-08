@@ -24,6 +24,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { ConfirmDialog } from "@/components/confirm-dialog";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
@@ -48,6 +49,8 @@ export default function UnplacedScreen() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -89,37 +92,35 @@ export default function UnplacedScreen() {
 
   async function bulkAdd() {
     if (!sessionToken || bulkBusy) return;
-    Alert.alert(
-      `Append ${rows.length} titles by rating?`,
-      "They'll be added to the END of your ranking in score order. Your existing manual order isn't changed.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Append",
-          onPress: async () => {
-            setBulkBusy(true);
-            try {
-              await apiRequest("/me/favorites/ranked/append-unplaced", {
-                method: "POST",
-                token: sessionToken,
-                body: JSON.stringify({}),
-              });
-              // Everything is placed now.
-              setRows([]);
-              setTotal(0);
-            } catch (e) {
-              Alert.alert("Couldn't append", e instanceof Error ? e.message : "Try again.");
-            } finally {
-              setBulkBusy(false);
-            }
-          },
-        },
-      ],
-    );
+    setBulkBusy(true);
+    setFeedback(null);
+    try {
+      const result = await apiRequest<{ added_count: number; remaining_unplaced: number | null }>("/me/favorites/ranked/append-unplaced", {
+        method: "POST", token: sessionToken, body: JSON.stringify({}),
+      });
+      setConfirmBulk(false);
+      setFeedback(`Added ${result.added_count} titles to your ranking.`);
+      await load();
+    } catch { setFeedback("Couldn't append your ratings. Please try again."); }
+    finally { setBulkBusy(false); }
+  }
+
+  async function loadMore() {
+    if (!sessionToken || loading || rows.length >= total) return;
+    setLoading(true);
+    try {
+      const page = await apiRequest<UnplacedResponse>(`/me/favorites/ranked/unplaced?limit=100&offset=${rows.length}`, { token: sessionToken });
+      setRows((prior) => [...new Map([...prior, ...page.items].map((row) => [row.title_id, row])).values()]);
+      setTotal(page.total);
+    } catch { setFeedback("Could not load more titles. Scroll again to retry."); } finally { setLoading(false); }
   }
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
+      <ConfirmDialog visible={confirmBulk} title={`Append ${total} titles by rating?`}
+        message="They will be added to the end of your ranking by rating. Your existing manual order stays in place."
+        confirmLabel="Append ratings" busy={bulkBusy} onCancel={() => setConfirmBulk(false)} onConfirm={() => void bulkAdd()} />
+      {feedback ? <Text accessibilityLiveRegion="polite" style={styles.emptyBody}>{feedback}</Text> : null}
       <View style={styles.header}>
         <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
           <Ionicons name="chevron-back" size={22} color={colors.ink} />
@@ -137,13 +138,13 @@ export default function UnplacedScreen() {
 
       {rows.length > 0 ? (
         <Pressable
-          onPress={bulkAdd}
+          onPress={() => setConfirmBulk(true)}
           disabled={bulkBusy}
           style={({ pressed }) => [styles.bulkBtn, (bulkBusy || pressed) && { opacity: 0.7 }]}
         >
           <Ionicons name="add-circle-outline" size={16} color={colors.background} />
           <Text style={styles.bulkBtnLabel}>
-            {bulkBusy ? "Appending…" : `Append all ${rows.length} by rating`}
+            {bulkBusy ? "Appending…" : `Append all ${total} by rating`}
           </Text>
         </Pressable>
       ) : null}
@@ -162,6 +163,8 @@ export default function UnplacedScreen() {
         </View>
       ) : (
         <FlatList
+          onEndReached={() => void loadMore()}
+          onEndReachedThreshold={0.4}
           data={rows}
           keyExtractor={(r) => r.title_id}
           contentContainerStyle={styles.list}

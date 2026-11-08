@@ -29,15 +29,20 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from typing import Literal
 from uuid import UUID
 
 import httpx
+from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.models.content import ContentTitle
+from app.services.concierge_contract import ConciergeIntent
+from app.services.concierge_retrieval import PersonResolutionError
+from app.services.tmdb import TmdbConfigurationError
 
 
 # ─── Typed constraints the resolver produces ─────────────────────────
@@ -87,6 +92,10 @@ class ConciergeConstraints:
     subscription_access_only: bool = True
     # Original natural-language intent, kept verbatim for display.
     raw_intent: str = ""
+    runtime_scope: Literal["movie", "episode"] = "movie"
+    person_constraints: list[dict] = field(default_factory=list)
+    excluded_title_ids: list[str] = field(default_factory=list)
+    requested_count: int = 5
 
 
 @dataclass
@@ -127,6 +136,7 @@ class RetrievalResult:
     title_ids: list[UUID]
     exhausted: bool  # True only when the authorized source actually drained
     partial_reason: str | None = None
+    title_rationales: dict[str, str] = field(default_factory=dict)
 
 
 # ─── Personal context (Concierge brief chunk B) ─────────────────────
@@ -187,7 +197,6 @@ def build_personal_context(db: Session, user_id: UUID) -> PersonalContext:
     from app.models.social import (
         RankedFavorite,
         Rating,
-        Watchlist,
         WatchlistItem,
     )
     from app.models.user import UserPreferences
@@ -321,6 +330,8 @@ def resolve_concierge_decision(
     *,
     refinement_of_decision_id: UUID | None = None,
     collection_list_id: UUID | None = None,
+    effective_constraints: ConciergeConstraints | None = None,
+    excluded_title_ids: list[str] | None = None,
 ) -> ConciergeDecision:
     """Resolve a natural-language intent to a typed decision + grounded
     titles. Returns an honest unavailable state if no provider is
@@ -340,19 +351,14 @@ def resolve_concierge_decision(
     api_key = (settings.concierge_ai_api_key or os.environ.get("CONCIERGE_AI_API_KEY", "")).strip()
     # Vertex uses ADC — api_key is not required for that provider.
     needs_api_key = provider in {"anthropic", "openai"}
-    if not provider or (needs_api_key and not api_key):
+    if provider not in {"vertex", "anthropic", "openai"} or (needs_api_key and not api_key):
         return ConciergeDecision(
             decision_id=None,
             constraints=ConciergeConstraints(raw_intent=intent),
             rationale="",
             title_ids=[],
             status="unavailable",
-            status_detail=(
-                "Concierge requires an AI provider configuration (set CONCIERGE_AI_PROVIDER "
-                "— and CONCIERGE_AI_API_KEY for anthropic/openai; vertex uses ADC) and is "
-                "intentionally disabled until configured. A keyword search cannot substitute "
-                "for intent understanding — brief §4."
-            ),
+            status_detail="provider_not_configured",
         )
 
     # Chunk B: build the personal context block ONCE per decision so
@@ -360,50 +366,49 @@ def resolve_concierge_decision(
     context = build_personal_context(db, user_id)
     context_summary = _context_summary_for_prompt(context)
 
-    # Call the adapter. Timeouts + retries live inside each adapter.
+    # Keep provider selection identical for interpretation and relevance review.
     try:
-        if provider == "vertex":
-            raw = _call_vertex(
-                intent,
-                context_summary=context_summary,
-                project=(settings.concierge_ai_project or settings.gcp_project_id or os.environ.get("GOOGLE_CLOUD_PROJECT", "")).strip(),
-                location=(settings.concierge_ai_location or "us-central1").strip(),
-                model=(settings.concierge_ai_model or "gemini-2.5-flash").strip(),
-            )
-        elif provider == "anthropic":
-            raw = _call_anthropic(intent, api_key, settings.concierge_ai_model or "claude-opus-4-7", context_summary=context_summary)
-        elif provider == "openai":
-            raw = _call_openai(intent, api_key, settings.concierge_ai_model or "gpt-4o-mini", context_summary=context_summary)
-        else:
-            return ConciergeDecision(
-                decision_id=None,
-                constraints=ConciergeConstraints(raw_intent=intent),
-                rationale="",
-                title_ids=[],
-                status="unavailable",
-                status_detail=f"Unsupported CONCIERGE_AI_PROVIDER: {provider!r}",
-            )
-    except VertexConfigError as exc:
+        raw = _call_configured_model(intent, context_summary=context_summary)
+    except VertexConfigError:
         return ConciergeDecision(
             decision_id=None,
             constraints=ConciergeConstraints(raw_intent=intent),
             rationale="",
             title_ids=[],
             status="unavailable",
-            status_detail=f"vertex_config_error: {exc}",
+            status_detail="provider_configuration_error",
         )
-    except (httpx.HTTPError, httpx.TimeoutException) as exc:
+    except (httpx.HTTPError, ValueError, KeyError, IndexError):
         return ConciergeDecision(
             decision_id=None,
             constraints=ConciergeConstraints(raw_intent=intent),
             rationale="",
             title_ids=[],
             status="error",
-            status_detail=f"ai_provider_error: {type(exc).__name__}",
+            status_detail="provider_request_failed",
+            partial_reason="upstream_failure",
         )
 
-    constraints = _constraints_from_raw(raw, intent)
-    rationale = (raw.get("rationale") or "").strip()[:280]
+    try:
+        validated = _constraints_from_raw(raw, intent)
+        constraints = effective_constraints or validated
+    except (ValidationError, ValueError):
+        # One repair attempt, with the actual schema rather than trusting
+        # arbitrary/coerced fields. No unbounded model retries.
+        try:
+            raw = _call_configured_model(intent, context_summary=context_summary,
+                prompt_override="Interpret this request. Return ONLY JSON matching this schema. "
+                + json.dumps(ConciergeIntent.model_json_schema())
+                + "\nRequest: " + json.dumps(intent) + "\nPersonal context: " + context_summary)
+            constraints = effective_constraints or _constraints_from_raw(raw, intent)
+        except (ValidationError, ValueError, httpx.HTTPError, VertexConfigError, KeyError, IndexError):
+            return ConciergeDecision(None, ConciergeConstraints(raw_intent=intent), "", [], "error",
+                                     status_detail="invalid_provider_response", partial_reason="upstream_failure")
+    constraints.raw_intent = intent
+    constraints.excluded_title_ids = list(dict.fromkeys([
+        *constraints.excluded_title_ids, *(excluded_title_ids or []),
+    ]))
+    rationale = str(raw.get("rationale") or "").strip()[:280]
 
     # C07 region wiring: provider availability is region-scoped. If
     # the user has a region preference we respect it; otherwise we
@@ -416,6 +421,11 @@ def resolve_concierge_decision(
     # the default matches the brief: "on my subscription" must not
     # silently mean paid rental.
     low = intent.lower()
+    if effective_constraints is None and any(p in low for p in ("my services", "my subscriptions", "services i subscribe")):
+        constraints.required_providers = list(context.selected_services)
+        if not constraints.required_providers:
+            return ConciergeDecision(None, constraints, "Choose your streaming services first, or search without a service filter.",
+                                     [], "empty", status_detail="services_needed")
     if any(p in low for p in ("rent or buy", "rent/buy", "available to rent", "can rent")):
         constraints.subscription_access_only = False
     else:
@@ -432,7 +442,8 @@ def resolve_concierge_decision(
     # "pick from my next watch" / "something from my list" / "a
     # comfort rewatch" are HARD source constraints — we never silently
     # fall back to the general catalog.
-    constraints = _resolve_collection_scope(constraints, intent)
+    if effective_constraints is None:
+        constraints = _resolve_collection_scope(constraints, intent)
 
     # Chunk E completion: if the caller supplied an explicit list id
     # (named-list picker UX), that wins over whatever the intent
@@ -455,21 +466,23 @@ def resolve_concierge_decision(
     # CON04: explicit "pick one" / "just choose" / "surprise me with
     # one" intent lowers requested_count to 1 and treats a 1-result
     # return as "ready", not "partial".
-    low_intent = intent.lower()
-    pick_one = any(
-        p in low_intent
-        for p in ("pick one", "just one", "just choose", "surprise me", "choose one for me")
-    )
-    target = 1 if pick_one else 5
+    target = constraints.requested_count
 
-    retrieval = _retrieve_candidates(
-        db,
-        user_id=user_id,
-        suggested_names=suggested_names,
-        constraints=constraints,
-        context=context,
-        target=target,
-    )
+    try:
+        retrieval = _retrieve_candidates(
+            db, user_id=user_id, suggested_names=suggested_names,
+            constraints=constraints, context=context, target=target,
+        )
+    except PersonResolutionError:
+        return ConciergeDecision(None, constraints, "Please specify the person's full name or open People search.",
+                                 [], "empty", status_detail="person_needs_clarification",
+                                 requested_count=target)
+    except TmdbConfigurationError:
+        return ConciergeDecision(None, constraints, "", [], "unavailable", status_detail="catalog_not_configured")
+    except (httpx.HTTPError, ValueError, VertexConfigError, KeyError, IndexError):
+        return ConciergeDecision(None, constraints, "", [], "error",
+                                 status_detail="recommendation_lookup_failed",
+                                 requested_count=target, partial_reason="upstream_failure")
     grounded_ids = retrieval.title_ids
 
     if not grounded_ids:
@@ -478,8 +491,8 @@ def resolve_concierge_decision(
             constraints=constraints,
             rationale=rationale,
             title_ids=[],
-            status="empty",
-            status_detail=_empty_detail_for(constraints),
+            status="error" if retrieval.partial_reason in {"metadata_unavailable", "upstream_failure"} else "empty",
+            status_detail="metadata_unavailable" if retrieval.partial_reason == "metadata_unavailable" else _empty_detail_for(constraints),
             retrieval_exhausted=retrieval.exhausted,
             exact_match_count=0,
             requested_count=target,
@@ -502,14 +515,14 @@ def resolve_concierge_decision(
 
     # C16: per-title rationales so promoting a thumbnail changes the
     # explanation. Pulled from the title's own metadata, not fabricated.
-    title_rationales: dict[str, str] = {}
+    title_rationales: dict[str, str] = dict(retrieval.title_rationales)
     if grounded_ids:
         hydrated = db.scalars(
             select(ContentTitle).where(ContentTitle.id.in_(grounded_ids))
         ).all()
         for t in hydrated:
             r = _per_title_rationale(t, constraints)
-            if r:
+            if r and str(t.id) not in title_rationales:
                 title_rationales[str(t.id)] = r
 
     return ConciergeDecision(
@@ -557,7 +570,6 @@ _NAMED_LIST_PATTERNS = (
     "from my list",
     "from my saved list",
     "only from my list",
-    "from my ",  # catches "from my weekend list" / "from my cozy list"
 )
 
 
@@ -574,6 +586,15 @@ def _resolve_collection_scope(constraints: ConciergeConstraints, intent: str) ->
          my_next_watch.
     """
     low = intent.lower()
+    # Specific built-in collections win over the generic named-list wording.
+    for p in _NEXT_WATCH_PATTERNS:
+        if p in low:
+            constraints.collection_scope = "my_next_watch"
+            return constraints
+    import re
+    if re.search(r"\bfrom my .{1,80}\blist\b", low):
+        constraints.collection_scope = "named_list"
+        return constraints
     for p in _NAMED_LIST_PATTERNS:
         if p in low:
             constraints.collection_scope = "named_list"
@@ -618,11 +639,17 @@ def _passes_constraints(
     # series (TV episode runtime is often absent) is explicitly handled
     # — we treat series without declared runtime as failing a runtime
     # constraint rather than slipping through.
+    runtime = row.runtime_minutes
+    if row.content_type == "series" and (constraints.runtime_min or constraints.runtime_max):
+        if constraints.runtime_scope != "episode":
+            return False
+        runtimes = (row.metadata_raw or {}).get("episode_run_time") or []
+        runtime = max((r for r in runtimes if isinstance(r, int) and r > 0), default=None)
     if constraints.runtime_min:
-        if row.runtime_minutes is None or row.runtime_minutes < constraints.runtime_min:
+        if runtime is None or runtime < constraints.runtime_min:
             return False
     if constraints.runtime_max:
-        if row.runtime_minutes is None or row.runtime_minutes > constraints.runtime_max:
+        if runtime is None or runtime > constraints.runtime_max:
             return False
     if constraints.genres:
         row_genres = [str(g).lower() for g in (row.genres or [])]
@@ -635,6 +662,20 @@ def _passes_constraints(
         for e in excl:
             if e in row_name or e in row_genres:
                 return False
+    if str(row.id) in constraints.excluded_title_ids:
+        return False
+    credits = (row.metadata_raw or {}).get("credits") or {}
+    for person in constraints.person_constraints:
+        pid = person.get("tmdb_person_id")
+        role = person.get("role", "cast")
+        entries = credits.get("cast" if role == "cast" else "crew") or []
+        if not pid or not any(
+            entry.get("id") == pid and (
+                role == "cast" or (role == "director" and entry.get("job") == "Director")
+                or (role == "writer" and entry.get("department") == "Writing")
+            ) for entry in entries if isinstance(entry, dict)
+        ):
+            return False
     # C07/C08: required_providers in the user's region. Unknown
     # availability is NEVER treated as "yes it's on your service."
     if constraints.required_providers:
@@ -660,6 +701,8 @@ def _passes_constraints(
             a for a in rows
             if a.provider_code and a.provider_code.lower() in wanted
             and (a.monetization_type or "").lower() in allowed_monetization
+            and a.expires_at is not None
+            and a.expires_at.replace(tzinfo=timezone.utc) > datetime.now(timezone.utc)
         ]
         if not hits:
             return False
@@ -682,199 +725,12 @@ def _empty_detail_for(constraints: ConciergeConstraints) -> str:
     return "no_grounded_titles"
 
 
-def _retrieve_candidates(
-    db: Session,
-    *,
-    user_id: UUID,
-    suggested_names: list[str],
-    constraints: ConciergeConstraints,
-    context: PersonalContext,
-    target: int = 5,
-) -> RetrievalResult:
-    """Pull candidates from the correct source collection, then
-    enforce hard constraints. The model's suggested titles SUPPLEMENT
-    retrieval; they are not the sole source.
-
-    Returns a RetrievalResult: title_ids plus a truthful `exhausted`
-    flag. `exhausted=True` means the authorized source genuinely has
-    no more eligible candidates to consider; it does NOT mean we hit
-    an internal display cap or retrieval budget.
-    """
-    from app.models.social import (
-        RankedFavorite,
-        Rating,
-        TitleWatchStatus,
-        Watchlist,
-        WatchlistItem,
-    )
-
-    scope = constraints.collection_scope
-
-    def _apply_watched_policy(rows: list[ContentTitle]) -> list[ContentTitle]:
-        """Hide Watched titles for new-discovery intents; keep them
-        when the user asked for a rewatch."""
-        if constraints.rewatch_intent or scope == "watched":
-            return rows
-        watched_ids = set(db.scalars(
-            select(Rating.content_title_id).where(
-                Rating.user_id == user_id,
-                Rating.watched_state == "watched",
-            )
-        ).all())
-        watched_ids.update(
-            db.scalars(
-                select(TitleWatchStatus.content_title_id).where(
-                    TitleWatchStatus.user_id == user_id,
-                    TitleWatchStatus.watched_state == "watched",
-                )
-            ).all()
-        )
-        return [r for r in rows if r.id not in watched_ids]
-
-    # Hard source: My Next Watch (QUEUE01 canonical resolver). We walk
-    # the ENTIRE queue — no 500-row ceiling — then filter and take the
-    # display slice (C10). Source exhaustion is unambiguous: if we read
-    # every row, we know we read every row.
-    if scope == "my_next_watch":
-        from app.services.watchlists import get_next_watch_list as _get_next_watch
-        next_watch_list = _get_next_watch(db, user_id)
-        if next_watch_list is None:
-            return RetrievalResult(title_ids=[], exhausted=True)
-        rows = list(db.execute(
-            select(ContentTitle)
-            .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
-            .where(WatchlistItem.watchlist_id == next_watch_list.id)
-        ).scalars().all())
-        rows = _apply_watched_policy(rows)
-        passing = [r for r in rows if _passes_constraints(r, constraints, db=db)]
-        picked = [r.id for r in passing[:8]]
-        return RetrievalResult(
-            title_ids=picked,
-            exhausted=len(passing) <= 8,
-        )
-
-    # Hard source: Watched (comfort rewatch) — only Watched titles the
-    # user liked (score >= 7) count as "comfort."
-    if scope == "watched":
-        rows = list(db.execute(
-            select(ContentTitle)
-            .join(Rating, Rating.content_title_id == ContentTitle.id)
-            .where(
-                Rating.user_id == user_id,
-                Rating.watched_state == "watched",
-                Rating.score >= 7,
-            )
-        ).scalars().all())
-        passing = [r for r in rows if _passes_constraints(r, constraints, db=db)]
-        picked = [r.id for r in passing[:8]]
-        return RetrievalResult(
-            title_ids=picked,
-            exhausted=len(passing) <= 8,
-        )
-
-    # Hard source: named list — if the composer couldn't resolve a
-    # specific list_id (list picker UX), return empty so the client
-    # surfaces the selector.
-    if scope == "named_list" and not constraints.collection_list_id:
-        return RetrievalResult(title_ids=[], exhausted=False)
-    if scope == "named_list" and constraints.collection_list_id:
-        try:
-            list_uuid = UUID(constraints.collection_list_id)
-        except (TypeError, ValueError):
-            return RetrievalResult(title_ids=[], exhausted=True)
-        wl = db.scalar(
-            select(Watchlist).where(Watchlist.id == list_uuid, Watchlist.owner_user_id == user_id)
-        )
-        # C11: a foreign list ID returns empty without disclosing
-        # existence — same code path as "list not found".
-        if wl is None:
-            return RetrievalResult(title_ids=[], exhausted=True)
-        rows = list(db.execute(
-            select(ContentTitle)
-            .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
-            .where(WatchlistItem.watchlist_id == wl.id)
-        ).scalars().all())
-        passing = [r for r in rows if _passes_constraints(r, constraints, db=db)]
-        picked = [r.id for r in passing[:8]]
-        return RetrievalResult(
-            title_ids=picked,
-            exhausted=len(passing) <= 8,
-        )
-
-    # Broad catalog: start from the model's suggestions, apply hard
-    # constraints strictly. If the hard constraints eliminate
-    # everything we return empty — the previous "soft fallback that
-    # drops filters" is explicitly forbidden by the Concierge brief.
-    grounded = _ground_suggestions(db, suggested_names, constraints)
-
-    # CON01/CON03/C15: when model-suggested names ground fewer than
-    # the target, fill from an INTENT-MATCHED catalog query — NOT
-    # from the personalized recommender. The previous top-up pulled
-    # SceneDNA-ranked titles that often had nothing to do with the
-    # search (user bug report: "the bottom four are not related to
-    # the search"). Request relevance precedes personal match.
-    #
-    # The intent-matched top-up runs in bounded batches until we
-    # have the target OR the catalog is drained OR we hit the budget.
-    exhausted = False
-    partial_reason: str | None = None
-    existing = set(grounded)
-
-    # Compute the exclusion set once — watched + user dislikes.
-    try:
-        from app.services.recommendation_service import _exclude_ids as _rec_exclude
-        exclude_set = _rec_exclude(db, user_id) if not constraints.rewatch_intent else set()
-    except Exception:
-        exclude_set = set()
-
-    # Walk candidate pages until target met or source drained.
-    # Each page is 40 catalog rows pre-filtered by media_type + genre
-    # + year; we then enforce the full hard-constraint gate (provider,
-    # runtime, etc.). This matches "retrieve an overcomplete eligible
-    # candidate pool from the requested source".
-    page = 0
-    PAGE_SIZE = 40
-    MAX_PAGES = 6  # retrieval budget
-    while len(grounded) < 8 and page < MAX_PAGES:
-        offset = page * PAGE_SIZE
-        try:
-            batch = _intent_matched_catalog_batch(
-                db,
-                constraints=constraints,
-                exclude=exclude_set | existing,
-                offset=offset,
-                limit=PAGE_SIZE,
-            )
-        except Exception:
-            # Database-level failure is NOT catalog exhaustion.
-            partial_reason = "upstream_failure"
-            break
-        if not batch:
-            # Pre-filtered pool genuinely empty at this offset.
-            exhausted = True
-            break
-        for t in batch:
-            if t.id in existing:
-                continue
-            if not _passes_constraints(t, constraints, db=db):
-                continue
-            grounded.append(t.id)
-            existing.add(t.id)
-            if len(grounded) >= 8:
-                break
-        page += 1
-
-    if len(grounded) < 8 and page >= MAX_PAGES and not exhausted:
-        partial_reason = "retrieval_budget_reached"
-
-    # Report exhausted=True only when we KNOW the authorized source
-    # has nothing more to offer. Hitting the display cap of 8 is NOT
-    # exhaustion — those extra candidates can be shown via "Show more".
-    return RetrievalResult(
-        title_ids=grounded,
-        exhausted=exhausted and len(grounded) < 8,
-        partial_reason=partial_reason,
-    )
+def _retrieve_candidates(db: Session, *, user_id: UUID, suggested_names: list[str],
+                         constraints: ConciergeConstraints, context: PersonalContext,
+                         target: int = 5) -> RetrievalResult:
+    from app.services.concierge_retrieval import retrieve
+    return retrieve(db, user_id=user_id, suggested_names=suggested_names,
+                    constraints=constraints, context=context, target=target)
 
 
 _PERSONAL_NUMBER_ONE_PATTERNS = (
@@ -1087,25 +943,33 @@ def _ground_suggestions(
     # resolve to a verified intended title. Do not accept an
     # unrelated first search hit merely because exact matching failed."
     if still_missing:
-        from app.services.tmdb import search_titles
-        for name in still_missing[:10]:
+        from concurrent.futures import ThreadPoolExecutor
+        from app.services import tmdb
+
+        def lookup(name):
             try:
-                fetched = search_titles(db, name)
-            except Exception:
-                continue
+                with httpx.Client(base_url=settings.tmdb_base_url, headers=tmdb._tmdb_headers(), timeout=5) as client:
+                    response = client.get("/search/multi", params={"query": name, "include_adult": "false"})
+                    response.raise_for_status()
+                    return name, response.json().get("results", [])
+            except (httpx.HTTPError, ValueError):
+                return name, []
+
+        # Workers perform HTTP only. SQLAlchemy sessions must stay on the
+        # request thread. Parallel grounding removes ten sequential waits.
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            results = list(executor.map(lookup, still_missing[:10]))
+        for name, items in results:
             target_norm = _normalize_title_for_match(name)
-            matched: ContentTitle | None = None
-            for cand in fetched:
-                if _normalize_title_for_match(cand.title) == target_norm:
-                    matched = cand
-                    break
-            # If no normalized exact match, do NOT silently accept the
-            # top hit — that routinely surfaces an unrelated title and
-            # breaks C06 constraint enforcement for the model-suggested
-            # branch. Simply drop the suggestion.
-            if matched is not None:
-                rows.append(matched)
-                found_names.add(matched.title.lower())
+            for item in items:
+                if item.get("media_type") not in {"movie", "tv"}:
+                    continue
+                if _normalize_title_for_match(item.get("title") or item.get("name") or "") != target_norm:
+                    continue
+                matched = tmdb._upsert_title_from_tmdb_result(db, item)
+                if matched is not None:
+                    rows.append(matched)
+        db.flush()
 
     # Preserve the LLM's suggested order where titles pass hard
     # constraints. Oct-27 Concierge brief chunk C: NO soft fallback
@@ -1119,41 +983,36 @@ def _ground_suggestions(
             if (
                 _normalize_title_for_match(r.title) == target
                 and r.id not in ordered
-                and _passes_constraints(r, constraints, db=db)
             ):
                 ordered.append(r.id)
                 break
-    return ordered[:8]
+    return ordered[:24]
 
 
 # ─── Constraint parsing ──────────────────────────────────────────────
 
 
 def _constraints_from_raw(raw: dict, intent: str) -> ConciergeConstraints:
-    """Convert the model's JSON output into a validated constraint
-    object. Defensive against free-form keys / wrong types; invalid
-    values quietly drop to defaults rather than raising."""
-    c = ConciergeConstraints(raw_intent=intent)
-    mt = str(raw.get("media_type") or "").lower().strip()
-    if mt in ("movie", "series", "any"):
-        c.media_type = mt  # type: ignore[assignment]
-    def _str_list(key: str, cap: int = 8) -> list[str]:
-        vals = raw.get(key)
-        if not isinstance(vals, list):
-            return []
-        return [str(v).lower().strip() for v in vals if isinstance(v, (str, int)) and str(v).strip()][:cap]
-    c.genres = _str_list("genres")
-    c.moods = _str_list("moods")
-    c.required_providers = _str_list("required_providers", cap=5)
-    c.exclusions = _str_list("exclusions", cap=10)
-    c.like_anchors = _str_list("like_anchors", cap=5)
-    for key, attr in (("year_min", "year_min"), ("year_max", "year_max"),
-                      ("runtime_min", "runtime_min"), ("runtime_max", "runtime_max")):
-        v = raw.get(key)
-        if isinstance(v, int) and v > 0:
-            setattr(c, attr, v)
-    c.rewatch_intent = bool(raw.get("rewatch_intent", False))
-    return c
+    parsed = ConciergeIntent.model_validate(raw)
+    values = parsed.model_dump(exclude={"suggested_titles", "rationale"})
+    for key in ("genres", "moods", "exclusions"):
+        values[key] = [v.strip().lower() for v in values[key]]
+    from app.services.tmdb import SUPPORTED_PROVIDER_ALIASES
+    values["required_providers"] = [
+        SUPPORTED_PROVIDER_ALIASES.get(p.lower().strip(), (p.lower().strip().replace(" ", "_"), ""))[0]
+        for p in values["required_providers"]
+    ]
+    # Surprise me is a broad search, not permission to return only one.
+    import re
+    explicit_count = re.search(r"\b(?:pick|choose|suggest|recommend|give me|find)\s+(\d{1,2}|one)\b", intent.lower())
+    if explicit_count:
+        value = explicit_count.group(1)
+        values["requested_count"] = max(1, min(20, 1 if value == "one" else int(value)))
+    elif "just one" in intent.lower() or "surprise me with one" in intent.lower():
+        values["requested_count"] = 1
+    else:
+        values["requested_count"] = 5
+    return ConciergeConstraints(raw_intent=intent, **values)
 
 
 # ─── Provider adapters ───────────────────────────────────────────────
@@ -1170,6 +1029,9 @@ Rules:
 - `media_type` is "movie" | "series" | "any".
 - `genres` is a short list of lowercase canonical genre names.
 - `moods` is a short list of lowercase mood/tone tags.
+- `person_constraints` contains explicit credited people: name and role (cast, director, writer). An actor request must use this field, not a title-name search.
+- `runtime_scope` is movie unless the user explicitly requests episode duration.
+- `requested_count` defaults to 5, including surprise me; use 1 only when explicitly asked for one.
 - `required_providers` only if the user explicitly asked (e.g. "only Netflix").
 - `exclusions` for things the user explicitly rejected.
 - `like_anchors` for similarity references ("like Arrival"). When the user
@@ -1191,7 +1053,8 @@ Context: {context_summary}
   "genres": [], "moods": [], "year_min": null, "year_max": null,
   "runtime_min": null, "runtime_max": null,
   "required_providers": [], "exclusions": [], "like_anchors": [],
-  "rewatch_intent": false,
+  "rewatch_intent": false, "runtime_scope": "movie",
+  "person_constraints": [], "requested_count": 5,
   "rationale": "one or two sentences",
   "suggested_titles": ["Title One", "Title Two", "Title Three", "Title Four", "Title Five", "Title Six", "Title Seven", "Title Eight", "Title Nine", "Title Ten"]
 }}
@@ -1200,6 +1063,22 @@ User intent: {intent}"""
 
 
 _HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=25.0, write=5.0, pool=5.0)
+
+
+def _call_configured_model(intent: str, *, context_summary: str = "{}", prompt_override: str | None = None) -> dict:
+    provider = (settings.concierge_ai_provider or os.environ.get("CONCIERGE_AI_PROVIDER", "")).strip().lower()
+    api_key = (settings.concierge_ai_api_key or os.environ.get("CONCIERGE_AI_API_KEY", "")).strip()
+    kwargs = {"context_summary": context_summary, "prompt_override": prompt_override}
+    if provider == "vertex":
+        return _call_vertex(intent,
+            project=(settings.concierge_ai_project or settings.gcp_project_id or os.environ.get("GOOGLE_CLOUD_PROJECT", "")).strip(),
+            location=settings.concierge_ai_location or "us-central1",
+            model=settings.concierge_ai_model or "gemini-2.5-flash", **kwargs)
+    if provider == "anthropic" and api_key:
+        return _call_anthropic(intent, api_key, settings.concierge_ai_model or "claude-opus-4-7", **kwargs)
+    if provider == "openai" and api_key:
+        return _call_openai(intent, api_key, settings.concierge_ai_model or "gpt-4o-mini", **kwargs)
+    raise VertexConfigError("Concierge provider is not configured")
 
 
 class VertexConfigError(RuntimeError):
@@ -1254,6 +1133,7 @@ def _call_vertex(
     location: str,
     model: str,
     context_summary: str = "{}",
+    prompt_override: str | None = None,
 ) -> dict:
     """Vertex AI Gemini adapter.
 
@@ -1267,7 +1147,7 @@ def _call_vertex(
             "concierge_ai_project (or gcp_project_id / GOOGLE_CLOUD_PROJECT) is required."
         )
     token = _vertex_access_token()
-    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
+    prompt = prompt_override or _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
     url = (
         f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}"
         f"/locations/{location}/publishers/google/models/{model}:generateContent"
@@ -1277,7 +1157,7 @@ def _call_vertex(
         "generationConfig": {
             "temperature": 0.4,
             "topP": 0.95,
-            "maxOutputTokens": 1024,
+            "maxOutputTokens": 4096,
             "responseMimeType": "application/json",
         },
     }
@@ -1302,8 +1182,8 @@ def _call_vertex(
     return _extract_json(text)
 
 
-def _call_anthropic(intent: str, api_key: str, model: str, *, context_summary: str = "{}") -> dict:
-    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
+def _call_anthropic(intent: str, api_key: str, model: str, *, context_summary: str = "{}", prompt_override: str | None = None) -> dict:
+    prompt = prompt_override or _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
     with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
         r = client.post(
             "https://api.anthropic.com/v1/messages",
@@ -1314,7 +1194,7 @@ def _call_anthropic(intent: str, api_key: str, model: str, *, context_summary: s
             },
             json={
                 "model": model,
-                "max_tokens": 1024,
+                "max_tokens": 4096,
                 "messages": [{"role": "user", "content": prompt}],
             },
         )
@@ -1328,8 +1208,8 @@ def _call_anthropic(intent: str, api_key: str, model: str, *, context_summary: s
     return _extract_json(text)
 
 
-def _call_openai(intent: str, api_key: str, model: str, *, context_summary: str = "{}") -> dict:
-    prompt = _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
+def _call_openai(intent: str, api_key: str, model: str, *, context_summary: str = "{}", prompt_override: str | None = None) -> dict:
+    prompt = prompt_override or _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
     with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
         r = client.post(
             "https://api.openai.com/v1/chat/completions",
@@ -1341,7 +1221,7 @@ def _call_openai(intent: str, api_key: str, model: str, *, context_summary: str 
                     {"role": "user", "content": prompt},
                 ],
                 "response_format": {"type": "json_object"},
-                "max_tokens": 1024,
+                "max_tokens": 4096,
             },
         )
         r.raise_for_status()
@@ -1351,33 +1231,18 @@ def _call_openai(intent: str, api_key: str, model: str, *, context_summary: str 
 
 
 def _extract_json(text: str) -> dict:
-    """Extract the first JSON object from a model response. Tolerant
-    of leading prose / trailing commentary that some models emit even
-    with strict instructions."""
+    """Parse an object (including fenced JSON) or fail; never return {} on error."""
     text = (text or "").strip()
-    if not text:
-        return {}
-    # Fast path: direct parse.
-    try:
-        return json.loads(text)
-    except Exception:
-        pass
-    # Fallback: find the first balanced {…} block.
     start = text.find("{")
     if start < 0:
-        return {}
-    depth = 0
-    for i in range(start, len(text)):
-        if text[i] == "{":
-            depth += 1
-        elif text[i] == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(text[start : i + 1])
-                except Exception:
-                    return {}
-    return {}
+        raise ValueError("Provider did not return a JSON object")
+    try:
+        result, _ = json.JSONDecoder().raw_decode(text[start:])
+    except json.JSONDecodeError as exc:
+        raise ValueError("Malformed provider JSON") from exc
+    if not isinstance(result, dict) or not result:
+        raise ValueError("Empty provider response")
+    return result
 
 
 def decision_to_dict(d: ConciergeDecision) -> dict:
@@ -1392,4 +1257,6 @@ def decision_to_dict(d: ConciergeDecision) -> dict:
         "retrieval_exhausted": d.retrieval_exhausted,
         "exact_match_count": d.exact_match_count,
         "requested_count": d.requested_count,
+        "partial_reason": d.partial_reason,
+        "title_rationales": d.title_rationales,
     }

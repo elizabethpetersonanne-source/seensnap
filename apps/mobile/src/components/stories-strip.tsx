@@ -10,7 +10,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import { useEffect, useState } from "react";
 import {
-  Alert,
   Image,
   Modal,
   Pressable,
@@ -36,12 +35,17 @@ export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
   const [editing, setEditing] = useState<StoryTitleCard | null>(null);
   const [editDraft, setEditDraft] = useState("");
   const [editBusy, setEditBusy] = useState(false);
+  const [deleting, setDeleting] = useState<StoryTitleCard | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function load() {
     if (!sessionToken) return;
     try {
       const res = await fetchStoriesFeed(sessionToken);
       setFeed(res);
+      setViewing((current) => current
+        ? [res.me, ...res.others].find((group) => group?.user_id === current.user_id && group.stories.length > 0) ?? null
+        : null);
     } catch {
       // non-fatal — strip renders empty
     }
@@ -95,7 +99,71 @@ export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
         ))}
       </ScrollView>
 
-      <Modal visible={viewing !== null} transparent animationType="fade" onRequestClose={() => setViewing(null)}>
+      <Modal visible={viewing !== null || editing !== null} transparent animationType="fade"
+        onRequestClose={() => { if (!editBusy) { setDeleting(null); setEditing(null); setViewing(null); } }}>
+        {deleting ? (
+          <View style={styles.modalBackdrop}>
+            <View style={styles.editSheet} accessibilityViewIsModal>
+              <Text style={styles.modalName}>Delete this story?</Text>
+              <Text style={styles.editExpiryHint}>This removes your story and cannot be undone.</Text>
+              {error ? <Text accessibilityRole="alert" style={{ color: colors.danger }}>{error}</Text> : null}
+              <Pressable style={styles.editSaveBtn} disabled={editBusy} onPress={async () => {
+                if (!sessionToken || editBusy) return;
+                setEditBusy(true); setError(null);
+                try { await deleteStory(sessionToken, deleting.story_id); setDeleting(null); await load(); }
+                catch { setError("Could not delete this story. Please try again."); }
+                finally { setEditBusy(false); }
+              }}><Text style={styles.editSaveLabel}>{editBusy ? "Deleting…" : "Delete story"}</Text></Pressable>
+              <Pressable disabled={editBusy} style={{ minHeight: 48, justifyContent: "center" }} onPress={() => setDeleting(null)}><Text style={styles.modalName}>Cancel</Text></Pressable>
+            </View>
+          </View>
+        ) : editing ? (<>
+
+        <Pressable style={styles.modalBackdrop} onPress={() => { if (!editBusy) setEditing(null); }}>
+          <Pressable style={styles.editSheet} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.editHandle} />
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalName}>Edit story caption</Text>
+              <Pressable onPress={() => { if (!editBusy) setEditing(null); }} hitSlop={10} style={{ marginLeft: "auto" }}>
+                <Ionicons name="close" size={20} color={colors.ink} />
+              </Pressable>
+            </View>
+            {error ? <Text accessibilityRole="alert" style={{ color: colors.danger }}>{error}</Text> : null}
+            <TextInput
+              value={editDraft}
+              onChangeText={(t) => setEditDraft(t.slice(0, 280))}
+              multiline
+              style={styles.editInput}
+              placeholder="Add a caption…"
+              placeholderTextColor={colors.muted2}
+              textAlignVertical="top"
+            />
+            <Text style={styles.editExpiryHint}>
+              Editing won't extend the 72-hour expiry.
+            </Text>
+            <Pressable
+              onPress={async () => {
+                if (!editing || !sessionToken || editBusy) return;
+                setEditBusy(true);
+                try {
+                  await editStory(sessionToken, editing.story_id, { caption: editDraft.trim() || null });
+                  setEditing(null);
+                  await load();
+                } catch (e) {
+                  setError("Could not save your story. It may have expired. Please try again.");
+                } finally {
+                  setEditBusy(false);
+                }
+              }}
+              disabled={editBusy}
+              style={[styles.editSaveBtn, editBusy && { opacity: 0.6 }]}
+            >
+              <Text style={styles.editSaveLabel}>{editBusy ? "Saving…" : "Save changes"}</Text>
+            </Pressable>
+          </Pressable>
+        </Pressable>
+              </>) : (<>
+
         <Pressable style={styles.modalBackdrop} onPress={() => setViewing(null)}>
           <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
             {viewing && viewing.stories.length > 0 ? (
@@ -127,6 +195,7 @@ export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
                           <View style={styles.myStoryActions}>
                             <Pressable
                               onPress={() => {
+                                setError(null);
                                 setEditing(s);
                                 setEditDraft(s.caption ?? "");
                               }}
@@ -139,29 +208,7 @@ export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
                               <Text style={styles.editStoryLabel}>Edit</Text>
                             </Pressable>
                             <Pressable
-                              onPress={() => {
-                                Alert.alert(
-                                  "Delete this story?",
-                                  "This can't be undone.",
-                                  [
-                                    { text: "Cancel", style: "cancel" },
-                                    {
-                                      text: "Delete",
-                                      style: "destructive",
-                                      onPress: async () => {
-                                        if (!sessionToken) return;
-                                        try {
-                                          await deleteStory(sessionToken, s.story_id);
-                                          setViewing(null);
-                                          await load();
-                                        } catch {
-                                          await load();
-                                        }
-                                      },
-                                    },
-                                  ],
-                                );
-                              }}
+                              onPress={() => { setError(null); setDeleting(s); }}
                               hitSlop={6}
                               style={styles.deleteStoryBtn}
                               accessibilityRole="button"
@@ -180,58 +227,7 @@ export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
             ) : null}
           </Pressable>
         </Pressable>
-      </Modal>
-
-      <Modal visible={editing !== null} transparent animationType="slide" onRequestClose={() => setEditing(null)}>
-        <Pressable style={styles.modalBackdrop} onPress={() => setEditing(null)}>
-          <Pressable style={styles.editSheet} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.editHandle} />
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalName}>Edit story caption</Text>
-              <Pressable onPress={() => setEditing(null)} hitSlop={10} style={{ marginLeft: "auto" }}>
-                <Ionicons name="close" size={20} color={colors.ink} />
-              </Pressable>
-            </View>
-            <TextInput
-              value={editDraft}
-              onChangeText={(t) => setEditDraft(t.slice(0, 280))}
-              multiline
-              style={styles.editInput}
-              placeholder="Add a caption…"
-              placeholderTextColor={colors.muted2}
-              textAlignVertical="top"
-            />
-            <Text style={styles.editExpiryHint}>
-              Editing won't extend the 72-hour expiry.
-            </Text>
-            <Pressable
-              onPress={async () => {
-                if (!editing || !sessionToken || editBusy) return;
-                setEditBusy(true);
-                try {
-                  await editStory(sessionToken, editing.story_id, { caption: editDraft.trim() || null });
-                  setEditing(null);
-                  await load();
-                } catch (e) {
-                  Alert.alert(
-                    "Couldn't save",
-                    e instanceof Error ? e.message : "The story may have expired.",
-                  );
-                  // If the story is gone, close the viewer so the stale
-                  // card doesn't linger.
-                  setViewing(null);
-                  await load();
-                } finally {
-                  setEditBusy(false);
-                }
-              }}
-              disabled={editBusy}
-              style={[styles.editSaveBtn, editBusy && { opacity: 0.6 }]}
-            >
-              <Text style={styles.editSaveLabel}>{editBusy ? "Saving…" : "Save changes"}</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
+              </>)}
       </Modal>
     </View>
   );
@@ -335,6 +331,7 @@ const styles = StyleSheet.create({
     fontStyle: "italic",
   },
   deleteStoryBtn: {
+    minHeight: 44,
     marginTop: 6,
     flexDirection: "row",
     alignItems: "center",
@@ -354,6 +351,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
   },
   editStoryBtn: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: 4,

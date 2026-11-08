@@ -27,6 +27,8 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AddToTeamSheet } from "@/components/add-to-team-sheet";
+import { apiRequest } from "@/lib/api";
 import { AppHeader } from "@/components/headers/app-header";
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
 import { RatingEditor, type RatingSnapshot, subscribeRatingChanges } from "@/components/rating-editor";
@@ -88,6 +90,9 @@ export default function MyPicksScreen() {
   const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
 
+  const [teamTarget, setTeamTarget] = useState<PickTitle | null>(null);
+  const [pageError, setPageError] = useState<string | null>(null);
+  const pageBusy = useRef(false);
   const [data, setData] = useState<PicksCollections | null>(null);
   const [loading, setLoading] = useState(true);
   const [activeCategory, setActiveCategory] = useState<CategoryKey>("ranked_favorites");
@@ -213,6 +218,21 @@ export default function MyPicksScreen() {
       });
   }, [data, activeCategory, items]);
 
+  async function loadMoreTitles() {
+    if (!sessionToken || !data || activeCategory === "my_lists" || pageBusy.current || items.length >= categoryTotalCount) return;
+    const key = activeCategory;
+    pageBusy.current = true;
+    setPageError(null);
+    try {
+      const page = await apiRequest<{ items: PickTitle[]; total: number }>(`/me/picks/collections/${key}?limit=100&offset=${items.length}`, { token: sessionToken });
+      setData((prior) => prior ? { ...prior,
+        [key]: [...new Map([...prior[key], ...page.items].map((title) => [title.id, title])).values()],
+        [key + "_count"]: page.total } : prior);
+    } catch {
+      setPageError("Could not load more titles. Tap to retry.");
+    } finally { pageBusy.current = false; }
+  }
+
   async function openTitle(titleId: string) {
     if (!sessionToken) return;
     setTitleModalId(titleId);
@@ -233,17 +253,7 @@ export default function MyPicksScreen() {
   }
 
   function buildRail(title: PickTitle): VerticalRailAction[] {
-    // Social actions only make sense on Ranked Favorites (others see
-    // your rank), per spec "Social actions (others viewing)".
-    // On personal categories we show the viewer's own actions only.
-    const isSocialSurface = activeCategory === "ranked_favorites";
     const base: VerticalRailAction[] = [];
-    if (isSocialSurface) {
-      base.push(
-        { key: "like", icon: "heart-outline", label: "Like", count: null },
-        { key: "comment", icon: "chatbubble-outline", label: "Comment", count: null },
-      );
-    }
     base.push(
       {
         key: "save",
@@ -270,7 +280,7 @@ export default function MyPicksScreen() {
         label: "Add to a team",
         onPress: () => {
           trackEvent("my_picks_team", { title_id: title.id, category: activeCategory });
-          void openTitle(title.id);
+          setTeamTarget(title);
         },
       },
       {
@@ -354,6 +364,7 @@ export default function MyPicksScreen() {
         ) : null}
       </View>
 
+      {pageError ? <Pressable onPress={() => void loadMoreTitles()}><Text style={{ color: colors.accent, padding: 12 }}>{pageError}</Text></Pressable> : null}
       {loading && !data ? (
         <LoadingView height={sectionHeight} />
       ) : sections.length === 0 ? (
@@ -375,7 +386,7 @@ export default function MyPicksScreen() {
           actionLabel={activeCategory === "ranked_favorites" ? "Rank favorites" : activeCategory === "my_lists" ? "Create a list" : "Start swiping"}
           onAction={() => {
             if (activeCategory === "ranked_favorites") router.push("/favorites/ranked");
-            else if (activeCategory === "my_lists") router.push("/(tabs)/my-picks");
+            else if (activeCategory === "my_lists") router.push("/favorites/new-list");
             else router.push("/(tabs)/swipe");
           }}
         />
@@ -396,6 +407,7 @@ export default function MyPicksScreen() {
                 onPressHero={() => void openTitle(item.hero.id)}
                 onPressContinuation={(t) => void openTitle(t.id)}
                 railActions={buildRail(item.hero)}
+                onEndReached={() => void loadMoreTitles()}
                 // Push the continuation strip above the pill nav so
                 // posters past the first few aren't hidden behind it.
                 continuationBottomOffset={56 + 20}
@@ -432,6 +444,7 @@ export default function MyPicksScreen() {
         })}
       </ScrollView>
 
+      <AddToTeamSheet visible={!!teamTarget} token={sessionToken} title={teamTarget} onClose={() => setTeamTarget(null)} />
       <UniversalTitleModal
         visible={titleModalId !== null}
         title={universalTitle}

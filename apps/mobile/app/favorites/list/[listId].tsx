@@ -1,3 +1,4 @@
+import { ConfirmDialog } from "@/components/confirm-dialog";
 /**
  * Oct-27 personalization follow-up: dedicated list detail route.
  *
@@ -56,6 +57,9 @@ export default function ListDetailScreen() {
   const { listId } = useLocalSearchParams<{ listId: string }>();
   const [list, setList] = useState<ListResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState("");
   const [editDescription, setEditDescription] = useState("");
@@ -154,27 +158,16 @@ export default function ListDetailScreen() {
   }
 
   async function deleteList() {
-    if (!sessionToken || !listId) return;
-    Alert.alert(
-      "Delete this list?",
-      "The titles stay in your library — only this list and its share token are removed.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Delete",
-          style: "destructive",
-          onPress: async () => {
-            try {
-              await apiRequest(`/me/watchlist/lists/${listId}`, { method: "DELETE", token: sessionToken });
-              router.back();
-            } catch (e) {
-              Alert.alert("Couldn't delete", e instanceof Error ? e.message : "Try again.");
-            }
-          },
-        },
-      ],
-    );
+    if (!sessionToken || !listId || deleteBusy) return;
+    setDeleteBusy(true); setDeleteError(null);
+    try {
+      await apiRequest(`/me/watchlist/lists/${listId}`, { method: "DELETE", token: sessionToken });
+      setConfirmDelete(false);
+      router.canGoBack() ? router.back() : router.replace("/(tabs)/my-picks");
+    } catch { setDeleteError("Could not delete this list. Please try again."); }
+    finally { setDeleteBusy(false); }
   }
+
 
   const canDelete = list && !list.is_default && !list.is_system_list;
 
@@ -251,7 +244,7 @@ export default function ListDetailScreen() {
                 </Pressable>
               </View>
               {canDelete ? (
-                <Pressable style={styles.dangerBtn} onPress={() => void deleteList()}>
+                <Pressable style={styles.dangerBtn} onPress={() => setConfirmDelete(true)}>
                   <Ionicons name="trash-outline" size={14} color={colors.danger} />
                   <Text style={styles.dangerLabel}>Delete this list</Text>
                 </Pressable>
@@ -331,6 +324,9 @@ export default function ListDetailScreen() {
           ) : null}
         </>
       )}
+      <ConfirmDialog visible={confirmDelete} title="Delete this list?"
+        message={deleteError ?? "The list and its shared links will be removed. Your ratings and watched history stay in place."}
+        confirmLabel="Delete list" busy={deleteBusy} onCancel={() => setConfirmDelete(false)} onConfirm={() => void deleteList()} />
     </SafeAreaView>
   );
 }
@@ -434,7 +430,7 @@ const styles = StyleSheet.create({
   posterFallback: { alignItems: "center", justifyContent: "center" },
   rowTitle: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 13 },
   rowMeta: { marginTop: 2, fontFamily: fonts.sans, color: colors.muted, fontSize: 11 },
-  removeBtn: { width: 32, height: 32, alignItems: "center", justifyContent: "center" },
+  removeBtn: { width: 44, height: 44, alignItems: "center", justifyContent: "center" },
   undoBar: {
     position: "absolute",
     left: spacing.md,

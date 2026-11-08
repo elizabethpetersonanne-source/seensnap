@@ -18,11 +18,12 @@ from app.schemas.user import (
 )
 from app.services.taste import build_scene_dna_response, get_hot_takes, get_taste_alignment, get_taste_evolution
 
-ONBOARDING_CALIBRATION_TARGET = 20
+ONBOARDING_CALIBRATION_TARGET = 5
 
 
 class OnboardingProgressResponse(BaseModel):
     signal_count: int
+    rated_count: int = 0
     target: int
     completed: bool
 
@@ -281,6 +282,13 @@ def patch_preferences(
             seen.add(key)
         preferences.connected_streaming_services = normalized
 
+    if payload.preferred_regions is not None:
+        region = payload.preferred_regions[0].strip().upper()
+        if len(region) != 2 or not region.isascii() or not region.isalpha():
+            raise HTTPException(422, detail="Use a two-letter country code")
+        preferences.preferred_regions = [region]
+        profile = _ensure_profile(db, current_user.id, current_user.email)
+        profile.country_code = region
     if payload.onboarding_completed is not None:
         preferences.onboarding_completed = payload.onboarding_completed
     if payload.notifications_enabled is not None:
@@ -319,8 +327,11 @@ def get_onboarding_progress(current_user: CurrentUser, db: DbSession) -> Onboard
     )
     prefs = db.scalar(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
     completed = bool(prefs.onboarding_completed) if prefs else False
+    from app.models.social import Rating
+    rated_count = int(db.scalar(select(func.count()).select_from(Rating).where(Rating.user_id == current_user.id)) or 0)
     return OnboardingProgressResponse(
         signal_count=signal_count,
+        rated_count=rated_count,
         target=ONBOARDING_CALIBRATION_TARGET,
         completed=completed,
     )
@@ -408,7 +419,6 @@ def get_my_scene_dna_signal(signal_name: str, current_user: CurrentUser, db: DbS
     """
     from app.models.content import ContentTitle
     from app.models.taste import UserSignal
-    from app.services.recommendation_service import recommend_for_user
     from app.services.user_signals import ensure_signals
     from uuid import UUID as _UUID
 

@@ -8,7 +8,7 @@
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -39,7 +39,7 @@ type Row = {
   version: number;
 };
 
-type ListResponse = { items: Row[]; total: number; max_capacity: number };
+type ListResponse = { items: Row[]; total: number; max_capacity: number | null; offset?: number; has_more?: boolean };
 type DraftResponse = { draft: Row[]; would_replace: number };
 
 // Oct-27 follow-up: default view is "All" (every ranked title); the
@@ -51,6 +51,7 @@ export default function RankedFavoritesScreen() {
   const [rows, setRows] = useState<Row[]>([]);
   const [view, setView] = useState<RankedView>("all");
   const [serverTotal, setServerTotal] = useState<number>(0);
+  const loadingMore = useRef(false);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -75,14 +76,21 @@ export default function RankedFavoritesScreen() {
     : view === "top100" ? rows.slice(0, 100)
     : rows;
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (count = 100) => {
     if (!sessionToken) return;
     setLoading(true);
     setError(null);
     try {
-      const data = await apiRequest<ListResponse>("/me/favorites/ranked?limit=500", { token: sessionToken });
-      setRows(data.items);
-      setServerTotal(data.total ?? data.items.length);
+      const collected: Row[] = [];
+      let total = 0;
+      do {
+        const page = await apiRequest<ListResponse>(`/me/favorites/ranked?limit=100&offset=${collected.length}`, { token: sessionToken });
+        collected.push(...page.items);
+        total = page.total;
+        if (!page.has_more || !page.items.length) break;
+      } while (collected.length < count);
+      setRows(collected);
+      setServerTotal(total);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't load your ranked favorites.");
     } finally {
@@ -92,30 +100,33 @@ export default function RankedFavoritesScreen() {
 
   useEffect(() => { void load(); }, [load]);
 
+  async function loadMore() {
+    if (!sessionToken || loadingMore.current || loading || busyId || rows.length >= serverTotal) return;
+    loadingMore.current = true;
+    try {
+      const page = await apiRequest<ListResponse>(`/me/favorites/ranked?limit=100&offset=${rows.length}`, { token: sessionToken });
+      setRows((prior) => [...new Map([...prior, ...page.items].map((row) => [row.title_id, row])).values()].sort((a, b) => a.position - b.position));
+      setServerTotal(page.total);
+    } catch { setError("Couldn't load more rankings. Scroll to retry."); }
+    finally { loadingMore.current = false; }
+  }
+
   async function move(row: Row, direction: "up" | "down") {
     if (!sessionToken || busyId) return;
-    const currentIndex = rows.findIndex((r) => r.title_id === row.title_id);
-    if (currentIndex < 0) return;
-    const target = direction === "up" ? currentIndex - 1 : currentIndex + 1;
-    if (target < 0 || target >= rows.length) return;
-    const toPosition = target + 1;
+    const toPosition = row.position + (direction === "up" ? -1 : 1);
+    if (toPosition < 1 || toPosition > serverTotal) return;
     const previousRank = row.position;
     setBusyId(row.title_id);
-    // Optimistic reorder
-    const next = [...rows];
-    const [taken] = next.splice(currentIndex, 1);
-    next.splice(target, 0, taken);
-    setRows(next.map((r, i) => ({ ...r, position: i + 1 })));
     try {
       const data = await apiRequest<ListResponse>(
         `/me/favorites/ranked/${row.title_id}/move`,
         {
           method: "POST",
           token: sessionToken,
-          body: JSON.stringify({ to_position: toPosition }),
+          body: JSON.stringify({ to_position: toPosition, expected_version: row.version }),
         },
       );
-      setRows(data.items);
+      await load(Math.max(100, rows.length));
       // Offer a Publish chip for this move. New rank is read from the
       // server response so we never surface a stale optimistic value.
       const current = data.items.find((r) => r.title_id === row.title_id);
@@ -153,10 +164,10 @@ export default function RankedFavoritesScreen() {
         {
           method: "POST",
           token: sessionToken,
-          body: JSON.stringify({ to_position: parsed }),
+          body: JSON.stringify({ to_position: parsed, expected_version: target.version }),
         },
       );
-      setRows(data.items);
+      await load(Math.max(100, rows.length));
       setServerTotal(data.total ?? data.items.length);
       // Reuse the Publish bar so users can post the deliberate move.
       const current = data.items.find((r) => r.title_id === target.title_id);
@@ -211,7 +222,7 @@ export default function RankedFavoritesScreen() {
         `/me/favorites/ranked/${row.title_id}`,
         { method: "DELETE", token: sessionToken },
       );
-      setRows(data.items);
+      await load(Math.max(100, rows.length));
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't remove.");
     } finally {
@@ -243,7 +254,7 @@ export default function RankedFavoritesScreen() {
           body: JSON.stringify({ title_ids: confirmRebuild.map((r) => r.title_id) }),
         },
       );
-      setRows(data.items);
+      await load(Math.max(100, rows.length));
       setConfirmRebuild(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Couldn't save.");
@@ -371,6 +382,8 @@ export default function RankedFavoritesScreen() {
           );
         })() : null}
         <FlatList
+          onEndReached={() => { if (view === "all" || (view === "top100" && rows.length < 100)) void loadMore(); }}
+          onEndReachedThreshold={0.4}
           data={visibleRows}
           keyExtractor={(item) => item.title_id}
           contentContainerStyle={styles.list}
@@ -395,16 +408,16 @@ export default function RankedFavoritesScreen() {
               <View style={styles.rowActions}>
                 <Pressable
                   onPress={() => void move(item, "up")}
-                  disabled={busyId === item.title_id || index === 0}
-                  style={[styles.iconBtn, index === 0 && { opacity: 0.3 }]}
+                  disabled={busyId === item.title_id || item.position === 1}
+                  style={[styles.iconBtn, item.position === 1 && { opacity: 0.3 }]}
                   accessibilityLabel="Move up"
                 >
                   <Ionicons name="chevron-up" size={16} color={colors.ink} />
                 </Pressable>
                 <Pressable
                   onPress={() => void move(item, "down")}
-                  disabled={busyId === item.title_id || index === visibleRows.length - 1}
-                  style={[styles.iconBtn, index === visibleRows.length - 1 && { opacity: 0.3 }]}
+                  disabled={busyId === item.title_id || item.position === serverTotal}
+                  style={[styles.iconBtn, item.position === serverTotal && { opacity: 0.3 }]}
                   accessibilityLabel="Move down"
                 >
                   <Ionicons name="chevron-down" size={16} color={colors.ink} />
@@ -507,10 +520,10 @@ export default function RankedFavoritesScreen() {
             <Text style={styles.modalBody}>
               {rows.length > 0
                 ? "Your current custom order will be replaced with a fresh ranking of your watched + rated titles. Preview below."
-                : "We built a Top 20 draft from your watched + rated titles. Preview below and save if you want it."}
+                : "We built a draft of all rated titles from your watched + rated titles. Preview below and save if you want it."}
             </Text>
             <FlatList
-              data={(confirmRebuild ?? []).slice(0, 20)}
+              data={confirmRebuild ?? []}
               keyExtractor={(item) => item.title_id}
               style={{ maxHeight: 320 }}
               renderItem={({ item }) => (

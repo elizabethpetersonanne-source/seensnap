@@ -52,6 +52,7 @@ export type ConciergeTitleCard = {
 };
 
 export type ConciergeDecisionResponse = {
+  version?: number;
   decision_id: string | null;
   status: "ready" | "partial" | "unavailable" | "empty" | "error" | "allowance_exhausted";
   status_detail: string;
@@ -119,6 +120,7 @@ export function ConciergeComposer({
   // "Replace with a suggestion" stays reversible per spec.
   const previousDraftRef = useRef<string | null>(null);
   const inputRef = useRef<TextInput | null>(null);
+  const requestBusy = useRef(false);
 
   const outOfAllowance = tier === "free" && allowanceRemaining != null && allowanceRemaining <= 0;
   const currentExample = ROTATING_EXAMPLES[exampleIdx] ?? DEFAULT_EXAMPLE;
@@ -154,9 +156,10 @@ export function ConciergeComposer({
   }
 
   async function submit() {
-    if (!token || busy) return;
+    if (!token || requestBusy.current) return;
     const trimmed = intent.trim();
     if (!trimmed) return;
+    requestBusy.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -164,6 +167,7 @@ export function ConciergeComposer({
       const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
         method: "POST",
         token,
+        timeoutMs: 120000,
         body: JSON.stringify({ intent: trimmed, idempotency_key }),
       });
       // Thread the original intent through so the empty-state
@@ -171,16 +175,17 @@ export function ConciergeComposer({
       // prompts without a round-trip.
       onDecision({ ...res, _intent: trimmed });
       if (res.status === "unavailable") setError("Concierge is unavailable right now.");
-      else if (res.status === "error") setError(res.status_detail || "Something went wrong.");
+      else if (res.status === "error") setError("Concierge couldn't finish this search. Please try again.");
       else if (res.status === "allowance_exhausted") setError("Monthly allowance used up — resets next month.");
       // Chunk D: don't surface a flat error for empty. The Discover
       // screen renders the ConciergeEmptyState with specific chips
       // instead. Keep the composer input focused on the user's draft.
       else if (res.status === "empty") setIntent(trimmed);
-      else setIntent("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
+      else setIntent(trimmed);
+    } catch {
+      setError("Concierge couldn't finish this search. Your request is still here; please try again.");
     } finally {
+      requestBusy.current = false;
       setBusy(false);
     }
   }

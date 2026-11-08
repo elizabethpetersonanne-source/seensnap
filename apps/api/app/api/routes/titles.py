@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentAvailability, ContentTitle
-from app.models.social import Watchlist, WatchlistItem
+from app.models.social import WatchlistItem
 from app.schemas.content import (
     PersonCreditResponse,
     PersonDetailResponse,
@@ -118,6 +118,14 @@ def get_calibration_candidates(
         except TmdbConfigurationError:
             continue
 
+    # Reopening onboarding starts with unhandled titles; never offset a
+    # freshly shuffled pool by an old swipe count.
+    from app.models.taste import SwipeRecord
+    handled = set(db.scalars(select(SwipeRecord.content_title_id).where(
+        SwipeRecord.user_id == _current_user.id,
+        SwipeRecord.source_surface == "onboarding_calibration",
+    )).all())
+    pool = [title for title in pool if title.id not in handled]
     random.shuffle(pool)
     return [_to_title_response(t) for t in pool[:50]]
 
@@ -328,7 +336,7 @@ def undo_title_swipe(
     """
     from datetime import datetime, timezone
     from app.models.taste import SwipeRecord
-    from app.models.social import Rating, TitleWatchStatus, WatchlistItem
+    from app.models.social import Rating, TitleWatchStatus
 
     record = db.scalar(
         select(SwipeRecord).where(

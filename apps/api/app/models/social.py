@@ -40,7 +40,7 @@ class Rating(Base):
 
 
 class RankedFavorite(Base):
-    """Sep-22 brief §14: one ordered collection of up to 100 unique
+    """One ordered collection of unique
     titles per user; Top 20 is its first 20. Position is 1-based
     contiguous. Deferrable uniqueness on (user_id, position) allows
     a transaction to temporarily swap two rows before committing."""
@@ -48,7 +48,7 @@ class RankedFavorite(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "content_title_id", name="uq_ranked_favorite_user_title"),
         UniqueConstraint("user_id", "position", name="uq_ranked_favorite_user_position", deferrable=True, initially="DEFERRED"),
-        CheckConstraint("position >= 1 AND position <= 100", name="ck_ranked_favorite_position_range"),
+        CheckConstraint("position >= 1", name="ck_ranked_favorite_position_range"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)

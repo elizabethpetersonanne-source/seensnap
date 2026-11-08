@@ -43,6 +43,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.models.user import User
 from app.models.content import ContentTitle
 from app.models.social import Rating, RankedFavorite, TitleWatchStatus, Watchlist, WatchlistItem
 
@@ -162,6 +163,7 @@ def save_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot
     """Save → add to Next Watch; leaves watched/rating/favorite alone.
     If the user had explicitly saved a previously-watched title, we
     keep both — rewatch intent is independent of past watching."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
     if title is None:
         raise TitleStateError("title_not_found", "Title not found")
@@ -182,6 +184,7 @@ def save_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot
 
 def unsave_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
     """Remove from Next Watch only. Does NOT clear watched/rating/favorite."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     from app.services.watchlists import get_next_watch_list
     wl = get_next_watch_list(db, user_id)
     if wl is not None:
@@ -197,6 +200,7 @@ def unsave_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
 
 def mark_watched(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
     """Set watched; remove from Next Watch. Rating optional."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
     if title is None:
         raise TitleStateError("title_not_found", "Title not found")
@@ -250,6 +254,7 @@ def rate_title(
 ) -> TitleStateSnapshot:
     """Rate 1-10. Sets watched, removes from Next Watch, updates rating
     atomically. Optimistic concurrency via expected_version."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     if not (1 <= score <= 10):
         raise TitleStateError("invalid_score", "score must be 1-10")
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
@@ -268,6 +273,8 @@ def rate_title(
         existing.version += 1
         existing.updated_at = datetime.now(timezone.utc)
     else:
+        if expected_version not in (None, 0):
+            raise TitleStateError("version_conflict", "rating was removed on another device")
         existing = Rating(
             id=uuid4(),
             user_id=user_id,
@@ -299,16 +306,19 @@ def rate_title(
     return _snapshot(db, user_id, title_id)
 
 
-def clear_rating(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
+def clear_rating(db: Session, user_id: UUID, title_id: UUID, *, expected_version: int | None = None) -> TitleStateSnapshot:
     """Remove rating. Preserves watched (as a Watched TitleWatchStatus
     row) and all independent favorite/list state. Removes ranked entry
     if its origin was derived from the rating (not yet tracked by a
     column — conservative: existing ranked rows are treated as manual
     and preserved)."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     rating = db.scalar(select(Rating).where(
         Rating.user_id == user_id,
         Rating.content_title_id == title_id,
     ))
+    if expected_version is not None and expected_version != (rating.version if rating else 0):
+        raise TitleStateError("version_conflict", "stale version")
     if rating is None:
         return _snapshot(db, user_id, title_id)
     # Preserve Watched state by creating a TitleWatchStatus row if there
@@ -324,6 +334,9 @@ def clear_rating(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
             content_title_id=title_id,
             watched_state="watched",
         ))
+    else:
+        ws.watched_state = "watched"
+        ws.updated_at = datetime.now(timezone.utc)
     db.delete(rating)
     db.commit()
     return _snapshot(db, user_id, title_id)

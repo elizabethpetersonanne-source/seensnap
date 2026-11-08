@@ -34,6 +34,7 @@ class PreferencesResponse(BaseModel):
 
 
 class PreferencesUpdateRequest(BaseModel):
+    preferred_regions: list[str] | None = Field(default=None, min_length=1, max_length=1)
     connected_streaming_services: list[str] | None = None
     onboarding_completed: bool | None = None
     notifications_enabled: bool | None = None

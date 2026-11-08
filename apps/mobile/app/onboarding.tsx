@@ -18,17 +18,14 @@ import {
 } from "react-native";
 
 import { Ionicons } from "@expo/vector-icons";
+import { RatingEditor } from "@/components/rating-editor";
 import { GoldButton } from "@/components/gold-button";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
 import { useAuth } from "@/lib/auth";
-import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
+import { markOnboardingCompleted, onboardingDraftKey } from "@/lib/onboarding";
 import { playSwipeSound } from "@/lib/swipe-sfx";
-
-// COUNTRIES list removed — region picker no longer in the onboarding
-// flow per spec §7 (country_code defaults to "US" at account creation
-// and can be adjusted in Settings later).
 
 const STREAMING_SERVICES = [
   { id: "netflix", label: "Netflix" },
@@ -41,14 +38,10 @@ const STREAMING_SERVICES = [
   { id: "peacock", label: "Peacock" },
 ];
 
-const CALIBRATION_TARGET = 20;
+const CALIBRATION_TARGET = 5;
+type Direction = "left" | "right" | "up" | "down";
 const SWIPE_THRESHOLD = 80;
 
-// Spec §7 flow: Welcome → Auth → Basics → Streaming Services →
-// Calibration Intro → Calibration → SceneDNA Reveal → Discover.
-// Region step is intentionally dropped per spec (country defaults to
-// "US" at account creation and can be adjusted in Settings). First-list
-// creation is EXPLICITLY a Non-Goal per spec §4.
 type Step = "welcome" | "basics" | "services" | "calibrate-intro" | "calibrate" | "dna" | "complete";
 
 type Title = {
@@ -168,10 +161,44 @@ export default function OnboardingScreen() {
   const [step, setStep] = useState<Step>("welcome");
   const [displayName, setDisplayName] = useState(user?.display_name ?? "");
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
+  const [handle, setHandle] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [country, setCountry] = useState("US");
+  const [ratingTitle, setRatingTitle] = useState<Title | null>(null);
+  const [ratedCount, setRatedCount] = useState(0);
+  const actionBusy = useRef(false);
+  const completionBusy = useRef(false);
+  const draftRestored = useRef(false);
+
+  useEffect(() => {
+    if (!user?.user_id || !sessionToken) return;
+    let cancelled = false;
+    Promise.all([
+      SessionStorage.getItem(onboardingDraftKey(user.user_id)),
+      apiRequest<{ preferred_regions: string[]; connected_streaming_services: string[] }>("/me/preferences", { token: sessionToken }),
+    ]).then(([draft, prefs]) => {
+      if (cancelled) return;
+      setCountry(prefs.preferred_regions?.[0] ?? "US");
+      setSelectedServices(new Set(prefs.connected_streaming_services));
+      if (draft) {
+        try {
+          const saved = JSON.parse(draft);
+          if (["welcome", "basics", "services", "calibrate-intro", "calibrate", "dna"].includes(saved.step)) setStep(saved.step);
+          if (typeof saved.displayName === "string") setDisplayName(saved.displayName);
+          if (typeof saved.handle === "string") setHandle(saved.handle);
+        } catch { /* Discard malformed local draft. */ }
+      }
+    }).catch(() => {}).finally(() => { draftRestored.current = true; });
+    return () => { cancelled = true; };
+  }, [user?.user_id, sessionToken]);
+  useEffect(() => {
+    if (user?.user_id && draftRestored.current) {
+      void SessionStorage.setItem(onboardingDraftKey(user.user_id), JSON.stringify({ step, displayName, handle })).catch(() => {});
+    }
+  }, [user?.user_id, step, displayName, handle]);
   // Handle (unique username). Live-checked against
   // GET /me/username-check as the user types (small debounce).
-  const [handle, setHandle] = useState("");
   const [handleStatus, setHandleStatus] = useState<
     | { state: "idle" }
     | { state: "checking" }
@@ -245,6 +272,7 @@ export default function OnboardingScreen() {
   };
 
   function advance(next: Step) {
+    setError(null);
     setStep(next);
     animateIn();
   }
@@ -264,13 +292,14 @@ export default function OnboardingScreen() {
     try {
       // Resume from previously-recorded calibration swipes so kill/relaunch doesn't reset progress.
       try {
-        const progress = await apiRequest<{ signal_count: number; target: number; completed: boolean }>(
+        const progress = await apiRequest<{ signal_count: number; rated_count: number; target: number; completed: boolean }>(
           "/me/onboarding-progress",
           { token: sessionToken }
         );
+        setRatedCount(progress.rated_count ?? 0);
         if (progress.signal_count > 0) {
-          setSwipeCount(Math.min(progress.signal_count, CALIBRATION_TARGET));
-          setCalibrateIndex(Math.min(progress.signal_count, CALIBRATION_TARGET));
+          setSwipeCount(progress.signal_count);
+
         }
       } catch {
         // Best-effort — if the endpoint fails, start from zero (no regression).
@@ -279,7 +308,7 @@ export default function OnboardingScreen() {
       const results = await apiRequest<Title[]>("/titles/calibration-candidates", {
         token: sessionToken,
       });
-      setCandidates(results.slice(0, CALIBRATION_TARGET + 5));
+      setCandidates(results);
       trackEvent("taste_calibration_started", {});
     } catch {
       // Fallback to trending if calibration endpoint fails
@@ -287,7 +316,7 @@ export default function OnboardingScreen() {
         const trending = await apiRequest<Title[]>("/titles/trending?limit=25", {
           token: sessionToken,
         });
-        setCandidates(trending.slice(0, CALIBRATION_TARGET + 5));
+        setCandidates(trending);
       } catch {
         // Can't load calibration — skip step
       }
@@ -326,13 +355,13 @@ export default function OnboardingScreen() {
   useEffect(() => { sessionTokenRef.current = sessionToken ?? null; }, [sessionToken]);
 
   async function recordSwipe(
-    direction: "left" | "right",
+    direction: Direction,
     titleId: string,
     inputMethod: "gesture" | "button",
     position: number,
   ) {
     const tok = sessionTokenRef.current;
-    if (!tok) return;
+    if (!tok) throw new Error("Sign in again to save your progress.");
     try {
       await apiRequest("/titles/swipes", {
         method: "POST",
@@ -341,61 +370,59 @@ export default function OnboardingScreen() {
           title_id: titleId,
           direction,
           source_surface: "onboarding_calibration",
+          action_version: 2,
           idempotency_key: `onboarding:${titleId}:${direction}:${position}`,
         }),
       });
       trackEvent("onboarding_calibration_action", {
-        action: direction === "left" ? "pass" : "more_like_this",
+        action: direction,
         title_id: titleId,
         position,
         input_method: inputMethod,
       });
     } catch {
       trackEvent("onboarding_error", { step: "calibrate", code: "swipe_record_failed" });
+      throw new Error("Your action was not saved. Please try again.");
     }
   }
 
   async function animateSwipe(
-    direction: "left" | "right",
+    direction: Direction,
     inputMethod: "gesture" | "button" = "gesture",
   ) {
     const idx = calibrateIndexRef.current;
     const card = candidatesRef.current[idx];
-    if (!card) return;
-
+    if (!card || actionBusy.current || ratingTitle) return;
+    actionBusy.current = true;
+    setError(null);
     playSwipeSound(direction);
-    const toValue = direction === "right" ? { x: 420, y: 30 } : { x: -420, y: 30 };
-
-    await new Promise<void>((resolve) => {
-      Animated.timing(pan, { toValue, duration: 200, useNativeDriver: false })
-        .start(() => resolve());
-    });
-
-    const positionAtSwipe = swipeCountRef.current + 1;
-    void recordSwipe(direction, card.id, inputMethod, positionAtSwipe);
-    setCalibrateIndex((i) => i + 1);
-    setSwipeCount((c) => {
-      const next = c + 1;
-      if (next >= CALIBRATION_TARGET) {
-        trackEvent("onboarding_calibration_completed", { signals: next });
-        advance("dna");
-      }
-      return next;
-    });
-    pan.setValue({ x: 0, y: 0 });
+    try {
+      await recordSwipe(direction, card.id, inputMethod, swipeCountRef.current + 1);
+      const toValue = direction === "up" ? { x: 0, y: -420 } : direction === "down" ? { x: 0, y: 420 } : { x: direction === "right" ? 420 : -420, y: 30 };
+      await new Promise<void>((resolve) => Animated.timing(pan, { toValue, duration: 180, useNativeDriver: false }).start(() => resolve()));
+      setCalibrateIndex((i) => i + 1);
+      setSwipeCount((c) => c + 1);
+      if (direction === "up") setRatingTitle(card);
+      else if (idx + 1 >= candidatesRef.current.length) advance("dna");
+    } catch {
+      setError("Your action was not saved. Try again. If you already rated this title positively, edit its rating before marking it disliked.");
+    } finally {
+      pan.setValue({ x: 0, y: 0 });
+      actionBusy.current = false;
+    }
   }
 
   // Ref that always points at the LATEST animateSwipe closure — same
   // pattern the main Swipe tab uses (animateSwipeRef). Assigned on
   // every render, read from PanResponder's release callback.
-  const noopSwipe = useRef<(dir: "left" | "right", input?: "gesture" | "button") => Promise<void>>(async () => {}).current;
-  const animateSwipeRef = useRef<(dir: "left" | "right", input?: "gesture" | "button") => Promise<void>>(noopSwipe);
+  const noopSwipe = useRef<(dir: Direction, input?: "gesture" | "button") => Promise<void>>(async () => {}).current;
+  const animateSwipeRef = useRef<(dir: Direction, input?: "gesture" | "button") => Promise<void>>(noopSwipe);
   animateSwipeRef.current = animateSwipe;
 
   function skipCard() {
     const idx = calibrateIndexRef.current;
     const card = candidatesRef.current[idx];
-    if (!card) return;
+    if (!card || actionBusy.current || ratingTitle) return;
     trackEvent("onboarding_calibration_exited", { position: idx + 1, reason: "card_skip" });
     setCalibrateIndex((i) => i + 1);
     if (idx + 1 >= candidatesRef.current.length) {
@@ -412,22 +439,17 @@ export default function OnboardingScreen() {
       onStartShouldSetPanResponderCapture: () => true,
       onMoveShouldSetPanResponder: () => true,
       onMoveShouldSetPanResponderCapture: (_, gesture) =>
-        Math.abs(gesture.dx) > 4 && Math.abs(gesture.dx) > Math.abs(gesture.dy),
+        Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8,
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
       onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
         useNativeDriver: false,
       }),
       onPanResponderRelease: (_, gesture) => {
-        // TEMP diagnostic — server-visible signal that release fires
-        // and what dx/dy the release callback sees. Confirms whether
-        // the "drag around screen, release does nothing" symptom is
-        // (a) release never firing or (b) firing but not committing.
-        trackEvent("onboarding_calibration_release_debug", {
-          dx: Math.round(gesture.dx),
-          dy: Math.round(gesture.dy),
-          ref_is_noop: animateSwipeRef.current === noopSwipe,
-        });
+        if (Math.abs(gesture.dy) > SWIPE_THRESHOLD && Math.abs(gesture.dy) > Math.abs(gesture.dx)) {
+          void animateSwipeRef.current(gesture.dy < 0 ? "up" : "down", "gesture");
+          return;
+        }
         if (gesture.dx > SWIPE_THRESHOLD) {
           void animateSwipeRef.current("right", "gesture");
           return;
@@ -481,32 +503,30 @@ export default function OnboardingScreen() {
         body: JSON.stringify(body),
       });
       await updateSessionUser({ display_name: name });
+      advance("services");
       trackEvent("onboarding_profile_completed", {
         set_handle: handleStatus.state === "available",
       });
     } catch {
       trackEvent("onboarding_error", { step: "basics", code: "profile_save_failed" });
-      // Don't block onboarding on name-save failure — the user can edit later
+      setError("Your profile could not be saved. Please try again.");
     } finally {
       setIsSaving(false);
-      advance("services");
     }
   }
 
   async function saveAndContinue(skipped = false) {
     if (!sessionToken) return;
+    if (!/^[A-Z]{2}$/.test(country)) { setError("Enter a two-letter country code, such as US or GB."); return; }
     setIsSaving(true);
+    setError(null);
     try {
-      // Region is no longer part of the onboarding flow per spec §7 —
-      // country_code stays at the account default (usually "US") and
-      // can be adjusted in Settings later. Only streaming providers
-      // are captured here; provider selection is availability data,
-      // not taste evidence, per spec §8.4 data rule.
       await apiRequest("/me/preferences", {
         method: "PATCH",
         token: sessionToken,
         body: JSON.stringify({
           connected_streaming_services: Array.from(selectedServices),
+          preferred_regions: [country],
         }),
       });
       trackEvent(
@@ -516,48 +536,37 @@ export default function OnboardingScreen() {
       advance("calibrate-intro");
     } catch {
       trackEvent("onboarding_error", { step: "services", code: "prefs_save_failed" });
-      advance("calibrate-intro");
+      setError("Your viewing preferences could not be saved. Please try again.");
     } finally {
       setIsSaving(false);
     }
   }
 
-  async function completeOnboarding() {
-    if (!sessionToken) return;
+  async function completeOnboarding(): Promise<boolean> {
+    if (!sessionToken || !user?.user_id || completionBusy.current) return false;
+    completionBusy.current = true;
     setIsSaving(true);
+    setError(null);
     try {
-      await apiRequest("/me/preferences", {
-        method: "PATCH",
-        token: sessionToken,
-        body: JSON.stringify({ onboarding_completed: true }),
-      });
-      await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
+      await apiRequest("/me/preferences", { method: "PATCH", token: sessionToken,
+        body: JSON.stringify({ onboarding_completed: true }) });
+      await markOnboardingCompleted(user.user_id);
+      await SessionStorage.deleteItem(onboardingDraftKey(user.user_id));
+      return true;
     } catch {
-      await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
+      setError("Your progress could not be saved. Please try again when you are connected.");
+      return false;
     } finally {
+      completionBusy.current = false;
       setIsSaving(false);
     }
   }
 
   async function skip() {
-    if (!sessionToken) return;
-    try {
-      await apiRequest("/me/preferences", {
-        method: "PATCH",
-        token: sessionToken,
-        body: JSON.stringify({ onboarding_completed: true }),
-      });
-      await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
-      // Per spec §5.5 Preserve Momentum: skip is neutral, never
-      // recorded as dislike. Spec §14 event name: no dedicated "skip"
-      // event required, just onboarding_completed with the state we
-      // reached. This preserves funnel visibility without inventing
-      // a signal.
+    if (await completeOnboarding()) {
       trackEvent("onboarding_completed", { swipes: swipeCount, skipped_at: step });
-    } catch {
-      await SessionStorage.setItem(ONBOARDING_COMPLETED_KEY, "true");
+      router.replace("/(tabs)");
     }
-    router.replace("/(tabs)");
   }
 
   // Progress bar — show as small dots between Basics and Calibration.
@@ -587,11 +596,12 @@ export default function OnboardingScreen() {
 
   // Poster deck geometry — mirrors the main Swipe tab so calibration
   // teaches the exact interaction users see after onboarding.
-  const { width: calibrateViewport } = useWindowDimensions();
+  const { width: calibrateViewport, height: viewportHeight } = useWindowDimensions();
   const calibratePadding = calibrateViewport < 480 ? 16 : 20;
   const posterMaxWidth = Math.min(
     360,
-    Math.max(200, calibrateViewport - calibratePadding * 2),
+    calibrateViewport - calibratePadding * 2,
+    Math.max(140, (viewportHeight - 390) / 1.5),
   );
   const posterHeight = posterMaxWidth * 1.5;
 
@@ -609,11 +619,15 @@ export default function OnboardingScreen() {
           <View />
         )}
         {step !== "complete" && step !== "dna" ? (
-          <Pressable onPress={() => void skip()} hitSlop={12}>
+          <Pressable disabled={isSaving} onPress={() => void skip()} style={{ minHeight: 44, minWidth: 44, justifyContent: "center" }}>
             <Text style={styles.skipText}>Skip</Text>
           </Pressable>
         ) : null}
       </View>
+
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ flexGrow: 1, width: "100%", maxWidth: 760, alignSelf: "center" }}>
+      {error ? <Text accessibilityRole="alert" style={{ color: colors.accent, padding: 16 }}>{error}</Text> : null}
 
       {/* WELCOME — spec §8.1 canonical hero copy. */}
       {step === "welcome" ? (
@@ -652,38 +666,9 @@ export default function OnboardingScreen() {
            a concrete render box + lets long content (name + handle +
            status + CTA) scroll on short viewports. */}
       {step === "basics" ? (
-        Platform.OS === "web" ? (
-          <ScrollView contentContainerStyle={styles.stepScroll}>
-            <BasicsBody
-              slideStyle={slideStyle}
-              displayName={displayName}
-              setDisplayName={setDisplayName}
-              handle={handle}
-              setHandle={setHandle}
-              checkHandleAvailability={checkHandleAvailability}
-              handleStatus={handleStatus}
-              isSaving={isSaving}
-              onContinue={() => void saveBasicsAndContinue()}
-            />
-          </ScrollView>
-        ) : (
-          <KeyboardAvoidingView
-            style={{ flex: 1 }}
-            behavior={Platform.OS === "ios" ? "padding" : undefined}
-          >
-            <BasicsBody
-              slideStyle={slideStyle}
-              displayName={displayName}
-              setDisplayName={setDisplayName}
-              handle={handle}
-              setHandle={setHandle}
-              checkHandleAvailability={checkHandleAvailability}
-              handleStatus={handleStatus}
-              isSaving={isSaving}
-              onContinue={() => void saveBasicsAndContinue()}
-            />
-          </KeyboardAvoidingView>
-        )
+        <BasicsBody slideStyle={slideStyle} displayName={displayName} setDisplayName={setDisplayName}
+          handle={handle} setHandle={setHandle} checkHandleAvailability={checkHandleAvailability}
+          handleStatus={handleStatus} isSaving={isSaving} onContinue={() => void saveBasicsAndContinue()} />
       ) : null}
 
       {/* STREAMING SERVICES — spec §8.4 canonical heading + copy +
@@ -696,9 +681,11 @@ export default function OnboardingScreen() {
             <Text style={styles.serif}>Where do{"\n"}you watch?</Text>
           </View>
           <Text style={styles.bodySmall}>
-            Choose any services you use. We'll prioritize titles you can stream — but this
-            won't limit what you can discover.
+            Select the services you subscribe to. This does not connect or log in to your streaming accounts.
           </Text>
+          <Text style={styles.bodySmall}>Country (two-letter code)</Text>
+          <TextInput accessibilityLabel="Country code" value={country} onChangeText={(value) => setCountry(value.toUpperCase())}
+            maxLength={2} autoCapitalize="characters" style={{ color: colors.ink, borderWidth: 1, borderColor: colors.accent, minHeight: 48, padding: 12, marginBottom: 12 }} />
           <View style={styles.serviceGrid}>
             {STREAMING_SERVICES.map((s) => {
               const selected = selectedServices.has(s.id);
@@ -739,8 +726,7 @@ export default function OnboardingScreen() {
             <Text style={styles.serif}>Let's tune{"\n"}your picks.</Text>
           </View>
           <Text style={styles.body}>
-            React to a few titles so SeenSnap can start learning what fits you. Aim for 20 —
-            you can leave anytime.
+            Rate five titles you have watched to help SeenSnap learn your taste. You can leave anytime.
           </Text>
           <View style={styles.propList}>
             <View style={styles.propRow}>
@@ -749,11 +735,15 @@ export default function OnboardingScreen() {
             </View>
             <View style={styles.propRow}>
               <Text style={styles.propIndex}>→</Text>
-              <Text style={styles.propText}>Swipe right: More Like This</Text>
+              <Text style={styles.propText}>Swipe right: Interested</Text>
             </View>
             <View style={styles.propRow}>
               <Text style={styles.propIndex}>↑</Text>
-              <Text style={styles.propText}>Save it to My Picks — a strong positive signal</Text>
+              <Text style={styles.propText}>Swipe up: Watched — add an optional rating</Text>
+            </View>
+            <View style={styles.propRow}>
+              <Text style={styles.propIndex}>↓</Text>
+              <Text style={styles.propText}>Swipe down: Watched and didn’t like it</Text>
             </View>
           </View>
           <GoldButton
@@ -786,7 +776,7 @@ export default function OnboardingScreen() {
               <Text style={styles.featureSubtitle}>Swipe to shape your SceneDNA.</Text>
             </View>
             <Text style={styles.featureProgress}>
-              {Math.min(swipeCount, CALIBRATION_TARGET)}/{CALIBRATION_TARGET}
+              {Math.min(ratedCount, CALIBRATION_TARGET)}/{CALIBRATION_TARGET} rated
             </Text>
           </View>
 
@@ -872,7 +862,7 @@ export default function OnboardingScreen() {
                   <Animated.View
                     style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}
                   >
-                    <Text style={styles.deckEdgeChipTextRight}>MORE LIKE THIS</Text>
+                    <Text style={styles.deckEdgeChipTextRight}>INTERESTED</Text>
                   </Animated.View>
                 </Animated.View>
               </View>
@@ -925,11 +915,19 @@ export default function OnboardingScreen() {
                     accessibilityLabel={`More like ${currentCard.title}`}
                   >
                     <Ionicons name="heart" size={16} color={colors.background} />
-                    <Text style={styles.controlBtnPrimaryText}>More Like This</Text>
+                    <Text style={styles.controlBtnPrimaryText}>Interested</Text>
+                  </Pressable>
+                </View>
+                <View style={styles.controlRow}>
+                  <Pressable style={[styles.controlBtn, styles.controlBtnNeutral]} onPress={() => void animateSwipe("down", "button")} accessibilityRole="button">
+                    <Text style={styles.controlBtnNeutralText}>↓ Watched · Disliked</Text>
+                  </Pressable>
+                  <Pressable style={[styles.controlBtn, styles.controlBtnPrimary]} onPress={() => void animateSwipe("up", "button")} accessibilityRole="button">
+                    <Text style={styles.controlBtnPrimaryText}>↑ Watched · Rate</Text>
                   </Pressable>
                 </View>
                 <Pressable style={styles.skipCardLink} onPress={skipCard} hitSlop={8}>
-                  <Text style={styles.skipCardLinkText}>Skip this card</Text>
+                  <Text style={styles.skipCardLinkText}>Don’t know this title</Text>
                 </Pressable>
               </View>
             </View>
@@ -964,7 +962,7 @@ export default function OnboardingScreen() {
             size="lg"
             onPress={async () => {
               trackEvent("onboarding_scenedna_reveal_viewed", { swipes: swipeCount });
-              await completeOnboarding();
+              if (!(await completeOnboarding())) return;
               trackEvent("onboarding_completed", {
                 services_count: selectedServices.size,
                 swipes: swipeCount,
@@ -1007,6 +1005,12 @@ export default function OnboardingScreen() {
           </Pressable>
         </View>
       ) : null}
+      </ScrollView>
+      </KeyboardAvoidingView>
+      <RatingEditor visible={!!ratingTitle} token={sessionToken} titleId={ratingTitle?.id ?? null}
+        titleName={ratingTitle?.title} initial={null}
+        onClose={() => { setRatingTitle(null); if (calibrateIndex >= candidates.length) advance("dna"); }}
+        onChanged={(next) => { if (next.score != null) { const count = ratedCount + 1; setRatedCount(count); if (count >= CALIBRATION_TARGET) advance("dna"); } }} />
     </SafeAreaView>
   );
 }
