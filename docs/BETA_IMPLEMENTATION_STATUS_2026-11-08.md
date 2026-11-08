@@ -3,7 +3,7 @@
 Branch: `codex/beta-completion-nov08`  
 Reviewed baseline: `c43c03460bc7d00e93018fc857cbaa773a041378`
 
-This is the first implementation batch against the November 8 brief. It is a draft for review, not a declaration that the full brief or live product is complete. Production deployment has not been performed.
+This is the first implementation batch against the November 8 brief, ready for review in PR #1. It is not a declaration that the full brief or live product is complete. The Netlify deploy preview is available; production deployment has not been performed. The live API lacks the new collection/decision endpoints. See `deploy/EXISTING_BETA_ROLLOUT.md` for the prepared backend-first rollout and the remaining Google Cloud access dependency.
 
 ## Implemented in this branch
 
@@ -22,6 +22,7 @@ This is the first implementation batch against the November 8 brief. It is a dra
 
 - 43 backend regression tests passed on an isolated PostgreSQL 17 database. Coverage includes 605-title collections, a move from position 605 to 3, concurrent rating edits with the same expected version, collection ownership, sparse metadata, strict model responses, relevance gating, refinement/Undo/replay, and exact Watched counts.
 - The full Alembic chain from an empty PostgreSQL database through `20261108_0037` completed successfully.
+- Five deployment safety tests passed for the prepared Cloud Run rollout command: preflight rejects mismatched database/jobs or disabled Concierge, backups precede migration, migration precedes service deployment, and candidate checks precede traffic promotion. These tests do not constitute a cloud deployment.
 - TypeScript checking and the Node 20 Expo web export succeeded. These are compile/build checks, not visual acceptance.
 - Model and TMDB responses in automated tests are controlled fixtures. No live Concierge account/model/region smoke test has been claimed.
 - No iPhone/iPad visual or playback acceptance has been claimed. Local headless Chromium could not start because this workspace does not support its required Unix socket; screenshots still need a supported browser/device environment.
