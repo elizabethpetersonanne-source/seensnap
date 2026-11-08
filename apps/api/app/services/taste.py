@@ -2137,17 +2137,7 @@ def _collect_title_signals(db: Session, user_id: UUID) -> tuple[defaultdict[str,
             bonus += max(10 - item.position, 1)
         apply_title(title, bonus)
 
-    team_rankings = (
-        db.execute(
-            select(TeamRanking, ContentTitle)
-            .join(ContentTitle, ContentTitle.id == TeamRanking.content_title_id)
-            .where(TeamRanking.team_id.in_(team_ids))
-        ).all()
-        if team_ids
-        else []
-    )
-    for ranking, title in team_rankings:
-        apply_title(title, max(12 - ranking.rank, 2) + float(ranking.score))
+    # Team curation is not the viewer's personal rating evidence.
 
     reactions = db.scalar(select(func.count(FeedReaction.id)).where(FeedReaction.user_id == user_id)) or 0
     if reactions and genre_scores:

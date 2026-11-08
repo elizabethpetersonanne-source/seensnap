@@ -1,4 +1,4 @@
-import { Redirect, Stack, useSegments, router } from "expo-router";
+import { Redirect, Stack, useSegments, usePathname, useGlobalSearchParams, router } from "expo-router";
 import * as Notifications from "expo-notifications";
 import * as SessionStorage from "@/lib/session-storage";
 import { useEffect, useRef, useState } from "react";
@@ -20,7 +20,9 @@ import {
   IBMPlexMono_600SemiBold,
 } from "@expo-google-fonts/ibm-plex-mono";
 
+import { safeReturnPath } from "@/lib/return-path";
 import { colors } from "@/constants/theme";
+import { DetailNavigation } from "@/components/detail-navigation";
 import { DidYouWatchPrompt } from "@/components/did-you-watch-prompt";
 import { AuthProvider, useAuth } from "@/lib/auth";
 import { apiRequest } from "@/lib/api";
@@ -41,7 +43,12 @@ function BootScreen() {
 function AuthGate() {
   const { isLoading, sessionToken, isExpoGo, user } = useAuth();
   const segments = useSegments();
+  const pathname = usePathname();
+  const routeParams = useGlobalSearchParams();
+  const returnTo = safeReturnPath(routeParams.returnTo);
+  const requestedPath = safeReturnPath(pathname + (pathname === "/teams/join" && typeof routeParams.code === "string" ? `?code=${routeParams.code}` : ""));
   const inAuthRoute = segments[0] === "sign-in";
+  const publicListRoute = segments[0] === "lists" || segments[0] === "list";
   const inOnboarding = segments[0] === "onboarding";
   const responseListener = useRef<{ remove: () => void } | null>(null);
   const openedNotifications = useRef(new Set<string>());
@@ -118,24 +125,24 @@ function AuthGate() {
     return <BootScreen />;
   }
 
-  if (!sessionToken && !inAuthRoute) {
-    return <Redirect href="/sign-in" />;
+  if (!sessionToken && !inAuthRoute && !publicListRoute) {
+    return <Redirect href={{pathname:"/sign-in",params:requestedPath?{returnTo:requestedPath}:{}}} />;
   }
 
   if (sessionToken && inAuthRoute) {
     if (onboardingStatus === "pending") {
-      return <Redirect href="/onboarding" />;
+      return <Redirect href={{pathname:"/onboarding",params:(returnTo??requestedPath)?{returnTo:(returnTo??requestedPath)!}:{}}} />;
     }
-    return <Redirect href="/(tabs)" />;
+    return <Redirect href={(returnTo??"/(tabs)") as Parameters<typeof router.replace>[0]} />;
   }
 
   if (sessionToken && !inOnboarding && onboardingStatus === "pending") {
-    return <Redirect href="/onboarding" />;
+    return <Redirect href={{pathname:"/onboarding",params:(returnTo??requestedPath)?{returnTo:(returnTo??requestedPath)!}:{}}} />;
   }
 
   return (
-    <>
-      <Stack screenOptions={{ headerShown: false }}>
+    <View style={{flex:1}}>
+      <View style={{flex:1}}><Stack screenOptions={{ headerShown: false }}>
         <Stack.Screen name="sign-in" />
         <Stack.Screen name="(tabs)" />
         <Stack.Screen name="profile/[userId]" />
@@ -170,10 +177,11 @@ function AuthGate() {
         <Stack.Screen name="favorites/list/[listId]" options={{ animation: "slide_from_right" }} />
         {/* All of another user's ranked favorites, tapped from profile. */}
         <Stack.Screen name="profile/ranked/[userId]" options={{ animation: "slide_from_right" }} />
-      </Stack>
+      </Stack></View>
+      <DetailNavigation />
       {/* Oct-18 §8: Did you watch? overlay on meaningful return from a provider launch. */}
       <DidYouWatchPrompt />
-    </>
+    </View>
   );
 }
 

@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 from app.models.social import Block, PeopleDismissal, UserFollow
 from app.models.taste import UserSignal
 from app.models.user import User, UserProfile
+from app.services.visibility import visible_profile_clause
 from app.services.teams import list_user_teams
 
 
@@ -99,7 +100,7 @@ def _eligible_candidate_ids(
 
     # Start from every user with a profile marked discovery_enabled.
     base = db.execute(
-        select(UserProfile.user_id).where(UserProfile.discovery_enabled.is_(True))
+        select(UserProfile.user_id).where(UserProfile.discovery_enabled.is_(True),visible_profile_clause(UserProfile.user_id,viewer_id))
     ).all()
     ids: set[UUID] = {row[0] for row in base if row[0] != viewer_id}
 

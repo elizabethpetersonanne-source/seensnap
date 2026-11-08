@@ -1153,15 +1153,15 @@ function FeedCard({
         <Pressable
           style={styles.cardListBlock}
           onPress={() => {
-            if (!post.list?.share_token) return;
+            if (!post.list?.id) return;
             trackEvent("social_post_opened", {
               post_id: post.id,
               entry: "list_open",
               post_type: post.post_type,
             });
-            router.push(`/lists/${post.list.share_token}`);
+            router.push(`/list/${post.list.id}`);
           }}
-          disabled={!post.list.share_token}
+          disabled={!post.list.id}
         >
           <Text style={styles.cardListName}>{post.list.name}</Text>
           <Text style={styles.cardListMeta}>

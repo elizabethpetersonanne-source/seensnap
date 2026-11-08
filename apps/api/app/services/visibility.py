@@ -2,7 +2,7 @@
 from uuid import UUID
 
 from sqlalchemy import and_, exists, or_, select, true
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from app.models.social import Block, UserFollow, Watchlist
 
@@ -37,16 +37,20 @@ def can_view_list(db: Session, list_id: UUID, viewer_id: UUID | None) -> bool:
     )) is not None
 
 
+def visible_profile_clause(owner_id, viewer_id):
+    from app.models.user import User, UserPreferences
+    prefs = aliased(UserPreferences)
+    follow = aliased(UserFollow)
+    account = aliased(User)
+    active = exists().where(account.id == owner_id, account.status == 'active')
+    has_prefs = exists().where(prefs.user_id == owner_id)
+    public = exists().where(prefs.user_id == owner_id, prefs.profile_visibility == 'public')
+    following = exists().where(follow.following_user_id == owner_id, follow.follower_user_id == viewer_id)
+    followers = exists().where(prefs.user_id == owner_id, prefs.profile_visibility == 'followers')
+    audience = or_(~has_prefs, public, and_(followers,following)) if viewer_id is not None else or_(~has_prefs,public)
+    return and_(active, unblocked_owner_clause(owner_id,viewer_id), or_(owner_id == viewer_id,audience) if viewer_id else audience)
+
+
 def can_view_profile(db, owner_id, viewer_id):
-    from app.models.user import UserProfile, UserPreferences
-    profile = db.scalar(select(UserProfile.user_id).where(
-        UserProfile.user_id == owner_id, unblocked_owner_clause(UserProfile.user_id, viewer_id),
-    ))
-    if profile is None:
-        return False
-    preferences = db.get(UserPreferences, owner_id)
-    if owner_id == viewer_id or preferences is None or preferences.profile_visibility == "public":
-        return True
-    return preferences.profile_visibility == "followers" and db.scalar(select(UserFollow.id).where(
-        UserFollow.following_user_id == owner_id, UserFollow.follower_user_id == viewer_id,
-    )) is not None
+    from app.models.user import UserProfile
+    return db.scalar(select(UserProfile.user_id).where(UserProfile.user_id==owner_id,visible_profile_clause(UserProfile.user_id,viewer_id))) is not None

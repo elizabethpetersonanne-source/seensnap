@@ -104,7 +104,7 @@ def list_messages_route(
     except msg_svc.MessagingError as e:
         _raise_from_error(e)
     # Reverse to chronological order for the client's default render.
-    hydrated = [msg_svc.hydrate_message(db, m) for m in reversed(msgs)]
+    hydrated = [msg_svc.hydrate_message(db, m, current_user.id) for m in reversed(msgs)]
     return {"items": hydrated}
 
 
@@ -127,7 +127,7 @@ def send_message_route(
         )
     except msg_svc.MessagingError as e:
         _raise_from_error(e)
-    return msg_svc.hydrate_message(db, msg)
+    return msg_svc.hydrate_message(db, msg, current_user.id)
 
 
 @router.post("/conversations/{conversation_id}/read", status_code=status.HTTP_204_NO_CONTENT)

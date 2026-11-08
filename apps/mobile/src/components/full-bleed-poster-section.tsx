@@ -95,7 +95,7 @@ export function FullBleedPosterSection({
     () => (hero ? four.filter((t) => t.id !== hero.id) : four),
     [hero, four],
   );
-  const smallWidth = (width - spacing.lg * 2 - 24) / 4;
+  const smallWidth = Math.max(44, Math.min(150, resolvedHeroHeight * 0.19, (width - spacing.lg * 2 - 24) / 4));
   const smallHeight = smallWidth * (3 / 2);
   const scrolls = smallList.length > 4;
 
@@ -141,7 +141,7 @@ export function FullBleedPosterSection({
       ) : null}
 
       {/* Overlay slot or default title treatment */}
-      <View style={styles.heroBody} pointerEvents="box-none">
+      <View style={[styles.heroBody, { bottom: smallList.length ? smallHeight + 56 + (continuationBottomOffset ?? 0) : 32 }]} pointerEvents="box-none">
         {overlay ? (
           overlay
         ) : hero ? (
@@ -338,6 +338,7 @@ const styles = StyleSheet.create({
   railBtn: {
     alignItems: "center",
     paddingVertical: 4,
+    minHeight: 44,
     minWidth: 44,
   },
   railCount: {

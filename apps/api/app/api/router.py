@@ -82,3 +82,6 @@ api_router.include_router(picks.router, prefix="/me/picks", tags=["picks"])
 # returns top_picks / recently_added / both_want_to_watch / watched
 # in one call.
 api_router.include_router(team_home.router, prefix="/teams", tags=["teams"])
+
+from app.api.routes import media_assets
+api_router.include_router(media_assets.router, prefix="/media-assets", tags=["media-assets"])

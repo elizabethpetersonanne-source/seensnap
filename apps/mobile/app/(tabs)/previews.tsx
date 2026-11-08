@@ -1,4 +1,5 @@
 /** Continuous previews with shared filters, stable list order and direct title actions. */
+import { usePlaybackMute } from "@/lib/playback-preference";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
@@ -95,7 +96,7 @@ export default function PreviewsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = usePlaybackMute();
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);

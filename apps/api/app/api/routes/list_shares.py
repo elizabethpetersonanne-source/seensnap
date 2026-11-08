@@ -8,10 +8,11 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 from uuid import UUID
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.api.dependencies import CurrentUser, DbSession, OptionalCurrentUser
 from app.core.config import settings
@@ -57,6 +58,9 @@ class PublicListResponse(BaseModel):
     item_count: int
     shared_by_display_name: str | None
     items: list[PublicListItemResponse]
+    list_id: UUID | None = None
+    owner_user_id: UUID | None = None
+    next_offset: int | None = None
 
 
 @router.post(
@@ -190,7 +194,7 @@ def revoke_list_share(
 
 
 @router.get("/public/lists/{token}", response_model=PublicListResponse)
-def get_public_shared_list(token: str, db: DbSession, current_user: OptionalCurrentUser) -> PublicListResponse:
+def get_public_shared_list(token: str, db: DbSession, current_user: OptionalCurrentUser, limit: Annotated[int, Query(ge=1,le=100)]=50,offset: Annotated[int, Query(ge=0)]=0) -> PublicListResponse:
     """A token locates a list; its current audience still controls access."""
     share = db.scalar(
         select(ListShare).where(ListShare.token == token, ListShare.revoked_at.is_(None))
@@ -203,35 +207,28 @@ def get_public_shared_list(token: str, db: DbSession, current_user: OptionalCurr
     ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
 
-    items = db.execute(
-        select(WatchlistItem, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(WatchlistItem.watchlist_id == watchlist.id)
-        .order_by(WatchlistItem.created_at.desc())
-    ).all()
+    if offset == 0:
+        share.open_count = (share.open_count or 0) + 1
+        db.commit()
+    return _read_list(db, watchlist, limit, offset)
 
-    profile = db.scalar(
-        select(UserProfile).where(UserProfile.user_id == watchlist.owner_user_id)
-    )
 
-    share.open_count = (share.open_count or 0) + 1
-    db.commit()
+def _read_list(db, watchlist, limit=50, offset=0):
+    total = db.scalar(select(func.count()).select_from(WatchlistItem).where(WatchlistItem.watchlist_id == watchlist.id)) or 0
+    items = db.execute(select(WatchlistItem,ContentTitle).join(ContentTitle,ContentTitle.id==WatchlistItem.content_title_id)
+        .where(WatchlistItem.watchlist_id==watchlist.id)
+        .order_by(WatchlistItem.position.asc().nulls_last(),WatchlistItem.created_at.desc(),WatchlistItem.id)
+        .limit(limit).offset(offset)).all()
+    profile=db.get(UserProfile,watchlist.owner_user_id)
+    return PublicListResponse(name=watchlist.name,description=watchlist.description,item_count=total,
+        list_id=watchlist.id,owner_user_id=watchlist.owner_user_id, shared_by_display_name=profile.display_name if profile else None,
+        next_offset=offset+len(items) if offset+len(items)<total else None,
+        items=[PublicListItemResponse(title_id=t.id,tmdb_id=t.tmdb_id,title=t.title,content_type=t.content_type,
+            poster_url=t.poster_url,backdrop_url=t.backdrop_url,year=t.release_date.year if t.release_date else None) for _,t in items])
 
-    return PublicListResponse(
-        name=watchlist.name,
-        description=watchlist.description,
-        item_count=len(items),
-        shared_by_display_name=profile.display_name if profile else None,
-        items=[
-            PublicListItemResponse(
-                title_id=t.id,
-                tmdb_id=t.tmdb_id,
-                title=t.title,
-                content_type=t.content_type,
-                poster_url=t.poster_url,
-                backdrop_url=t.backdrop_url,
-                year=t.release_date.year if t.release_date else None,
-            )
-            for _, t in items
-        ],
-    )
+@router.get('/lists/{list_id}', response_model=PublicListResponse)
+def get_visible_list(list_id: UUID, db: DbSession, current_user: OptionalCurrentUser,
+    limit: Annotated[int, Query(ge=1,le=100)]=50,offset: Annotated[int, Query(ge=0)]=0):
+    if not can_view_list(db,list_id,current_user.id if current_user else None):
+        raise HTTPException(404,detail='List unavailable.')
+    return _read_list(db,db.get(Watchlist,list_id),limit,offset)

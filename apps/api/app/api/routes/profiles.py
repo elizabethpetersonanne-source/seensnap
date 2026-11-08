@@ -405,18 +405,21 @@ class FollowRow(BaseModel):
     display_name: str | None
     avatar_url: str | None
     bio: str | None
+    is_following: bool = False
     followed_at: str  # ISO8601 — when the current user started following (or was followed)
 
 
 class FollowListResponse(BaseModel):
     items: list[FollowRow]
     total: int
+    next_offset: int | None = None
 
 
 def _list_relationships(
     db,
     *,
     subject_user_id: UUID,
+    viewer_id: UUID,
     direction: str,  # "following" (subject follows others) | "followers" (others follow subject)
     limit: int,
     offset: int,
@@ -428,16 +431,14 @@ def _list_relationships(
         subj_col = UserFollow.following_user_id
         other_col = UserFollow.follower_user_id
 
-    total = db.scalar(select(func.count(UserFollow.id)).where(subj_col == subject_user_id)) or 0
-
-    rows = db.execute(
-        select(UserFollow, UserProfile)
-        .join(UserProfile, UserProfile.user_id == other_col)
-        .where(subj_col == subject_user_id)
-        .order_by(UserFollow.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    ).all()
+    from app.services.visibility import visible_profile_clause
+    _require_profile(db, subject_user_id, viewer_id)
+    stmt = select(UserFollow, UserProfile).join(UserProfile, UserProfile.user_id == other_col).where(
+        subj_col == subject_user_id, visible_profile_clause(UserProfile.user_id, viewer_id))
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.execute(stmt.order_by(UserFollow.created_at.desc(), UserFollow.id).limit(limit).offset(offset)).all()
+    followed = set(db.scalars(select(UserFollow.following_user_id).where(UserFollow.follower_user_id==viewer_id,
+        UserFollow.following_user_id.in_([profile.user_id for _,profile in rows]))).all())
 
     items = [
         FollowRow(
@@ -447,10 +448,11 @@ def _list_relationships(
             avatar_url=profile.avatar_url,
             bio=profile.bio,
             followed_at=follow.created_at.isoformat(),
+            is_following=profile.user_id in followed,
         )
         for follow, profile in rows
     ]
-    return FollowListResponse(items=items, total=int(total))
+    return FollowListResponse(items=items, total=int(total),next_offset=offset+len(items) if offset+len(items)<total else None)
 
 
 @router.get("/{user_id}/following", response_model=FollowListResponse)
@@ -465,7 +467,7 @@ def list_profile_following(
     identity restriction beyond auth."""
     _ = current_user  # auth required, but no additional per-viewer filter
     return _list_relationships(
-        db, subject_user_id=user_id, direction="following", limit=limit, offset=offset
+        db, subject_user_id=user_id, viewer_id=current_user.id, direction="following", limit=limit, offset=offset
     )
 
 
@@ -480,5 +482,5 @@ def list_profile_followers(
     """Hydrated list of users who follow this profile."""
     _ = current_user
     return _list_relationships(
-        db, subject_user_id=user_id, direction="followers", limit=limit, offset=offset
+        db, subject_user_id=user_id, viewer_id=current_user.id, direction="followers", limit=limit, offset=offset
     )

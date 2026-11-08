@@ -1,5 +1,5 @@
 import * as SessionStorage from "@/lib/session-storage";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Animated,
@@ -17,6 +17,7 @@ import {
   View,
 } from "react-native";
 
+import { safeReturnPath } from "@/lib/return-path";
 import { Ionicons } from "@expo/vector-icons";
 import { RatingEditor } from "@/components/rating-editor";
 import { GoldButton } from "@/components/gold-button";
@@ -158,6 +159,8 @@ function BasicsBody({
 
 export default function OnboardingScreen() {
   const { sessionToken, user, updateSessionUser } = useAuth();
+  const {returnTo}=useLocalSearchParams<{returnTo?:string}>();
+  const destination=(safeReturnPath(returnTo)??"/(tabs)") as Parameters<typeof router.replace>[0];
   const [step, setStep] = useState<Step>("welcome");
   const [displayName, setDisplayName] = useState(user?.display_name ?? "");
   const [selectedServices, setSelectedServices] = useState<Set<string>>(new Set());
@@ -565,7 +568,7 @@ export default function OnboardingScreen() {
   async function skip() {
     if (await completeOnboarding()) {
       trackEvent("onboarding_completed", { swipes: swipeCount, skipped_at: step });
-      router.replace("/(tabs)");
+      router.replace(destination);
     }
   }
 
@@ -967,7 +970,7 @@ export default function OnboardingScreen() {
                 services_count: selectedServices.size,
                 swipes: swipeCount,
               });
-              router.replace("/(tabs)");
+              router.replace(destination);
             }}
             style={styles.cta}
           />
@@ -1000,7 +1003,7 @@ export default function OnboardingScreen() {
             onPress={() => router.replace("/(tabs)/swipe")}
             style={[styles.cta, { marginTop: spacing.xl }]}
           />
-          <Pressable style={styles.skipLink} onPress={() => router.replace("/(tabs)")}>
+          <Pressable style={styles.skipLink} onPress={() => router.replace(destination)}>
             <Text style={styles.skipLinkText}>Browse Discover first</Text>
           </Pressable>
         </View>

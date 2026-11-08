@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Response, status
+from fastapi import UploadFile, File, APIRouter, BackgroundTasks, HTTPException, Response, status
 from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
@@ -431,6 +431,7 @@ def _to_team_summary(
         last_activity_at=team.last_activity_at,
         latest_activity=latest_text,
         recent_member_avatars=[avatar for avatar in avatars if avatar],
+        poster_artwork=list(db.scalars(select(ContentTitle.poster_url).join(TeamTitle,TeamTitle.content_title_id==ContentTitle.id).where(TeamTitle.team_id==team.id,ContentTitle.poster_url.is_not(None)).order_by(TeamTitle.added_at.desc(),TeamTitle.id).limit(4)).all()),
         **derived,
     )
 
@@ -516,9 +517,35 @@ def _to_team_ranking_response(row: TeamRanking, title: ContentTitle | None) -> T
         team_id=row.team_id,
         content_title_id=row.content_title_id,
         rank=row.rank,
-        score=float(row.score),
+        score=None,
         movement=row.movement,
         weeks_on_list=row.weeks_on_list,
         title_name=title.title if title is not None else "Untitled",
         poster_url=title.poster_url if title is not None else None,
     )
+
+
+@router.post("/{team_id}/image", response_model=TeamResponse)
+def upload_team_image(team_id: UUID, current_user: CurrentUser, db: DbSession, file: UploadFile = File(...)):
+    from app.services.teams import require_team_admin_or_owner
+    from app.services.media_assets import store_image, remove_owned_asset
+    team, _ = require_team_admin_or_owner(db, team_id, current_user.id)
+    db.scalar(select(TeamModel.id).where(TeamModel.id == team_id).with_for_update())
+    db.refresh(team)
+    old_url = team.cover_image
+    team.cover_image = store_image(db, current_user.id, file.file, 'team', team_id=team_id)
+    remove_owned_asset(db, old_url, team_id=team_id)
+    db.commit()
+    return _load_team_response(db, team, viewer_user_id=current_user.id)
+
+@router.delete("/{team_id}/image", response_model=TeamResponse)
+def delete_team_image(team_id: UUID, current_user: CurrentUser, db: DbSession):
+    from app.services.teams import require_team_admin_or_owner
+    from app.services.media_assets import remove_owned_asset
+    team, _ = require_team_admin_or_owner(db, team_id, current_user.id)
+    db.scalar(select(TeamModel.id).where(TeamModel.id == team_id).with_for_update())
+    db.refresh(team)
+    remove_owned_asset(db, team.cover_image, team_id=team_id)
+    team.cover_image = None
+    db.commit()
+    return _load_team_response(db, team, viewer_user_id=current_user.id)

@@ -386,12 +386,12 @@ function ContentCard({ message }: { message: MessageDto }) {
         </View>
       );
     }
-    const isOpenable = Boolean(l.share_token);
+    const isOpenable = Boolean(l.id);
     return (
       <Pressable
         style={({ pressed }) => [styles.listCard, pressed && isOpenable && { opacity: 0.75 }]}
         onPress={() => {
-          if (l.share_token) router.push(`/lists/${l.share_token}`);
+          if (l.id) router.push(`/list/${l.id}`);
         }}
         disabled={!isOpenable}
       >

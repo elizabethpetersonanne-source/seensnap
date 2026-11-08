@@ -9,9 +9,10 @@
  */
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, StyleSheet, View } from "react-native";
+import { ActivityIndicator, Pressable, Text, StyleSheet, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { AppHeader } from "@/components/headers/app-header";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { colors } from "@/constants/theme";
@@ -25,16 +26,18 @@ export default function SharedTitleScreen() {
   const { sessionToken } = useAuth();
   const [title, setTitle] = useState<UniversalTitle | null>(null);
   const [loading, setLoading] = useState(true);
+  const [retry,setRetry]=useState(0);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
 
   useEffect(() => {
     if (!tmdbId) return;
     trackEvent("shared_title_opened", { kind, tmdb_id: tmdbId });
-    let cancelled = false;
+    let cancelled = false;setLoading(true);setTitle(null);
     async function load() {
       try {
-        const mediaType = normalizeMediaType(kind) ?? "movie";
+        const mediaType = normalizeMediaType(kind);
+        if(!mediaType)return;
         // Oct-27 spec ID-01: strict external parse. The {tmdbId} slot
         // must be either a strictly numeric TMDB id OR an internal
         // UUID — never a partial numeric parse of a UUID that starts
@@ -65,17 +68,18 @@ export default function SharedTitleScreen() {
     return () => {
       cancelled = true;
     };
-  }, [kind, tmdbId, sessionToken]);
+  }, [kind, tmdbId, sessionToken,retry]);
 
   return (
-    <SafeAreaView style={styles.safeArea}>
+    <SafeAreaView style={styles.safeArea} edges={[]}>
+      <AppHeader variant="detail" leftKind="back" title={title?.title??"Shared title"}/>
       {loading ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.accent} />
         </View>
       ) : null}
       <UniversalTitleModal
-        visible={!loading}
+        visible={!loading && !!title}
         loading={false}
         title={title}
         onClose={() => {
@@ -87,6 +91,7 @@ export default function SharedTitleScreen() {
           setShowSaveSheet(true);
         }}
       />
+      {!loading&&!title?<View style={styles.center}><Text style={{fontSize:16,color:colors.ink}}>This title could not be loaded. Check your connection or ask for a new link.</Text><Pressable style={{minHeight:44,padding:12}} onPress={()=>setRetry(n=>n+1)}><Text style={{color:colors.accent,fontSize:16}}>Retry</Text></Pressable></View>:null}
       <SaveToListSheet
         visible={showSaveSheet}
         token={sessionToken}

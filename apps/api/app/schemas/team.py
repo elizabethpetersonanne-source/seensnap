@@ -50,6 +50,7 @@ class TeamSummaryResponse(BaseModel):
     member_count: int
     last_activity_at: datetime | None = None
     latest_activity: str | None = None
+    poster_artwork: list[str] = Field(default_factory=list)
     recent_member_avatars: list[str] = Field(default_factory=list)
     # Watch Teams overhaul (brief §8): fields that power the "inbox of group
     # momentum" pattern on Teams Home + the sticky pulse header on detail.
@@ -83,7 +84,7 @@ class TeamRankingResponse(BaseModel):
     team_id: UUID
     content_title_id: UUID
     rank: int
-    score: float
+    score: float | None = None  # Curated rank is not a member rating.
     movement: str
     weeks_on_list: int
     title_name: str

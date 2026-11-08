@@ -29,6 +29,8 @@ import {
 } from "react-native";
 import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { AppHeader } from "@/components/headers/app-header";
+import { ProtectedImage } from "@/components/protected-image";
 import { Avatar } from "@/components/avatar";
 import { CompatibilitySheet } from "@/components/compatibility-sheet";
 import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
@@ -107,6 +109,8 @@ export default function PublicProfileScreen() {
   const [lists, setLists] = useState<PublicList[]>([]);
   const [posts, setPosts] = useState<PublicPost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError,setLoadError]=useState<string|null>(null);
+  const [retry,setRetry]=useState(0);
   const [showCompatSheet, setShowCompatSheet] = useState(false);
 
   const [titleModalId, setTitleModalId] = useState<string | null>(null);
@@ -119,26 +123,28 @@ export default function PublicProfileScreen() {
     useCallback(() => {
       let cancelled = false;
       if (!sessionToken || !userId) return;
-      setLoading(true);
+      setLoading(true);setLoadError(null);
       Promise.allSettled([
         apiRequest<PublicProfile>(`/profiles/${userId}`, { token: sessionToken }),
-        apiRequest<{ items: RankedRow[]; total: number }>(`/profiles/${userId}/favorites/ranked`, { token: sessionToken }).catch(() => ({ items: [], total: 0 })),
-        apiRequest<PublicList[]>(`/profiles/${userId}/public-lists`, { token: sessionToken }).catch(() => []),
-        apiRequest<PublicPost[]>(`/profiles/${userId}/posts?limit=10`, { token: sessionToken }).catch(() => []),
+        apiRequest<{ items: RankedRow[]; total: number }>(`/profiles/${userId}/favorites/ranked`, { token: sessionToken }),
+        apiRequest<PublicList[]>(`/profiles/${userId}/public-lists`, { token: sessionToken }),
+        apiRequest<PublicPost[]>(`/profiles/${userId}/posts?limit=10`, { token: sessionToken }),
       ]).then((results) => {
         if (cancelled) return;
-        if (results[0].status === "fulfilled") setProfile(results[0].value);
+        if(results.some(r=>r.status==="rejected"))setLoadError("Some profile content could not be loaded. Please retry.");
+        if (results[0].status === "fulfilled") setProfile(results[0].value); else {setProfile(null);setRanked([]);setLists([]);setPosts([]);return;}
         if (results[1].status === "fulfilled") setRanked(results[1].value?.items ?? []);
-        if (results[2].status === "fulfilled") setLists(results[2].value ?? []);
+        if (results[2].status === "fulfilled") setLists(results[2].value ?? []);else setLists([]);
         if (results[3].status === "fulfilled") setPosts(results[3].value ?? []);
       }).finally(() => {
         if (!cancelled) setLoading(false);
       });
       return () => { cancelled = true; };
-    }, [sessionToken, userId]),
+    }, [sessionToken, userId,retry]),
   );
 
-  const sectionHeight = height - insets.top - insets.bottom;
+  const [sectionHeight,setSectionHeight]=useState(Math.max(320,height-insets.top-insets.bottom-120));
+  const [rankedSelection,setRankedSelection]=useState<string|null>(null);
 
   async function openTitle(titleId: string) {
     if (!sessionToken) return;
@@ -177,8 +183,8 @@ export default function PublicProfileScreen() {
   }
 
   const topFour = ranked.slice(0, 4);
-  const rankedHero = ranked[0];
-  const rankedFour = ranked.slice(1, 5);
+  const rankedHero = ranked.find(r=>r.title_id===rankedSelection)??ranked[0];
+  const rankedFour = ranked.filter(r=>r.title_id!==rankedHero?.title_id);
   const activityPost = posts.find((p) => p.title_id) ?? null;
 
   const pages: { key: PageKey }[] = useMemo(() => {
@@ -208,7 +214,7 @@ export default function PublicProfileScreen() {
 
   function sharePublic() {
     if (!profile) return;
-    const url = `https://seensnap.com/profiles/${profile.username}`;
+    const url = `https://seensnap.app/profile/${profile.user_id}`;
     void Share.share({ message: `${profile.display_name} on SeenSnap — ${url}` }).catch(() => {});
   }
 
@@ -221,17 +227,10 @@ export default function PublicProfileScreen() {
   }
 
   return (
-    <SafeAreaView style={styles.root} edges={["top"]}>
-      <View style={styles.topBar} pointerEvents="box-none">
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.topBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <View style={{ flex: 1 }} />
-        <Pressable onPress={sharePublic} hitSlop={10} style={styles.topBtn}>
-          <Ionicons name="ellipsis-horizontal" size={20} color={colors.ink} />
-        </Pressable>
-      </View>
-
+    <SafeAreaView style={styles.root} edges={[]}>
+      <AppHeader variant="detail" leftKind="back" title={profile?.display_name??'Profile'} rightSlot={<Pressable style={{width:44,height:44,alignItems:'center',justifyContent:'center'}} onPress={sharePublic} accessibilityLabel="Share profile"><Ionicons name="share-outline" size={22} color={colors.ink}/></Pressable>}/>
+      {loadError?<View style={{paddingHorizontal:20,paddingVertical:8}}><Text style={{color:colors.muted,fontSize:15}}>{loadError}</Text><Pressable style={{minHeight:44,justifyContent:"center"}} onPress={()=>setRetry(n=>n+1)}><Text style={{color:colors.accent}}>Retry</Text></Pressable></View>:null}
+      <View style={{flex:1}} onLayout={e=>setSectionHeight(e.nativeEvent.layout.height)}>
       {loading && !profile ? (
         <View style={[styles.center, { height: sectionHeight }]}>
           <ActivityIndicator color={colors.accent} />
@@ -282,7 +281,7 @@ export default function PublicProfileScreen() {
                     hero={rankedToFullBleed(rankedHero)}
                     four={rankedFour.map(rankedToFullBleed)}
                     onPressHero={() => void openTitle(rankedHero.title_id)}
-                    onPressContinuation={(t) => void openTitle(t.id)}
+                    onPressContinuation={(t) => setRankedSelection(t.id)}
                     railActions={[]}
                   />
                 </View>
@@ -290,19 +289,15 @@ export default function PublicProfileScreen() {
             }
             if (item.key === "lists") {
               const hero = lists[0];
-              const four = lists.slice(1, 5);
-              const openPreviews = (listId: string) =>
-                router.push({
-                  pathname: "/(tabs)/previews",
-                  params: { list_id: listId, owner_id: String(userId) },
-                });
+              const four = lists.slice(1);
+              const openList = (listId: string) => router.push(`/list/${listId}`);
               return (
                 <View style={{ height: sectionHeight }}>
                   <Pressable
                     style={styles.listHeroWrap}
-                    onPress={() => openPreviews(hero.list_id)}
+                    onPress={() => openList(hero.list_id)}
                     accessibilityRole="button"
-                    accessibilityLabel={`Watch previews of ${hero.name}`}
+                    accessibilityLabel={`Open list ${hero.name}`}
                   >
                     <Image
                       source={{ uri: hero.preview_posters[0] }}
@@ -314,16 +309,16 @@ export default function PublicProfileScreen() {
                       <Text style={styles.sectionKicker}>PUBLIC LISTS</Text>
                       <Text style={styles.listHeroName}>{hero.name}</Text>
                       <Text style={styles.listHeroMeta}>
-                        {hero.item_count} title{hero.item_count === 1 ? "" : "s"} · Tap to watch previews
+                        {hero.item_count} title{hero.item_count === 1 ? "" : "s"} · Tap to open list
                       </Text>
                     </View>
                     {four.length > 0 ? (
-                      <View style={styles.listsRow}>
+                      <ScrollView horizontal style={styles.listsRow} contentContainerStyle={{gap:12}} showsHorizontalScrollIndicator={false}>
                         {four.map((l) => (
                           <Pressable
                             key={l.list_id}
                             style={styles.listTile}
-                            onPress={() => openPreviews(l.list_id)}
+                            onPress={() => openList(l.list_id)}
                           >
                             {l.preview_posters[0] ? (
                               <Image source={{ uri: l.preview_posters[0] }} style={styles.listTilePoster} />
@@ -335,7 +330,7 @@ export default function PublicProfileScreen() {
                             <Text style={styles.listTileName} numberOfLines={1}>{l.name}</Text>
                           </Pressable>
                         ))}
-                      </View>
+                      </ScrollView>
                     ) : null}
                   </Pressable>
                 </View>
@@ -358,6 +353,7 @@ export default function PublicProfileScreen() {
         />
       )}
 
+      </View>
       <UniversalTitleModal
         visible={titleModalId !== null}
         title={universalTitle}
@@ -399,6 +395,7 @@ function IdentityPage({
   onLoop: () => void;
   onViewCompat?: () => void;
 }) {
+  const router = useRouter();
   // Hero backdrop from top poster or avatar — avoids a blank header
   // when no cover image is present. Spec image 1 shows a cinematic
   // environmental photo; we approximate by using the first ranked
@@ -407,7 +404,7 @@ function IdentityPage({
   return (
     <View style={{ height, backgroundColor: "#000" }}>
       {heroImage ? (
-        <Image
+        <ProtectedImage
           source={{ uri: resolveMediaUrl(heroImage) ?? heroImage }}
           style={[StyleSheet.absoluteFillObject, { height: height * 0.55 }]}
           resizeMode="cover"
@@ -428,14 +425,14 @@ function IdentityPage({
           ) : null}
 
           <View style={styles.counterRow}>
-            <View style={styles.counterCol}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Followers" style={styles.counterCol} onPress={() => router.push(`/follows/${profile.user_id}?mode=followers`)}>
               <Text style={styles.counterValue}>{formatCount(profile.follower_count)}</Text>
               <Text style={styles.counterLabel}>Followers</Text>
-            </View>
-            <View style={styles.counterCol}>
+            </Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel="Following" style={styles.counterCol} onPress={() => router.push(`/follows/${profile.user_id}?mode=following`)}>
               <Text style={styles.counterValue}>{formatCount(profile.following_count)}</Text>
               <Text style={styles.counterLabel}>Following</Text>
-            </View>
+            </Pressable>
             {profile.compatibility ? (
               <Pressable
                 style={styles.counterCol}
