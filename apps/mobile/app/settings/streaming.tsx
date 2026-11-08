@@ -1,3 +1,5 @@
+import { CountrySelector } from "@/components/country-selector";
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-18 UI/UX rebuild: Streaming Services sub-screen.
  * Spec image 4 (step 5). Connect / Connected list, tap to toggle.
@@ -5,7 +7,7 @@
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -21,74 +23,144 @@ import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { STREAMING_SERVICES } from "@/lib/streaming";
 
-
 type Prefs = {
   connected_streaming_services: string[];
+  preferred_regions: string[];
 };
-
 
 export default function StreamingSettingsScreen() {
   const { sessionToken } = useAuth();
   const [loading, setLoading] = useState(true);
   const [connected, setConnected] = useState<string[]>([]);
+  const [country, setCountry] = useState("US");
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [retry, setRetry] = useState(0);
+  const busy = useRef(false),
+    generation = useRef(0);
 
   useEffect(() => {
     if (!sessionToken) return;
     let cancelled = false;
+    const version = ++generation.current;
+    setLoading(true);
+    setError(null);
+    setLoaded(false);
     apiRequest<Prefs>("/me/preferences", { token: sessionToken })
-      .then((res) => { if (!cancelled) setConnected(res.connected_streaming_services ?? []); })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [sessionToken]);
+      .then((res) => {
+        if (!cancelled) {
+          setConnected(res.connected_streaming_services ?? []);
+          setCountry(res.preferred_regions?.[0] ?? "US");
+          setLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled)
+          setError("Your viewing preferences could not load. Please retry.");
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+      generation.current++;
+    };
+  }, [sessionToken, retry]);
 
+  async function save(patch: Partial<Prefs>) {
+    if (!sessionToken || busy.current || !loaded) return;
+    const version = generation.current;
+    busy.current = true;
+    setSaving(true);
+    setError(null);
+    try {
+      const next = await apiRequest<Prefs>("/me/preferences", {
+        method: "PATCH",
+        token: sessionToken,
+        body: JSON.stringify(patch),
+      });
+      if (version !== generation.current) return;
+      setConnected(next.connected_streaming_services);
+      setCountry(next.preferred_regions?.[0] ?? "US");
+    } catch {
+      if (version === generation.current)
+        setError("Your changes were not saved. Please try again.");
+    } finally {
+      busy.current = false;
+      if (version === generation.current) setSaving(false);
+    }
+  }
   async function toggle(serviceId: string) {
-    if (!sessionToken) return;
     const next = connected.includes(serviceId)
       ? connected.filter((s) => s !== serviceId)
       : [...connected, serviceId];
-    setConnected(next);
-    try {
-      await apiRequest("/me/preferences", {
-        method: "PATCH",
-        token: sessionToken,
-        body: JSON.stringify({ connected_streaming_services: next }),
-      });
-    } catch {
-      // Revert on failure.
-      setConnected(connected);
-    }
+    await save({ connected_streaming_services: next });
   }
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Streaming Services</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader
+        variant="detail"
+        leftKind="back"
+        title="Streaming Services"
+        ownsSafeArea={false}
+      />
 
       {loading ? (
-        <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
+        <View style={styles.center}>
+          <ActivityIndicator color={colors.accent} />
+        </View>
       ) : (
         <ScrollView contentContainerStyle={styles.body}>
           <Text style={styles.lead}>
-            Pick the services you subscribe to. We'll use this to filter Where to Watch
-            cards so recommendations stay useful. This is a selected subscription — it
-            doesn't log in to the provider for you.
+            Pick the services you subscribe to. We'll use this to filter Where
+            to Watch cards so recommendations stay useful. This is a selected
+            subscription — it doesn't log in to the provider for you.
           </Text>
+          {error ? (
+            <Text
+              accessibilityRole="alert"
+              style={{ color: colors.accent, fontSize: 16 }}
+            >
+              {error}
+            </Text>
+          ) : null}
+          {!loaded ? (
+            <Pressable
+              onPress={() => setRetry((n) => n + 1)}
+              style={{ minHeight: 48, justifyContent: "center" }}
+            >
+              <Text style={{ color: colors.ink }}>Retry</Text>
+            </Pressable>
+          ) : null}
+          <CountrySelector
+            value={country}
+            onChange={(code) => void save({ preferred_regions: [code] })}
+            disabled={saving || !loaded}
+          />
+          {saving ? (
+            <ActivityIndicator
+              accessibilityLabel="Saving viewing preferences"
+              color={colors.accent}
+            />
+          ) : null}
           {STREAMING_SERVICES.map((service) => {
             const on = connected.includes(service.id);
             return (
               <Pressable
                 key={service.id}
-                style={({ pressed }) => [styles.row, pressed && { opacity: 0.6 }]}
+                disabled={saving || !loaded}
+                style={({ pressed }) => [
+                  styles.row,
+                  pressed && { opacity: 0.6 },
+                ]}
                 onPress={() => void toggle(service.id)}
               >
                 <View style={[styles.logo, { backgroundColor: service.color }]}>
-                  <Text style={[styles.logoText, { color: service.textColor }]}>{service.shortName}</Text>
+                  <Text style={[styles.logoText, { color: service.textColor }]}>
+                    {service.shortName}
+                  </Text>
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.serviceName}>{service.name}</Text>
@@ -98,7 +170,11 @@ export default function StreamingSettingsScreen() {
                 </View>
                 {on ? (
                   <View style={styles.connectedPill}>
-                    <Ionicons name="checkmark-circle" size={14} color={colors.success} />
+                    <Ionicons
+                      name="checkmark-circle"
+                      size={14}
+                      color={colors.success}
+                    />
                     <Text style={styles.connectedLabel}>Selected</Text>
                   </View>
                 ) : (
@@ -116,7 +192,6 @@ export default function StreamingSettingsScreen() {
   );
 }
 
-
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   header: {
@@ -127,8 +202,19 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: "rgba(255,255,255,0.08)",
   },
-  closeBtn: { width: 36, height: 36, alignItems: "center", justifyContent: "center" },
-  headerTitle: { flex: 1, textAlign: "center", fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 15 },
+  closeBtn: {
+    width: 36,
+    height: 36,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  headerTitle: {
+    flex: 1,
+    textAlign: "center",
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 15,
+  },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
   body: { padding: spacing.lg, gap: 8 },
   lead: {
@@ -154,8 +240,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   logoText: { fontFamily: fonts.sansBold, fontSize: 13 },
-  serviceName: { fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 14 },
-  serviceSub: { marginTop: 2, fontFamily: fonts.sans, color: colors.muted, fontSize: 11 },
+  serviceName: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.ink,
+    fontSize: 14,
+  },
+  serviceSub: {
+    marginTop: 2,
+    fontFamily: fonts.sans,
+    color: colors.muted,
+    fontSize: 11,
+  },
   connectedPill: {
     flexDirection: "row",
     alignItems: "center",
@@ -165,7 +260,11 @@ const styles = StyleSheet.create({
     borderRadius: 999,
     backgroundColor: "rgba(74,222,128,0.1)",
   },
-  connectedLabel: { fontFamily: fonts.sansSemiBold, color: colors.success, fontSize: 11 },
+  connectedLabel: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.success,
+    fontSize: 11,
+  },
   connectBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -176,5 +275,9 @@ const styles = StyleSheet.create({
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: colors.accent,
   },
-  connectLabel: { fontFamily: fonts.sansSemiBold, color: colors.accent, fontSize: 11 },
+  connectLabel: {
+    fontFamily: fonts.sansSemiBold,
+    color: colors.accent,
+    fontSize: 11,
+  },
 });

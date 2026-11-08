@@ -15,7 +15,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { AppHeader } from "@/components/headers/app-header";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { selectSafeBackdropAt } from "@/lib/backdrop";
@@ -168,15 +168,7 @@ export default function SearchScreen() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <SeenSnapHeader
-          title="Search"
-          subtitle="What are you looking for?"
-          artworkSource={selectSafeBackdropAt(
-            trending.map((t) => t.backdrop_url),
-            3,
-          )}
-          fallbackSeed={2}
-        />
+        <AppHeader variant="primary" title="Search" />
 
         <View style={styles.searchBar}>
           <Ionicons name="search" size={16} color={colors.muted2} />

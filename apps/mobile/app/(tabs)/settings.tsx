@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-18 UI/UX rebuild: Settings menu.
  *
@@ -38,13 +39,7 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="close" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Settings</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Settings" ownsSafeArea={false} />
 
       <ScrollView contentContainerStyle={styles.body}>
         {ROWS.map((row) => (

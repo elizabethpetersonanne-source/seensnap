@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Ranked Favorites — Top 20 / Top 100 per Sep-22 execution brief §14.
  *
@@ -263,15 +264,8 @@ export default function RankedFavoritesScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.heading}>Ranked favorites</Text>
-        <Pressable onPress={() => void fetchDraft()} hitSlop={10} accessibilityLabel="Rebuild from ratings">
-          <Ionicons name="refresh" size={20} color={colors.accent} />
-        </Pressable>
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Ranked favorites" ownsSafeArea={false}
+        rightSlot={<Pressable onPress={() => void fetchDraft()} accessibilityLabel="Rebuild from ratings" style={{minHeight:44,minWidth:44,justifyContent:'center',alignItems:'center'}}><Ionicons name="refresh" size={20} color={colors.accent}/></Pressable>} />
 
       <View style={styles.viewToggle}>
         {(["all", "top20", "top100"] as const).map((v) => {

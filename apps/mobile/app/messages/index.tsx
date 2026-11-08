@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Messages Inbox — Messaging spec §7-§8.
  *
@@ -68,23 +69,7 @@ export default function MessagesInboxScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <View style={styles.headerRow}>
-        <Pressable
-          onPress={() => (router.canGoBack() ? router.back() : router.replace("/(tabs)"))}
-          hitSlop={10}
-        >
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Messages</Text>
-        <Pressable
-          onPress={() => router.push("/messages/new")}
-          hitSlop={10}
-          accessibilityRole="button"
-          accessibilityLabel="Compose a new message"
-        >
-          <Ionicons name="create-outline" size={22} color={colors.ink} />
-        </Pressable>
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Messages" ownsSafeArea={false} rightSlot={<Pressable onPress={()=>router.push("/messages/new")} style={{minHeight:44,minWidth:44,justifyContent:"center",alignItems:"center"}} accessibilityRole="button" accessibilityLabel="Compose a new message"><Ionicons name="create-outline" size={22} color={colors.ink}/></Pressable>} />
 
       {loading ? (
         <View style={styles.centerState}>

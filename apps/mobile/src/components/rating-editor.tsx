@@ -26,6 +26,8 @@ import {
 
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { patchTitleState } from "@/lib/title-state";
 import { apiRequest, ApiError } from "@/lib/api";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 
@@ -53,18 +55,17 @@ export function subscribeRatingChanges(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 function broadcast(snapshot: RatingSnapshot) {
-  listeners.forEach((l) => l(snapshot.title_id, snapshot));
-  // STATE-02: a rating transition also implies watched=true (server
-  // enforces this). Mirror the save/watched state onto the shared
-  // title-state cache so Discover/Picks/Teams cards update too.
-  // Dynamic import keeps the two modules decoupled and avoids a
-  // cycle with the auth logout hook which also imports title-state.
-  void import("@/lib/title-state").then(({ patchTitleState }) => {
-    patchTitleState(snapshot.title_id, {
-      watched: snapshot.watched_state === "watched",
-      updated_at: snapshot.updated_at,
-      ...(snapshot.is_saved_anywhere != null ? { saved: snapshot.is_saved_anywhere } : {}),
-    });
+  listeners.forEach((l) => {
+    try {
+      l(snapshot.title_id, snapshot);
+    } catch {}
+  });
+  patchTitleState(snapshot.title_id, {
+    watched: snapshot.watched_state === "watched",
+    updated_at: snapshot.updated_at,
+    ...(snapshot.is_saved_anywhere != null
+      ? { saved: snapshot.is_saved_anywhere }
+      : {}),
   });
 }
 
@@ -97,13 +98,31 @@ export function RatingEditor({
   const [error, setError] = useState<string | null>(null);
   const [reload, setReload] = useState(0);
   const busy = useRef(false);
+  const generation = useRef(0);
+  const context = useRef({ token, titleId, visible });
+  // Read on render as well as effect cleanup so a late response cannot cross
+  // accounts or close an editor now showing another title.
+  context.current = { token, titleId, visible };
+  function stillCurrent(version: number) {
+    return (
+      generation.current === version &&
+      context.current.token === token &&
+      context.current.titleId === titleId &&
+      context.current.visible
+    );
+  }
   const { height, width, fontScale } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const columns = fontScale > 1.3 || width < 320 ? 3 : 5;
   const numbers = Array.from({ length: 10 }, (_, i) => i + 1);
-  const rows = Array.from({ length: Math.ceil(10 / columns) }, (_, i) => numbers.slice(i * columns, (i + 1) * columns));
+  const rows = Array.from({ length: Math.ceil(10 / columns) }, (_, i) =>
+    numbers.slice(i * columns, (i + 1) * columns),
+  );
 
   useEffect(() => {
+    generation.current++;
+    busy.current = false;
+    setSaving(false);
     if (!visible || !titleId || !token) return;
     let active = true;
     Keyboard.dismiss();
@@ -113,26 +132,45 @@ export function RatingEditor({
     setLoading(true);
     // Every entry point gets a real concurrency token, including My Picks.
     apiRequest<RatingSnapshot>(`/me/ratings/${titleId}`, { token })
-      .then((next) => { if (active) { setCurrent(next); setPending(next.score); } })
-      .catch(() => { if (active) setError("Couldn't load your rating. Tap Retry to try again."); })
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+      .then((next) => {
+        if (active) {
+          setCurrent(next);
+          setPending(next.score);
+        }
+      })
+      .catch(() => {
+        if (active)
+          setError("Couldn't load your rating. Tap Retry to try again.");
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return () => {
+      active = false;
+      generation.current++;
+    };
   }, [visible, titleId, token, reload]);
 
-  function close() { if (!busy.current) onClose(); }
+  function close() {
+    if (!busy.current) onClose();
+  }
 
   function handleError(e: unknown) {
     if (e instanceof ApiError && e.status === 409) {
       const detail = e.detail as { current?: RatingSnapshot } | null;
       if (detail?.current) setCurrent(detail.current);
-      setError("Your rating changed elsewhere. Your selection is kept; save again to apply it.");
+      setError(
+        "Your rating changed elsewhere. Your selection is kept; save again to apply it.",
+      );
     } else {
       setError("Couldn't save your rating. Please try again.");
     }
   }
 
   async function submit() {
-    if (!token || !titleId || pending == null || !current || busy.current) return;
+    if (!token || !titleId || pending == null || !current || busy.current)
+      return;
+    const version = generation.current;
     busy.current = true;
     setSaving(true);
     setError(null);
@@ -145,105 +183,172 @@ export function RatingEditor({
           expected_version: current.version,
         }),
       });
+      if (!stillCurrent(version)) return;
       broadcast(next);
       onChanged?.(next);
       onClose();
     } catch (e) {
-      handleError(e);
+      if (stillCurrent(version)) handleError(e);
     } finally {
-      busy.current = false;
-      setSaving(false);
+      if (stillCurrent(version)) {
+        busy.current = false;
+        setSaving(false);
+      }
     }
   }
 
   async function clearScore() {
     if (!token || !titleId || !current || busy.current) return;
+    const version = generation.current;
     busy.current = true;
     setSaving(true);
     setError(null);
     try {
-      const next = await apiRequest<RatingSnapshot>(`/me/ratings/${titleId}?expected_version=${current.version}`, {
-        method: "DELETE",
-        token,
-      });
+      const next = await apiRequest<RatingSnapshot>(
+        `/me/ratings/${titleId}?expected_version=${current.version}`,
+        {
+          method: "DELETE",
+          token,
+        },
+      );
+      if (!stillCurrent(version)) return;
       broadcast(next);
       onChanged?.(next);
       onClose();
     } catch (e) {
-      handleError(e);
+      if (stillCurrent(version)) handleError(e);
     } finally {
-      busy.current = false;
-      setSaving(false);
+      if (stillCurrent(version)) {
+        busy.current = false;
+        setSaving(false);
+      }
     }
   }
 
   const hasExisting = current?.score != null;
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={close}>
+    <Modal
+      visible={visible}
+      transparent
+      animationType="fade"
+      onRequestClose={close}
+    >
       <Pressable style={styles.backdrop} onPress={close}>
-        <Pressable style={[styles.sheet, { maxHeight: height - insets.top - insets.bottom - 24 }]} onPress={(e) => e.stopPropagation()}>
-          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={{ gap: 16 }}>
-          <View style={styles.header}>
-            <Text style={styles.title}>Your rating</Text>
-            <Pressable onPress={close} style={styles.closeButton} accessibilityRole="button" accessibilityLabel="Close rating editor">
-              <Ionicons name="close" size={22} color={colors.muted} />
-            </Pressable>
-          </View>
-          {titleName ? (
-            <Text style={styles.titleName} numberOfLines={2}>{titleName}</Text>
-          ) : null}
-          {loading ? <ActivityIndicator color={colors.accent} accessibilityLabel="Loading your rating" /> : null}
-          {rows.map((row, index) => (
-            <View key={index} style={styles.grid}>
-              {row.map((n) => <ScoreCell key={n} n={n} pending={pending} setPending={setPending} disabled={saving || loading || !current} />)}
-              {Array.from({ length: columns - row.length }, (_, i) => <View key={`blank-${i}`} style={{ flex: 1 }} />)}
-            </View>
-          ))}
-          <View style={styles.helperRow}>
-            <Text style={styles.helperText}>
-              {pending != null && SCORE_LABELS[pending]
-                ? `${pending} · ${SCORE_LABELS[pending]}`
-                : pending != null
-                  ? `${pending} / 10`
-                  : "Tap a number to rate"}
-            </Text>
-          </View>
-          <Text style={styles.footnote}>
-            Submitting a rating marks this title Watched.
-          </Text>
-          {error ? <Text accessibilityRole="alert" style={styles.errorText}>{error}</Text> : null}
-          {!current && !loading ? <Pressable style={styles.actionSecondary} onPress={() => setReload((n) => n + 1)}><Text style={styles.actionSecondaryText}>Retry</Text></Pressable> : null}
-          <View style={styles.actions}>
-            {hasExisting ? (
+        <Pressable
+          style={[
+            styles.sheet,
+            { maxHeight: height - insets.top - insets.bottom - 24 },
+          ]}
+          onPress={(e) => e.stopPropagation()}
+        >
+          <ScrollView
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{ gap: 16 }}
+          >
+            <View style={styles.header}>
+              <Text style={styles.title}>Your rating</Text>
               <Pressable
-                onPress={() => void clearScore()}
-                disabled={saving}
-                style={styles.actionSecondary}
-                accessibilityLabel="Clear rating"
+                onPress={close}
+                style={styles.closeButton}
+                accessibilityRole="button"
+                accessibilityLabel="Close rating editor"
               >
-                <Text style={styles.actionSecondaryText}>Clear rating</Text>
+                <Ionicons name="close" size={22} color={colors.muted} />
               </Pressable>
-            ) : (
-              <View style={{ flex: 1 }} />
-            )}
-            <Pressable
-              onPress={() => void submit()}
-              disabled={saving || loading || !current || pending == null || pending === current.score}
-              style={[
-                styles.actionPrimary,
-                (saving || loading || !current || pending == null || pending === current.score) && { opacity: 0.5 },
-              ]}
-            >
-              {saving ? (
-                <ActivityIndicator color={colors.background} />
+            </View>
+            {titleName ? (
+              <Text style={styles.titleName} numberOfLines={2}>
+                {titleName}
+              </Text>
+            ) : null}
+            {loading ? (
+              <ActivityIndicator
+                color={colors.accent}
+                accessibilityLabel="Loading your rating"
+              />
+            ) : null}
+            {rows.map((row, index) => (
+              <View key={index} style={styles.grid}>
+                {row.map((n) => (
+                  <ScoreCell
+                    key={n}
+                    n={n}
+                    pending={pending}
+                    setPending={setPending}
+                    disabled={saving || loading || !current}
+                  />
+                ))}
+                {Array.from({ length: columns - row.length }, (_, i) => (
+                  <View key={`blank-${i}`} style={{ flex: 1 }} />
+                ))}
+              </View>
+            ))}
+            <View style={styles.helperRow}>
+              <Text style={styles.helperText}>
+                {pending != null && SCORE_LABELS[pending]
+                  ? `${pending} · ${SCORE_LABELS[pending]}`
+                  : pending != null
+                    ? `${pending} / 10`
+                    : "Tap a number to rate"}
+              </Text>
+            </View>
+            <Text style={styles.footnote}>
+              Submitting a rating marks this title Watched.
+            </Text>
+            {error ? (
+              <Text accessibilityRole="alert" style={styles.errorText}>
+                {error}
+              </Text>
+            ) : null}
+            {!current && !loading ? (
+              <Pressable
+                style={styles.actionSecondary}
+                onPress={() => setReload((n) => n + 1)}
+              >
+                <Text style={styles.actionSecondaryText}>Retry</Text>
+              </Pressable>
+            ) : null}
+            <View style={styles.actions}>
+              {hasExisting ? (
+                <Pressable
+                  onPress={() => void clearScore()}
+                  disabled={saving}
+                  style={styles.actionSecondary}
+                  accessibilityLabel="Clear rating"
+                >
+                  <Text style={styles.actionSecondaryText}>Clear rating</Text>
+                </Pressable>
               ) : (
-                <Text style={styles.actionPrimaryText}>
-                  {hasExisting ? "Save changes" : "Save rating"}
-                </Text>
+                <View style={{ flex: 1 }} />
               )}
-            </Pressable>
-          </View>
+              <Pressable
+                onPress={() => void submit()}
+                disabled={
+                  saving ||
+                  loading ||
+                  !current ||
+                  pending == null ||
+                  pending === current.score
+                }
+                style={[
+                  styles.actionPrimary,
+                  (saving ||
+                    loading ||
+                    !current ||
+                    pending == null ||
+                    pending === current.score) && { opacity: 0.5 },
+                ]}
+              >
+                {saving ? (
+                  <ActivityIndicator color={colors.background} />
+                ) : (
+                  <Text style={styles.actionPrimaryText}>
+                    {hasExisting ? "Save changes" : "Save rating"}
+                  </Text>
+                )}
+              </Pressable>
+            </View>
           </ScrollView>
         </Pressable>
       </Pressable>
@@ -251,7 +356,17 @@ export function RatingEditor({
   );
 }
 
-function ScoreCell({ n, pending, setPending, disabled }: { n: number; pending: number | null; setPending: (v: number) => void; disabled: boolean }) {
+function ScoreCell({
+  n,
+  pending,
+  setPending,
+  disabled,
+}: {
+  n: number;
+  pending: number | null;
+  setPending: (v: number) => void;
+  disabled: boolean;
+}) {
   const active = pending === n;
   return (
     <Pressable
@@ -262,7 +377,9 @@ function ScoreCell({ n, pending, setPending, disabled }: { n: number; pending: n
       accessibilityRole="button"
       accessibilityState={{ selected: active, disabled }}
     >
-      <Text style={[styles.cellText, active && styles.cellTextActive]}>{n}</Text>
+      <Text style={[styles.cellText, active && styles.cellTextActive]}>
+        {n}
+      </Text>
     </Pressable>
   );
 }
@@ -287,101 +404,135 @@ export function WatchStatusToggle({
   compact?: boolean;
 }) {
   const [busy, setBusy] = useState(false);
-  const [confirmWantOpen, setConfirmWantOpen] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmation, setConfirmation] = useState<RatingSnapshot | null>(null);
+  const lock = useRef(false),
+    generation = useRef(0);
+  const context = useRef({ token, titleId });
+  context.current = { token, titleId };
+  useEffect(() => {
+    generation.current++;
+    lock.current = false;
+    setBusy(false);
+    setError(null);
+    setConfirmation(null);
+    return () => {
+      generation.current++;
+    };
+  }, [token, titleId]);
 
-  async function setWatched() {
-    if (!token || !titleId || busy) return;
+  async function changeStatus(
+    watchedState: WatchedState,
+    confirmed: RatingSnapshot | null = null,
+  ) {
+    if (!token || !titleId || lock.current) return;
+    const version = generation.current;
+    const active = () =>
+      generation.current === version &&
+      context.current.token === token &&
+      context.current.titleId === titleId;
+    lock.current = true;
     setBusy(true);
+    setError(null);
     try {
+      const observed =
+        confirmed ??
+        snapshot ??
+        (await apiRequest<RatingSnapshot>(`/me/ratings/${titleId}`, { token }));
+      if (!active()) return;
+      if (
+        watchedState === "want_to_watch" &&
+        observed.score !== null &&
+        !confirmed
+      ) {
+        setConfirmation(observed);
+        return;
+      }
       const next = await apiRequest<RatingSnapshot>(
         `/me/ratings/${titleId}/status`,
         {
-          method: "PATCH",
           token,
-          body: JSON.stringify({ watched_state: "watched" }),
-        },
-      );
-      broadcast(next);
-      onChanged?.(next);
-    } catch {
-      // silent — status change is best-effort at the pill level
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function setWantToWatch(confirmClear = false) {
-    if (!token || !titleId || busy) return;
-    setBusy(true);
-    try {
-      const next = await apiRequest<RatingSnapshot>(
-        `/me/ratings/${titleId}/status`,
-        {
           method: "PATCH",
-          token,
           body: JSON.stringify({
-            watched_state: "want_to_watch",
-            confirm_clear_rating: confirmClear,
+            watched_state: watchedState,
+            confirm_clear_rating: !!confirmed,
+            expected_version: observed.version,
           }),
         },
       );
+      if (!active()) return;
       broadcast(next);
       onChanged?.(next);
-      setConfirmWantOpen(false);
+      setConfirmation(null);
     } catch (e) {
-      // Server returns 409 with confirm_required if a rating exists.
-      if (e instanceof Error && e.message.toLowerCase().includes("confirm")) {
-        setConfirmWantOpen(true);
-      }
+      if (!active()) return;
+      const detail =
+        e instanceof ApiError
+          ? (e.detail as { code?: string; current?: RatingSnapshot })
+          : null;
+      if (detail?.code === "confirm_required" && detail.current)
+        setConfirmation(detail.current);
+      else if (detail?.code === "version_conflict") {
+        setConfirmation(null);
+        if (detail.current) {
+          broadcast(detail.current);
+          onChanged?.(detail.current);
+        }
+        setError(
+          "This title changed elsewhere. Review its current status and try again.",
+        );
+      } else setError("Your status was not saved. Please try again.");
     } finally {
-      setBusy(false);
+      if (active()) {
+        lock.current = false;
+        setBusy(false);
+      }
     }
   }
-
-  const isWatched = snapshot?.watched_state === "watched" || snapshot?.score != null;
-  const label = isWatched ? "Watched" : "Want to Watch";
+  const isWatched =
+    snapshot?.watched_state === "watched" || snapshot?.score != null;
   return (
     <>
       <Pressable
-        onPress={() => (isWatched ? void setWantToWatch(false) : void setWatched())}
+        accessibilityRole="button"
+        accessibilityLabel={
+          isWatched ? "Change Watched to Want to Watch" : "Mark as Watched"
+        }
         disabled={busy}
+        onPress={() =>
+          void changeStatus(isWatched ? "want_to_watch" : "watched")
+        }
         style={[
           styles.badge,
           isWatched ? styles.badgeRated : styles.badgeUnrated,
           compact && styles.badgeCompact,
+          { minHeight: 44, minWidth: 44 },
           busy && { opacity: 0.5 },
         ]}
       >
         <Ionicons
           name={isWatched ? "checkmark-circle" : "eye-outline"}
-          size={compact ? 11 : 13}
+          size={compact ? 14 : 16}
           color={isWatched ? colors.accent : colors.ink}
         />
-        <Text style={[styles.badgeText, isWatched && styles.badgeTextRated, compact && { fontSize: 10 }]}>
-          {label}
+        <Text style={[styles.badgeText, isWatched && styles.badgeTextRated]}>
+          {isWatched ? "Watched" : "Want to Watch"}
         </Text>
       </Pressable>
-      <Modal visible={confirmWantOpen} transparent animationType="fade" onRequestClose={() => setConfirmWantOpen(false)}>
-        <Pressable style={styles.backdrop} onPress={() => setConfirmWantOpen(false)}>
-          <Pressable style={styles.sheet} onPress={(e) => e.stopPropagation()}>
-            <Text style={styles.title}>Remove rating?</Text>
-            <Text style={styles.titleName}>
-              Moving to Want to Watch will clear your existing rating.
-            </Text>
-            <View style={styles.actions}>
-              <Pressable style={styles.actionSecondary} onPress={() => setConfirmWantOpen(false)}>
-                <Text style={styles.actionSecondaryText}>Cancel</Text>
-              </Pressable>
-              <Pressable
-                style={styles.actionPrimary}
-                onPress={() => void setWantToWatch(true)}
-              >
-                <Text style={styles.actionPrimaryText}>Clear + move</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
+      {error && !confirmation ? (
+        <Text accessibilityRole="alert" style={styles.errorText}>
+          {error}
+        </Text>
+      ) : null}
+      <ConfirmDialog
+        visible={!!confirmation}
+        title="Remove rating?"
+        busy={busy}
+        confirmLabel="Clear + move"
+        message={`Moving to Want to Watch will clear your existing rating.${error ? "\n\n" + error : ""}`}
+        onCancel={() => setConfirmation(null)}
+        onConfirm={() => void changeStatus("want_to_watch", confirmation)}
+      />
     </>
   );
 }
@@ -422,16 +573,35 @@ export function InlineRatingRail({
   return (
     <>
       <Pressable
-        onPress={(event) => { event.stopPropagation(); setExpanded(true); }}
+        onPress={(event) => {
+          event.stopPropagation();
+          setExpanded(true);
+        }}
         accessibilityRole="button"
-        accessibilityLabel={score != null ? `Your rating ${score} out of 10. Change rating` : "Rate this title"}
+        accessibilityLabel={
+          score != null
+            ? `Your rating ${score} out of 10. Change rating`
+            : "Rate this title"
+        }
         style={styles.railStarContainer}
       >
-        <Ionicons name={score != null ? "star" : "star-outline"} size={size === "lg" ? 24 : 20} color={score != null ? colors.accent : colors.ink} />
-        {score != null ? <Text style={styles.railScore}>{score}/10</Text> : null}
+        <Ionicons
+          name={score != null ? "star" : "star-outline"}
+          size={size === "lg" ? 24 : 20}
+          color={score != null ? colors.accent : colors.ink}
+        />
+        {score != null ? (
+          <Text style={styles.railScore}>{score}/10</Text>
+        ) : null}
       </Pressable>
-      <RatingEditor visible={expanded} token={token} titleId={titleId} initial={snapshot}
-        onClose={() => setExpanded(false)} onChanged={onChanged} />
+      <RatingEditor
+        visible={expanded}
+        token={token}
+        titleId={titleId}
+        initial={snapshot}
+        onClose={() => setExpanded(false)}
+        onChanged={onChanged}
+      />
     </>
   );
 }
@@ -458,16 +628,30 @@ export function RatingBadge({
   return (
     <Pressable
       onPress={onPress}
-      style={[styles.badge, isRated ? styles.badgeRated : styles.badgeUnrated, compact && styles.badgeCompact]}
+      style={[
+        styles.badge,
+        isRated ? styles.badgeRated : styles.badgeUnrated,
+        compact && styles.badgeCompact,
+      ]}
       accessibilityLabel={label}
       accessibilityRole="button"
     >
       {isRated ? (
         <Ionicons name="star" size={compact ? 11 : 13} color={colors.accent} />
       ) : (
-        <Ionicons name="star-outline" size={compact ? 11 : 13} color={colors.ink} />
+        <Ionicons
+          name="star-outline"
+          size={compact ? 11 : 13}
+          color={colors.ink}
+        />
       )}
-      <Text style={[styles.badgeText, isRated && styles.badgeTextRated, compact && { fontSize: 10 }]}>
+      <Text
+        style={[
+          styles.badgeText,
+          isRated && styles.badgeTextRated,
+          compact && { fontSize: 10 },
+        ]}
+      >
         {label}
       </Text>
     </Pressable>
@@ -623,7 +807,12 @@ const styles = StyleSheet.create({
     color: colors.ink,
     fontFamily: fonts.monoSemiBold,
   },
-  closeButton: { minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" },
+  closeButton: {
+    minWidth: 44,
+    minHeight: 44,
+    alignItems: "center",
+    justifyContent: "center",
+  },
   railStarContainer: {
     minWidth: 44,
     minHeight: 44,

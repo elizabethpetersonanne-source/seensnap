@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * All of a user's ranked favorites — tapped from the profile RANKED
  * FAVORITES section. Mirrors the /favorites/ranked.tsx shape but
@@ -77,15 +78,7 @@ export default function PublicRankedScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.iconBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle} numberOfLines={1}>
-          {ownerName}&rsquo;s rankings
-        </Text>
-        <View style={styles.iconBtn} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title={`${ownerName}'s rankings`} ownsSafeArea={false} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>

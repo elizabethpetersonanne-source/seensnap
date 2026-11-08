@@ -39,6 +39,8 @@ def db():
         engine = create_engine(url, connect_args={"options": f"-csearch_path={schema}"})
     names = {
         "users",
+        "user_title_revisions",
+        "onboarding_drafts",
         "content_titles",
         "content_availability",
         "watchlists",

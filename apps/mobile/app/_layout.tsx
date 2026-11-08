@@ -2,7 +2,7 @@ import { Redirect, Stack, useSegments, usePathname, useGlobalSearchParams, route
 import * as Notifications from "expo-notifications";
 import * as SessionStorage from "@/lib/session-storage";
 import { useEffect, useRef, useState } from "react";
-import { StyleSheet, View, ActivityIndicator, Platform } from "react-native";
+import { StyleSheet, View, ActivityIndicator, Platform, Text, Pressable } from "react-native";
 import {
   BodoniModa_500Medium,
   BodoniModa_700Bold,
@@ -77,52 +77,57 @@ function AuthGate() {
     return () => { cancelled = true; responseListener.current?.remove(); };
   }, [isExpoGo, sessionToken]);
 
-  const [onboardingStatus, setOnboardingStatus] = useState<"unknown" | "completed" | "pending">("unknown");
+  type OnboardingStatus = "unknown" | "completed" | "pending" | "error";
+  const [onboarding, setOnboarding] = useState<{owner:string|null;status:OnboardingStatus}>({owner:null,status:"unknown"});
+  const [onboardingRetry,setOnboardingRetry]=useState(0);
+  const onboardingGeneration=useRef(0);
+  const onboardingStatus=onboarding.owner===user?.user_id?onboarding.status:"unknown";
 
   useEffect(() => subscribeOnboardingCompletion((userId) => {
-    if (userId === user?.user_id) setOnboardingStatus("completed");
+    if (userId === user?.user_id) {
+      // An older GET must not reopen onboarding after an accepted completion.
+      onboardingGeneration.current++;
+      setOnboarding({owner:userId,status:"completed"});
+    }
   }), [user?.user_id]);
 
   useEffect(() => {
-    if (!sessionToken || !user?.user_id) {
-      setOnboardingStatus("unknown");
+    const generation=++onboardingGeneration.current;
+    const owner=user?.user_id;
+    if (!sessionToken || !owner) {
+      setOnboarding({owner:null,status:"unknown"});
       return;
     }
-
     let cancelled = false;
-
+    const active=()=>!cancelled&&generation===onboardingGeneration.current;
+    setOnboarding({owner,status:"unknown"});
     async function checkOnboarding() {
+      const cached=await SessionStorage.getItem(onboardingCompletedKey(owner!)).catch(()=>null);
+      if(!active())return;
+      if(cached==='true'){setOnboarding({owner:owner!,status:'completed'});return;}
       try {
-        const cached = await SessionStorage.getItem(onboardingCompletedKey(user!.user_id));
-        if (cached === "true") {
-          if (!cancelled) setOnboardingStatus("completed");
-          return;
-        }
-        const prefs = await apiRequest<{ onboarding_completed: boolean }>("/me/preferences", {
-          token: sessionToken!,
-        });
-        if (!cancelled) {
-          if (prefs.onboarding_completed) {
-            await SessionStorage.setItem(onboardingCompletedKey(user!.user_id), "true");
-            setOnboardingStatus("completed");
-          } else {
-            setOnboardingStatus("pending");
-          }
-        }
+        const prefs = await apiRequest<{ onboarding_completed: boolean }>("/me/preferences", {token: sessionToken!});
+        if(!active())return;
+        setOnboarding({owner:owner!,status:prefs.onboarding_completed?'completed':'pending'});
+        if(prefs.onboarding_completed)void SessionStorage.setItem(onboardingCompletedKey(owner!),"true").catch(()=>{});
       } catch {
-        // Fail open — don't strand the user on a network error
-        if (!cancelled) setOnboardingStatus("completed");
+        if(active())setOnboarding({owner:owner!,status:'error'});
       }
     }
-
     void checkOnboarding();
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionToken, user?.user_id]);
+    return () => { cancelled = true; };
+  }, [sessionToken, user?.user_id,onboardingRetry]);
 
   if (isLoading || (sessionToken && onboardingStatus === "unknown")) {
     return <BootScreen />;
+  }
+
+  if(sessionToken&&onboardingStatus==='error'&&!inOnboarding){
+    return <View style={[styles.boot,{padding:24,gap:20}]}><Text accessibilityRole="alert" style={{color:colors.ink,fontSize:18,textAlign:'center'}}>We couldn't restore your account progress. Please reconnect and try again.</Text><Pressable onPress={()=>setOnboardingRetry(n=>n+1)} style={{minHeight:48,justifyContent:'center'}}><Text style={{color:colors.accent,fontSize:17}}>Retry</Text></Pressable><Pressable onPress={()=>router.replace({pathname:'/onboarding',params:(returnTo??requestedPath)?{returnTo:(returnTo??requestedPath)!}:{}})} style={{minHeight:48,justifyContent:'center'}}><Text style={{color:colors.ink,fontSize:16}}>Continue setup on this device</Text></Pressable></View>;
+  }
+
+  if(sessionToken&&inOnboarding&&onboardingStatus==='completed'){
+    return <Redirect href={(returnTo??"/(tabs)") as Parameters<typeof router.replace>[0]} />;
   }
 
   if (!sessionToken && !inAuthRoute && !publicListRoute) {

@@ -17,7 +17,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
@@ -32,7 +32,8 @@ class SignalRow(BaseModel):
     title_id: UUID
     title: str
     poster_url: str | None
-    action: str  # right | left | up
+    action: str  # right | left | up | down
+    action_version: int = 1
     influence_active: bool
     created_at: datetime
 
@@ -51,19 +52,13 @@ def list_signals(
     offset: int = Query(default=0, ge=0),
 ) -> SignalListResponse:
     """List the current user's recent swipe signals, newest first."""
-    total_row = db.execute(
-        select(SwipeRecord).where(SwipeRecord.user_id == current_user.id)
-    ).all()
-    # Count via len of unpaginated fetch keeps the paged endpoint honest —
-    # the SwipeRecord table is small per user because we prune > 6h. If
-    # this ever becomes a hot path, switch to a func.count() subquery.
-    total = len(total_row)
+    total = db.scalar(select(func.count()).select_from(SwipeRecord).where(SwipeRecord.user_id == current_user.id)) or 0
 
     rows = db.execute(
         select(SwipeRecord, ContentTitle)
         .join(ContentTitle, ContentTitle.id == SwipeRecord.content_title_id)
         .where(SwipeRecord.user_id == current_user.id)
-        .order_by(SwipeRecord.created_at.desc())
+        .order_by(SwipeRecord.created_at.desc(), SwipeRecord.id.desc())
         .offset(offset)
         .limit(limit)
     ).all()
@@ -75,6 +70,7 @@ def list_signals(
             title=r[1].title,
             poster_url=r[1].poster_url,
             action=r[0].direction,
+            action_version=r[0].action_version,
             influence_active=r[0].influence_disabled_at is None,
             created_at=r[0].created_at,
         )

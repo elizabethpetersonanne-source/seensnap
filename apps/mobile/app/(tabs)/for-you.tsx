@@ -20,7 +20,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "@/components/avatar";
 import { GoldButton } from "@/components/gold-button";
 import { SSAnimatedRule } from "@/components/ss-animated-rule";
-import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { AppHeader } from "@/components/headers/app-header";
 import { PosterStack } from "@/components/poster-stack";
 import { TasteSignal } from "@/components/taste-signal";
 import { useCyclingBackdrop, useFallbackBackdrop } from "@/lib/backdrop-pool";
@@ -438,12 +438,7 @@ export default function ForYouScreen() {
           revisiting the tab doesn't always show the exact same backdrop
           (it was reading `[0]` before, which felt hardcoded to whichever
           title happened to sit at the top of current_obsessions). */}
-      <SeenSnapHeader
-        title="SceneDNA"
-        subtitle="Your taste, decoded."
-        artworkSource={sceneDnaHeaderBackdrop ?? headerBackdrop ?? fallbackBackdrop}
-        fallbackSeed={4}
-      />
+      <AppHeader variant="primary" title="SceneDNA" />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Compact Identity Hero — SceneDNA UX Overhaul brief §4. Single
             headline archetype + one-sentence explanation + credibility line

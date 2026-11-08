@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-27 follow-up R05–R06: Rated but not ranked.
  *
@@ -121,13 +122,7 @@ export default function UnplacedScreen() {
         message="They will be added to the end of your ranking by rating. Your existing manual order stays in place."
         confirmLabel="Append ratings" busy={bulkBusy} onCancel={() => setConfirmBulk(false)} onConfirm={() => void bulkAdd()} />
       {feedback ? <Text accessibilityLiveRegion="polite" style={styles.emptyBody}>{feedback}</Text> : null}
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Rated · not yet placed</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Rated · not yet placed" ownsSafeArea={false} />
 
       <View style={styles.subhead}>
         <Text style={styles.subheadText}>

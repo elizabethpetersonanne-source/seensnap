@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { SSCompactHeader } from "@/components/headers/ss-compact-header";
+import { AppHeader } from "@/components/headers/app-header";
 
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
@@ -154,22 +154,10 @@ export default function NotificationsScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["left", "right"]}>
-      <SSCompactHeader
-        title="Notifications"
-        supporting={unreadCount > 0 ? `${unreadCount} unread` : undefined}
-        right={
-          <>
-            {unreadCount > 0 ? (
-              <Pressable onPress={() => void handleMarkAllRead()} hitSlop={8}>
-                <Text style={styles.markAllRead}>Mark all read</Text>
-              </Pressable>
-            ) : null}
-            <Pressable accessibilityLabel="Back to Social" onPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/social")} hitSlop={12} style={styles.backBtn}>
-              <Ionicons name="close" size={20} color={colors.ink} />
-            </Pressable>
-          </>
-        }
-      />
+      <AppHeader variant="detail" leftKind="back" title={unreadCount > 0 ? `Notifications · ${unreadCount}` : "Notifications"}
+        onLeftPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/social")}
+        rightSlot={unreadCount > 0 ? <Pressable onPress={() => void handleMarkAllRead()} accessibilityLabel="Mark all notifications read" style={{minWidth:44,minHeight:44,justifyContent:'center',alignItems:'center'}}><Ionicons name="checkmark-done" size={22} color={colors.accent}/></Pressable> : null} />
+
 
       {notice ? <View style={{ padding: spacing.md, gap: 12 }}>
         <Text accessibilityRole="alert" style={{ color: colors.ink }}>{notice}</Text>

@@ -77,12 +77,14 @@ def undo_decision(db, user_id, swipe_id):
         if not decision.state_before or current != decision.state_after:
             partial = "newer_or_unknown_watch_state"
         else:
+            from app.services.title_revisions import advance_revision
+            revision=advance_revision(db,user_id,decision.content_title_id)
             before = decision.state_before
             rating = db.scalar(select(Rating).where(Rating.user_id == user_id, Rating.content_title_id == decision.content_title_id))
             status = db.scalar(select(TitleWatchStatus).where(TitleWatchStatus.user_id == user_id, TitleWatchStatus.content_title_id == decision.content_title_id))
             if rating is not None and before.get("rating"):
                 rating.watched_state = before["rating"]["watched_state"]
-                rating.version += 1
+                rating.version = revision
                 rating.updated_at = datetime.now(timezone.utc)
             if status is not None:
                 if before.get("status"):

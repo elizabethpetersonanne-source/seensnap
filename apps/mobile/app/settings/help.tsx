@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-18 UI/UX rebuild: Help & Support sub-screen.
  * Spec image 4 (step 9).
@@ -30,13 +31,7 @@ const OPTIONS: HelpOption[] = [
 export default function HelpSettingsScreen() {
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Help & Support</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Help & Support" ownsSafeArea={false} />
 
       <ScrollView contentContainerStyle={styles.body}>
         {OPTIONS.map((o) => (

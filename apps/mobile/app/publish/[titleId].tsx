@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-18 build brief §6 explicit publication composer.
  *
@@ -114,13 +115,7 @@ export default function PublishActivityScreen() {
         style={{ flex: 1 }}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-            <Ionicons name="chevron-back" size={20} color={colors.ink} />
-          </Pressable>
-          <Text style={styles.headerTitle}>Share to Social</Text>
-          <View style={{ width: 24 }} />
-        </View>
+        <AppHeader variant="detail" leftKind="back" title="Share to Social" ownsSafeArea={false} />
 
         <ScrollView contentContainerStyle={styles.body}>
           <Text style={styles.eyebrow}>EXPLICIT PUBLICATION</Text>

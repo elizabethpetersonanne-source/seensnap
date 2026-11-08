@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-27 spec PICKS-01: dedicated create-list surface, launched from
  * the "+ New List" button inside the My Lists section of My Picks.
@@ -64,13 +65,7 @@ export default function NewListScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>New List</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="New List" ownsSafeArea={false} />
 
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.label}>LIST NAME</Text>

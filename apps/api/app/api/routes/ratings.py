@@ -21,6 +21,8 @@ from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
+from app.models.user import User
+from app.services.title_revisions import current_revision, advance_revision
 from app.models.social import Rating, TitleWatchStatus, Watchlist, WatchlistItem
 
 
@@ -50,6 +52,7 @@ class RatingUpsertRequest(BaseModel):
 
 
 class WatchStatusRequest(BaseModel):
+    expected_version: int | None = Field(default=None, ge=0)
     watched_state: str = Field(pattern="^(want_to_watch|watched)$")
     # Sep-22 brief §7 rated-to-unwatched correction: if the user
     # changes a Watched title back to Want to Watch and there IS a
@@ -80,7 +83,7 @@ def _read_state(db, user_id: UUID, title_id: UUID) -> RatingResponse:
             # to nearest whole 1-10 for the UI contract.
             score=int(round(float(rating.score))),
             watched_state=rating.watched_state or "watched",
-            version=rating.version,
+            version=current_revision(db,user_id,title_id),
             updated_at=rating.updated_at,
             **membership,
         )
@@ -89,7 +92,7 @@ def _read_state(db, user_id: UUID, title_id: UUID) -> RatingResponse:
         title_id=title_id,
         score=None,
         watched_state=(ws.watched_state if ws else "want_to_watch"),
-        version=0,
+        version=current_revision(db,user_id,title_id),
         updated_at=ws.updated_at if ws else None,
         **membership,
     )
@@ -138,7 +141,10 @@ def set_watch_status(
     current_user: CurrentUser,
     db: DbSession,
 ) -> RatingResponse:
+    db.scalar(select(User.id).where(User.id==current_user.id).with_for_update())
     _resolve_title_id(db, title_id)
+    if payload.expected_version is not None and payload.expected_version != current_revision(db, current_user.id, title_id):
+        raise HTTPException(409, detail={"code": "version_conflict", "current": _read_state(db, current_user.id, title_id).model_dump(mode="json")})
     rating = db.scalar(select(Rating).where(
         Rating.user_id == current_user.id,
         Rating.content_title_id == title_id,
@@ -157,6 +163,7 @@ def set_watch_status(
                 "code": "confirm_required",
                 "reason": "changing_watched_to_want_erases_rating",
                 "current_score": int(round(float(rating.score))),
+                "current": _read_state(db, current_user.id, title_id).model_dump(mode="json"),
             },
         )
     if rating is not None:
@@ -175,6 +182,7 @@ def set_watch_status(
     else:
         ws.watched_state = "want_to_watch"
         ws.updated_at = datetime.now(timezone.utc)
+    advance_revision(db,current_user.id,title_id)
     db.commit()
     return _read_state(db, current_user.id, title_id)
 
@@ -204,21 +212,5 @@ def get_bulk_ratings(
         ws = db.scalar(select(TitleWatchStatus).where(TitleWatchStatus.user_id == current_user.id, TitleWatchStatus.content_title_id == tid))
         if rating is None and ws is None:
             continue
-        if rating is not None:
-            resolved[str(tid)] = RatingResponse(
-                title_id=tid,
-                score=int(round(float(rating.score))),
-                watched_state=rating.watched_state or "watched",
-                version=rating.version,
-                updated_at=rating.updated_at,
-            )
-        else:
-            assert ws is not None
-            resolved[str(tid)] = RatingResponse(
-                title_id=tid,
-                score=None,
-                watched_state=ws.watched_state,
-                version=0,
-                updated_at=ws.updated_at,
-            )
+        resolved[str(tid)] = _read_state(db,current_user.id,tid)
     return BulkRatingsResponse(ratings=resolved)

@@ -85,3 +85,6 @@ api_router.include_router(team_home.router, prefix="/teams", tags=["teams"])
 
 from app.api.routes import media_assets
 api_router.include_router(media_assets.router, prefix="/media-assets", tags=["media-assets"])
+
+from app.api.routes import onboarding_draft
+api_router.include_router(onboarding_draft.router, prefix="/me/onboarding-draft", tags=["onboarding"])

@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 /**
  * Oct-27 personalization follow-up: dedicated list detail route.
@@ -173,21 +174,7 @@ export default function ListDetailScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle} numberOfLines={1}>{list?.name ?? "List"}</Text>
-        <Pressable
-          onPress={() => setEditing((v) => !v)}
-          hitSlop={10}
-          style={styles.closeBtn}
-          accessibilityRole="button"
-          accessibilityLabel={editing ? "Done editing" : "Edit list details"}
-        >
-          <Ionicons name={editing ? "checkmark" : "create-outline"} size={20} color={colors.ink} />
-        </Pressable>
-      </View>
+      <AppHeader variant="detail" leftKind="back" title={list?.name ?? "List"} ownsSafeArea={false} rightSlot={<Pressable onPress={() => setEditing(v => !v)} style={{minHeight:44,minWidth:44,alignItems:"center",justifyContent:"center"}} accessibilityRole="button" accessibilityLabel={editing ? "Done editing" : "Edit list details"}><Ionicons name={editing ? "checkmark" : "create-outline"} size={20} color={colors.ink}/></Pressable>} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>

@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useMemo, useState } from "react";
@@ -89,12 +90,7 @@ export default function PersonDetailScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
-          <Ionicons name="arrow-back" size={20} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerLabel}>Person</Text>
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Person" ownsSafeArea={false} />
 
       {loading ? (
         <ActivityIndicator color={colors.accent} style={{ marginTop: spacing.xl }} />

@@ -43,6 +43,7 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.services.title_revisions import current_revision, advance_revision
 from app.models.user import User
 from app.models.content import ContentTitle
 from app.models.social import Rating, RankedFavorite, TitleWatchStatus, Watchlist, WatchlistItem
@@ -145,7 +146,7 @@ def _snapshot(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
     updated_at = rating.updated_at if rating else (
         ws.updated_at if ws else datetime.now(timezone.utc)
     )
-    version = rating.version if rating is not None else 0
+    version = current_revision(db,user_id,title_id)
     return TitleStateSnapshot(
         title_id=title_id,
         saved=saved,
@@ -209,10 +210,11 @@ def mark_watched(db: Session, user_id: UUID, title_id: UUID, *, commit: bool = T
         Rating.user_id == user_id,
         Rating.content_title_id == title_id,
     ))
+    version=advance_revision(db,user_id,title_id)
     if rating is not None:
         rating.watched_state = "watched"
         rating.updated_at = datetime.now(timezone.utc)
-        rating.version += 1
+        rating.version = version
     else:
         ws = db.scalar(select(TitleWatchStatus).where(
             TitleWatchStatus.user_id == user_id,
@@ -268,25 +270,18 @@ def rate_title(
         Rating.user_id == user_id,
         Rating.content_title_id == title_id,
     ))
+    current=current_revision(db,user_id,title_id)
+    if expected_version is not None and expected_version != current:
+        raise TitleStateError('version_conflict','stale version')
+    version=advance_revision(db,user_id,title_id)
     if existing is not None:
-        if expected_version is not None and expected_version != existing.version:
-            raise TitleStateError("version_conflict", "stale version")
-        existing.score = Decimal(str(score))
-        existing.watched_state = "watched"
-        existing.version += 1
-        existing.updated_at = datetime.now(timezone.utc)
+        existing.score=Decimal(str(score))
+        existing.watched_state='watched'
+        existing.version=version
+        existing.updated_at=datetime.now(timezone.utc)
     else:
-        if expected_version not in (None, 0):
-            raise TitleStateError("version_conflict", "rating was removed on another device")
-        existing = Rating(
-            id=uuid4(),
-            user_id=user_id,
-            content_title_id=title_id,
-            score=Decimal(str(score)),
-            watched_state="watched",
-            version=1,
-        )
-        db.add(existing)
+        db.add(Rating(id=uuid4(),user_id=user_id,content_title_id=title_id,
+            score=Decimal(str(score)),watched_state='watched',version=version))
 
     # Clean up TitleWatchStatus — the Rating is now the authoritative source.
     db.execute(
@@ -320,7 +315,7 @@ def clear_rating(db: Session, user_id: UUID, title_id: UUID, *, expected_version
         Rating.user_id == user_id,
         Rating.content_title_id == title_id,
     ))
-    if expected_version is not None and expected_version != (rating.version if rating else 0):
+    if expected_version is not None and expected_version != current_revision(db,user_id,title_id):
         raise TitleStateError("version_conflict", "stale version")
     if rating is None:
         return _snapshot(db, user_id, title_id)
@@ -340,6 +335,7 @@ def clear_rating(db: Session, user_id: UUID, title_id: UUID, *, expected_version
     else:
         ws.watched_state = "watched"
         ws.updated_at = datetime.now(timezone.utc)
+    advance_revision(db,user_id,title_id)
     db.delete(rating)
     db.commit()
     return _snapshot(db, user_id, title_id)

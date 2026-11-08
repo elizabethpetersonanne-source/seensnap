@@ -252,6 +252,9 @@ def patch_preferences(
     current_user: CurrentUser,
     db: DbSession,
 ) -> PreferencesResponse:
+    # Serialize partial preference updates with draft saves/completion. This also
+    # prevents two first writes from racing to create the same preference row.
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
     preferences = db.scalar(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
     if preferences is None:
         preferences = UserPreferences(user_id=current_user.id)
