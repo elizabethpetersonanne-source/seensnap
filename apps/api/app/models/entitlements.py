@@ -103,3 +103,21 @@ class ConciergeDecisionRecord(Base):
     turns: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ConciergeRequest(Base):
+    """Durable idempotency and a lease; a lost process can be resumed by retry."""
+    __tablename__ = "concierge_requests"
+    __table_args__ = (UniqueConstraint("user_id", "idempotency_key", name="uq_concierge_request_retry"),)
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    idempotency_key: Mapped[str] = mapped_column(String(96))
+    fingerprint: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(String(16), default="processing")
+    lease_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True))
+    lease_expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    attempt: Mapped[int] = mapped_column(default=1)
+    decision_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("concierge_decisions.id"))
+    response: Mapped[dict] = mapped_column(JSONB, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

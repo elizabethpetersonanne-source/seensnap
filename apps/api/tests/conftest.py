@@ -48,6 +48,9 @@ def db():
         "title_watch_status",
         "user_signals",
         "concierge_decisions",
+        "concierge_requests",
+        "entitlement_grants",
+        "concierge_allowance_entries",
         "discovery_decisions",
         "discovery_sessions",
     }

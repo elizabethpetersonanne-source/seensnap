@@ -9,13 +9,14 @@ Request is natural-language intent. Server:
      release the slot rather than consume it.
   4. Returns a canonical response the client renders as hero-plus-four.
 
-A refinement in the SAME decision does not consume a second slot —
-the client passes `refinement_of_decision_id` and the service uses
-the previously-reserved slot (bounded abuse / rate limits apply).
+Refinements use the owner's versioned decision endpoint and reuse its
+allowance. Initial requests have durable, leased idempotency receipts.
 """
 from __future__ import annotations
 
-from uuid import UUID
+from uuid import UUID, uuid4
+import hashlib
+import json
 
 from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
@@ -26,7 +27,6 @@ from app.models.content import ContentTitle
 from app.services.concierge import decision_to_dict, resolve_concierge_decision
 from app.services.entitlements import (
     finalize_concierge_decision,
-    reserve_concierge_decision,
     resolve_entitlement,
 )
 
@@ -60,6 +60,9 @@ class ConciergeTitleCard(BaseModel):
 
 
 class ConciergeDecisionResponse(BaseModel):
+    request_id: UUID | None = None
+    retry_after_seconds: int | None = None
+    can_retry: bool = False
     decision_id: UUID | None
     status: str  # "ready" | "partial" | "unavailable" | "empty" | "error" | "allowance_exhausted"
     status_detail: str = ""
@@ -146,103 +149,98 @@ def _persist_decision_record(db, user_id: UUID, decision, intent: str):
     return rec
 
 
+def _validate_selected_list(db, user_id, list_id):
+    if list_id is not None:
+        from app.models.social import Watchlist
+        if not db.scalar(select(Watchlist.id).where(Watchlist.id == list_id, Watchlist.owner_user_id == user_id)):
+            raise HTTPException(404, detail="This list is no longer available.")
+
+
+def _request_response(request):
+    from datetime import datetime, timezone
+    if request.state == "processing":
+        expired = request.lease_expires_at.replace(tzinfo=timezone.utc) <= datetime.now(timezone.utc)
+        return ConciergeDecisionResponse(decision_id=request.decision_id, request_id=request.id,
+            status="processing", status_detail="request_interrupted" if expired else "request_in_progress",
+            retry_after_seconds=3, can_retry=expired, retrieval_exhausted=False)
+    return ConciergeDecisionResponse.model_validate({**request.response, "request_id": str(request.id),
+        "can_retry": request.state == "retryable"})
+
+
+@router.get("/requests/{request_key}", response_model=ConciergeDecisionResponse)
+def get_concierge_request(request_key: str, current_user: CurrentUser, db: DbSession):
+    from app.models.entitlements import ConciergeRequest
+    request = db.scalar(select(ConciergeRequest).where(
+        ConciergeRequest.user_id == current_user.id, ConciergeRequest.idempotency_key == request_key,
+    ))
+    if request is None:
+        raise HTTPException(404, detail="Search request not found.")
+    list_id = (request.response.get("constraints") or {}).get("collection_list_id")
+    if list_id:
+        _validate_selected_list(db, current_user.id, UUID(list_id))
+    return _request_response(request)
+
+
 @router.post("/decision", response_model=ConciergeDecisionResponse)
-def post_concierge_decision(
-    payload: ConciergeDecisionRequest,
-    current_user: CurrentUser,
-    db: DbSession,
-) -> ConciergeDecisionResponse:
+def post_concierge_decision(payload: ConciergeDecisionRequest, current_user: CurrentUser, db: DbSession):
+    from app.services.concierge_requests import claim, lock_current
+    from app.services.concierge_runtime import request_runtime, report, error_code, ConciergeDeadlineExceeded
+    from app.services.concierge import ConciergeDecision, ConciergeConstraints
+    from app.services.entitlements import _active_period_entries
+    import httpx
+    _validate_selected_list(db, current_user.id, payload.collection_list_id)
+    if payload.refinement_of_decision_id:
+        # All refinements must use stored constraints and optimistic versions.
+        raise HTTPException(400, detail="Use the decision's refinement endpoint to update this search.")
     entitlement = resolve_entitlement(db, current_user.id)
-
-    # Enforce Free monthly allowance. Premium is unlimited (fair-use
-    # ceiling can be added in config later). Refinements of an owned
-    # decision never consume a slot; the decision_id must belong to
-    # the current user, otherwise it's treated as a fresh request.
-    is_refinement = payload.refinement_of_decision_id is not None
-    if is_refinement:
-        from app.models.entitlements import ConciergeDecisionRecord
-        prior = db.scalar(
-            select(ConciergeDecisionRecord).where(
-                ConciergeDecisionRecord.id == payload.refinement_of_decision_id,
-                ConciergeDecisionRecord.user_id == current_user.id,
-            )
-        )
-        if prior is None:
-            # Forged / foreign decision id — reject outright rather
-            # than quietly treating it as a free request.
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Decision not found or not owned by this user.",
-            )
-        allowance = None
-    else:
-        allowance = reserve_concierge_decision(
-            db,
-            current_user.id,
-            idempotency_key=payload.idempotency_key,
-        )
-        if not allowance.allowed:
-            return ConciergeDecisionResponse(
-                decision_id=None,
-                status="allowance_exhausted",
-                status_detail=allowance.reason,
-                allowance_remaining=0,
-                allowance_cap=entitlement.concierge_monthly_cap,
-                resets_at=allowance.resets_at.isoformat() if allowance.resets_at else None,
-            )
-
-    # Resolve intent via the AI adapter.
-    decision = resolve_concierge_decision(
-        db,
-        current_user.id,
-        payload.intent,
-        collection_list_id=payload.collection_list_id,
-    )
-
-    # CON04/C19: a decision counts as successful if it produced at
-    # least one usable result — including an intentional "pick one"
-    # or a partial set. Empty / error / unavailable responses release
-    # the slot. Retries with the same idempotency_key are deduped at
-    # reserve time.
-    successful = decision.status in ("ready", "partial") and bool(decision.title_ids)
-    if allowance is not None and allowance.decision_id is not None:
-        finalize_concierge_decision(
-            db,
-            current_user.id,
-            allowance.decision_id,
-            successful=successful,
-        )
-
-    # Chunk E: persist the decision record so follow-ups can resume
-    # it. Even empty / clarification results are persisted — recovery
-    # chips should refine the SAME decision rather than start over.
-    record = _persist_decision_record(db, current_user.id, decision, payload.intent)
-    db.commit()
-
-    titles = _hydrate_decision_titles(db, decision.title_ids)
-
-    decision_payload = decision_to_dict(decision)
-    # Remaining allowance for the response — compute fresh so a
-    # successful finalize is reflected immediately.
-    remaining = allowance.remaining if allowance is not None else None
-    cap = entitlement.concierge_monthly_cap
-
-    return ConciergeDecisionResponse(
-        decision_id=record.id,
-        status=decision.status,
-        status_detail=decision.status_detail,
-        rationale=decision.rationale,
-        constraints=decision_payload["constraints"],
-        titles=titles,
-        allowance_remaining=remaining,
-        allowance_cap=cap,
-        resets_at=allowance.resets_at.isoformat() if allowance and allowance.resets_at else None,
-        retrieval_exhausted=decision.retrieval_exhausted,
-        exact_match_count=decision.exact_match_count,
-        requested_count=decision.requested_count,
-        partial_reason=decision.partial_reason,
-        title_rationales=decision.title_rationales,
-    )
+    request, run, allowance = claim(db, current_user.id, payload)
+    if allowance is not None and not allowance.allowed:
+        return ConciergeDecisionResponse(decision_id=None, status="allowance_exhausted",
+            status_detail="monthly_cap_reached", allowance_remaining=0,
+            allowance_cap=entitlement.concierge_monthly_cap,
+            resets_at=allowance.resets_at.isoformat() if allowance.resets_at else None)
+    if not run:
+        list_id = (request.response.get("constraints") or {}).get("collection_list_id")
+        if list_id: _validate_selected_list(db, current_user.id, UUID(list_id))
+        return _request_response(request)
+    request_id, lease_id, attempt = request.id, request.lease_id, request.attempt
+    with request_runtime(request_id) as runtime:
+        try:
+            decision = resolve_concierge_decision(db, current_user.id, payload.intent,
+                collection_list_id=payload.collection_list_id)
+        except (ConciergeDeadlineExceeded, httpx.HTTPError) as error:
+            decision = ConciergeDecision(None, ConciergeConstraints(raw_intent=payload.intent), "", [], "error",
+                status_detail=error_code(error), partial_reason="retrieval_timeout" if error_code(error) == "request_timed_out" else "upstream_failure",
+                retrieval_exhausted=False)
+        except Exception:
+            db.rollback()
+            # The receipt remains recoverable; raw exception text may contain
+            # a provider response or credentials and must never be returned.
+            decision = ConciergeDecision(None, ConciergeConstraints(raw_intent=payload.intent), "", [], "error",
+                status_detail="search_interrupted", partial_reason="upstream_failure", retrieval_exhausted=False)
+        request = lock_current(db, current_user.id, request_id, lease_id)
+        record = _persist_decision_record(db, current_user.id, decision, payload.intent)
+        titles = _hydrate_decision_titles(db, decision.title_ids)
+        successful = decision.status in ("ready", "partial") and bool(titles)
+        if allowance and allowance.decision_id:
+            finalize_concierge_decision(db, current_user.id, allowance.decision_id, successful=successful)
+        db.flush()
+        cap = entitlement.concierge_monthly_cap
+        remaining = max(0, cap - len(_active_period_entries(db, current_user.id))) if cap is not None else None
+        response = _response_from_turn(db, record.id, record.turns[-1], 1)
+        response.request_id = request_id
+        response.allowance_remaining, response.allowance_cap = remaining, cap
+        response.resets_at = allowance.resets_at.isoformat() if allowance and allowance.resets_at else None
+        response.can_retry = response.status in {"error", "unavailable"}
+        request.decision_id = record.id
+        request.response = response.model_dump(mode="json")
+        request.state = "retryable" if response.can_retry else "completed"
+        from datetime import datetime, timezone
+        request.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        report(runtime, status=response.status, code=response.status_detail,
+            count=len(titles), attempt=attempt)
+        return response
 
 
 # ─── Decision refinement (Concierge chunk E) ──────────────────────────
@@ -256,7 +254,7 @@ class ConciergeRefineRequest(BaseModel):
     # "shorter" | "longer" | "different_options" | "more_like_selected"
     # | "custom" — the client sends the semantic intent; a custom
     # follow-up carries free-text in `prompt`.
-    kind: str = Field(pattern="^(shorter|longer|different_options|more_like_selected|only_provider|edit|undo|custom)$")
+    kind: str = Field(pattern="^(shorter|longer|different_options|continue_search|more_like_selected|only_provider|edit|undo|custom)$")
     # Required for custom and only_provider. Ignored otherwise.
     prompt: str | None = Field(default=None, max_length=2000)
     # For more_like_selected / promote: the title the user tapped as
@@ -295,8 +293,16 @@ def post_concierge_refinement(
     version = len(turns)
     if not turns:
         raise HTTPException(409, detail="Start a new search to refine this older decision.")
+    list_id = (record.constraints or {}).get("collection_list_id")
+    if list_id: _validate_selected_list(db, current_user.id, UUID(list_id))
+    fingerprint = hashlib.sha256(json.dumps(
+        payload.model_dump(mode="json", exclude={"idempotency_key"}), sort_keys=True).encode()).hexdigest()
     for index, turn in enumerate(turns):
         if turn.get("idempotency_key") == payload.idempotency_key:
+            if turn.get("request_fingerprint", fingerprint) != fingerprint:
+                raise HTTPException(409, detail={"code": "request_key_conflict"})
+            restored_list = (turn.get("constraints") or {}).get("collection_list_id")
+            if restored_list: _validate_selected_list(db, current_user.id, UUID(restored_list))
             return _response_from_turn(db, record.id, turn, index + 1)
     if payload.expected_version is not None and payload.expected_version != version:
         raise HTTPException(409, detail={"code": "decision_version_conflict", "version": version})
@@ -327,7 +333,7 @@ def post_concierge_refinement(
             if effective.runtime_min and effective.runtime_min > effective.runtime_max:
                 raise HTTPException(400, detail="The requested duration conflicts with your minimum runtime.")
             new_intent = f"{record.current_intent}\nUpdated maximum duration: {effective.runtime_max} minutes."
-        elif payload.kind == "different_options":
+        elif payload.kind in ("different_options", "continue_search"):
             excluded = list(record.shown_title_ids or [])
         elif payload.kind == "more_like_selected":
             if payload.featured_title_id is None or str(payload.featured_title_id) not in (record.latest_title_ids or []):
@@ -336,6 +342,8 @@ def post_concierge_refinement(
             if anchor is None:
                 raise HTTPException(404, detail="Title no longer available.")
             effective.like_anchors = [anchor.title]
+            effective.anchor_title_ids = [str(anchor.id)]
+            effective.anchor_evidence = []
             excluded = [str(anchor.id)]
             new_intent = f"{record.current_intent}\nFind alternatives with a similar feel to {anchor.title}."
         elif payload.kind == "only_provider":
@@ -350,11 +358,45 @@ def post_concierge_refinement(
                 raise HTTPException(400, detail="Enter your updated request.")
             new_intent = payload.prompt.strip() if payload.kind == "edit" else f"{record.current_intent}\nRefinement: {payload.prompt.strip()}"
             effective = None
-        decision = resolve_concierge_decision(db, current_user.id, new_intent,
-            effective_constraints=effective, excluded_title_ids=excluded,
-            collection_list_id=UUID(record.constraints["collection_list_id"]) if record.constraints.get("collection_list_id") else None)
+        from app.services.concierge_runtime import request_runtime, report, ConciergeDeadlineExceeded
+        from app.services.concierge import ConciergeDecision
+        # Only unchanged constraints can resume candidate/relevance work.
+        continuation = turns[-1].get("retrieval_state") if payload.kind in ("different_options", "continue_search") else None
+        with request_runtime(uuid4()) as runtime:
+            try:
+                decision = resolve_concierge_decision(db, current_user.id, new_intent,
+                    effective_constraints=effective, excluded_title_ids=excluded,
+                    collection_list_id=UUID(list_id) if list_id else None,
+                    retrieval_state=continuation)
+            except ConciergeDeadlineExceeded:
+                decision = ConciergeDecision(None, effective or ConciergeConstraints(raw_intent=new_intent), "", [],
+                    "error", status_detail="request_timed_out", retrieval_exhausted=False, partial_reason="retrieval_timeout")
+            report(runtime, status=decision.status, code=decision.status_detail, count=len(decision.title_ids), attempt=1)
+        # Transient failures preserve the visible turn and can be retried with
+        # the same key/version. An empty, resumable scan is a valid next turn.
+        if decision.status in {"error", "unavailable"}:
+            db.commit()  # retain catalog hydration, never replace the decision
+            raise HTTPException(503, detail={"code": decision.status_detail, "retryable": True})
         snapshot = decision_to_dict(decision)
         snapshot["previous_turn_index"] = previous_index
+
+    # A first successful continuation consumes the original search slot if
+    # its initial empty response released it. No second slot for later turns.
+    from app.models.user import User
+    from app.models.entitlements import ConciergeRequest, ConciergeAllowanceEntry
+    from app.services.entitlements import reserve_concierge_decision
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
+    receipt = db.scalar(select(ConciergeRequest).where(
+        ConciergeRequest.user_id == current_user.id, ConciergeRequest.decision_id == record.id))
+    if receipt and snapshot.get("title_ids") and snapshot.get("status") in {"ready", "partial"}:
+        entry = db.scalar(select(ConciergeAllowanceEntry).where(
+            ConciergeAllowanceEntry.user_id == current_user.id,
+            ConciergeAllowanceEntry.idempotency_key == receipt.idempotency_key))
+        if entry is None or entry.state != "consumed":
+            reservation = reserve_concierge_decision(db, current_user.id, idempotency_key=receipt.idempotency_key)
+            if not reservation.allowed:
+                raise HTTPException(429, detail={"code": "monthly_cap_reached"})
+            finalize_concierge_decision(db, current_user.id, reservation.decision_id, successful=True)
 
     # Network/model work has finished. Lock and recheck before replacing state;
     # stale concurrent responses must not clobber a newer refinement.
@@ -362,7 +404,7 @@ def post_concierge_refinement(
     if len(record.turns or []) != version:
         raise HTTPException(409, detail={"code": "decision_version_conflict", "version": len(record.turns or [])})
     snapshot.update({"intent": new_intent, "turn_type": payload.kind,
-                     "idempotency_key": payload.idempotency_key,
+                     "idempotency_key": payload.idempotency_key, "request_fingerprint": fingerprint,
                      "at": datetime.now(timezone.utc).isoformat()})
     titles = _hydrate_decision_titles(db, [UUID(t) for t in snapshot.get("title_ids", [])])
     snapshot["title_ids"] = [str(t.title_id) for t in titles]
@@ -399,6 +441,8 @@ def get_concierge_decision(decision_id: UUID, current_user: CurrentUser, db: DbS
         ConciergeDecisionRecord.id == decision_id, ConciergeDecisionRecord.user_id == current_user.id))
     if record is None or not record.turns:
         raise HTTPException(404, detail="Decision is no longer available.")
+    list_id = (record.constraints or {}).get("collection_list_id")
+    if list_id: _validate_selected_list(db, current_user.id, UUID(list_id))
     return _response_from_turn(db, record.id, record.turns[-1], len(record.turns))
 
 

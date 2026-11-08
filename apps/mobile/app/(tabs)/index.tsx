@@ -24,9 +24,12 @@ import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
+import { TitleActionSheets, type TitleActionTarget } from "@/components/title-action-sheets";
+import { RatingEditor } from "@/components/rating-editor";
+import { newConciergeKey, pendingConciergeSearch, runConciergeSearch } from "@/lib/concierge-requests";
 import { ConciergeEmptyState } from "@/components/concierge-empty-state";
 import { ConciergeListPicker } from "@/components/concierge-list-picker";
-import { ConciergeResult } from "@/components/concierge-result";
+import { ConciergeResult, type ConciergeRefineKind } from "@/components/concierge-result";
 import { DiscoverSection, MediaToggle, type DiscoverTitle } from "@/components/discover-section";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
@@ -358,10 +361,110 @@ export default function DiscoverScreen() {
   const entitlement = useEntitlement(sessionToken);
   const [conciergeActionError, setConciergeActionError] = useState<string | null>(null);
   const conciergeRefining = useRef(false);
+  const [conciergeBusy, setConciergeBusy] = useState(false);
+  const conciergeGeneration = useRef(0);
+  const refineRetry = useRef<{ fingerprint: string; key: string } | null>(null);
+  const [conciergeDraft, setConciergeDraft] = useState("");
+  const recoveryScope = useRef<{ intent: string; listId?: string } | null>(null);
+  const [conciergeAction, setConciergeAction] = useState<TitleActionTarget | null>(null);
+  const [conciergeRating, setConciergeRating] = useState<ConciergeTitleCard | null>(null);
   const [conciergeDecision, setConciergeDecision] = useState<ConciergeDecisionResponse | null>(null);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [showListPicker, setShowListPicker] = useState(false);
+
+  useEffect(() => {
+    const generation = ++conciergeGeneration.current;
+    conciergeRefining.current = false;
+    setConciergeBusy(false);
+    setConciergeDecision(null);
+    setConciergeActionError(null);
+    setConciergeDraft("");
+    setConciergeAction(null);
+    setConciergeRating(null);
+    recoveryScope.current = null;
+    if (user?.user_id) void pendingConciergeSearch(user.user_id).then((pending) => {
+      if (generation !== conciergeGeneration.current || !pending) return;
+      recoveryScope.current = { intent: pending.intent, listId: pending.collection_list_id };
+      setConciergeDraft(pending.intent);
+      setConciergeActionError("Your unfinished search is ready to resume. Tap the arrow to check for results.");
+    });
+    return () => { conciergeGeneration.current += 1; };
+  }, [user?.user_id, sessionToken]);
+
+  async function searchConcierge(prompt: string, listId?: string) {
+    if (!sessionToken || !user?.user_id || conciergeRefining.current) return;
+    conciergeRefining.current = true;
+    setConciergeBusy(true);
+    setConciergeActionError(null);
+    const generation = ++conciergeGeneration.current;
+    recoveryScope.current = { intent: prompt.trim(), listId };
+    setConciergeDraft(prompt);
+    try {
+      const decision = await runConciergeSearch(user.user_id, sessionToken, prompt, listId);
+      if (generation !== conciergeGeneration.current) return;
+      setConciergeDecision(decision);
+      trackEvent("concierge_decision", { status: decision.status, title_count: decision.titles.length });
+      if (decision.status === "processing") setConciergeActionError(decision.can_retry
+        ? "Your search was interrupted. Tap the arrow to resume."
+        : "Your search is still running. Tap the arrow to check for results.");
+      else if (decision.status === "error" || decision.status === "unavailable")
+        setConciergeActionError("Concierge couldn't finish this search. Your request is saved; tap the arrow to retry.");
+      else if (decision.status === "allowance_exhausted")
+        setConciergeActionError("Your monthly search allowance is used up. It resets next month.");
+      return decision;
+    } catch {
+      if (generation === conciergeGeneration.current)
+        setConciergeActionError("Couldn't retrieve this search. Your request is saved; tap the arrow to retry.");
+    } finally {
+      if (generation === conciergeGeneration.current) {
+        conciergeRefining.current = false;
+        setConciergeBusy(false);
+      }
+    }
+  }
+
+  async function refineConcierge(kind: ConciergeRefineKind, extra?: { featured_title_id?: string; prompt?: string }) {
+    if (!sessionToken || !conciergeDecision?.decision_id || conciergeRefining.current) return;
+    if (kind === "new_search") {
+      conciergeGeneration.current += 1;
+      setConciergeDecision(null);
+      setConciergeDraft("");
+      setConciergeActionError(null);
+      recoveryScope.current = null;
+      return;
+    }
+    conciergeRefining.current = true;
+    setConciergeBusy(true);
+    setConciergeActionError(null);
+    const generation = ++conciergeGeneration.current;
+    const body = { expected_version: conciergeDecision.version, kind, ...extra };
+    const fingerprint = JSON.stringify([conciergeDecision.decision_id, body]);
+    if (refineRetry.current?.fingerprint !== fingerprint) refineRetry.current = { fingerprint, key: newConciergeKey() };
+    try {
+      const res = await apiRequest<ConciergeDecisionResponse>(`/me/concierge/decision/${conciergeDecision.decision_id}/refine`, {
+        method: "POST", token: sessionToken, timeoutMs: 95000,
+        body: JSON.stringify({ ...body, idempotency_key: refineRetry.current.key }),
+      });
+      if (generation !== conciergeGeneration.current) return;
+      refineRetry.current = null;
+      setConciergeDecision({ ...res, _intent: extra?.prompt ?? conciergeDecision._intent, _turn_count: res.version });
+    } catch (error) {
+      if (generation !== conciergeGeneration.current) return;
+      if (error instanceof ApiError && error.status === 409) {
+        try {
+          const latest = await apiRequest<ConciergeDecisionResponse>(`/me/concierge/decision/${conciergeDecision.decision_id}`, { token: sessionToken });
+          if (generation === conciergeGeneration.current) setConciergeDecision({ ...latest, _intent: String(latest.constraints?.raw_intent ?? conciergeDecision._intent ?? "") });
+        } catch { /* Keep the visible results if recovery cannot connect. */ }
+        if (generation === conciergeGeneration.current) setConciergeActionError("Your search changed elsewhere. Review the latest results and try again.");
+      } else setConciergeActionError("Couldn't finish checking more matches. Your results are still here; please retry.");
+    } finally {
+      if (generation === conciergeGeneration.current) {
+        conciergeRefining.current = false;
+        setConciergeBusy(false);
+      }
+    }
+  }
 
   // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
   const [nowInTheatersItems, setNowInTheatersItems] = useState<TitleItem[]>([]);
@@ -870,13 +973,10 @@ export default function DiscoverScreen() {
               allowanceCap={entitlement.concierge_monthly_cap}
               resetsAt={null}
               backdropUri={conciergeBackdropUri}
-              onDecision={(decision) => {
-                setConciergeDecision(decision);
-                trackEvent("concierge_decision", {
-                  status: decision.status,
-                  title_count: decision.titles.length,
-                });
-              }}
+              key={user?.user_id ?? "signed-out"}
+              draft={conciergeDraft}
+              disabled={conciergeBusy}
+              onSubmit={(prompt) => searchConcierge(prompt, recoveryScope.current?.intent === prompt.trim() ? recoveryScope.current.listId : undefined)}
             />
           ) : null}
 
@@ -891,7 +991,9 @@ export default function DiscoverScreen() {
               requestedCount={conciergeDecision.requested_count ?? 5}
               exactMatchCount={conciergeDecision.exact_match_count ?? conciergeDecision.titles.length}
               titleRationales={conciergeDecision.title_rationales ?? {}}
-              canUndo={(conciergeDecision as unknown as { _turn_count?: number })._turn_count !== undefined && (conciergeDecision as unknown as { _turn_count?: number })._turn_count! > 1}
+              canUndo={(conciergeDecision.version ?? 1) > 1}
+              busy={conciergeBusy}
+              retrievalExhausted={conciergeDecision.retrieval_exhausted}
               onPressFeatured={(t) => {
                 trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
                 void openTitleModal(t.title_id);
@@ -903,60 +1005,17 @@ export default function DiscoverScreen() {
               }}
               onSend={(t) => {
                 trackEvent("concierge_send", { title_id: t.title_id });
-                void openTitleModal(t.title_id);
+                setConciergeAction({ action: "send", id: t.title_id, title: t.title, poster: t.poster_url });
               }}
               onAddToTeam={(t) => {
                 trackEvent("concierge_team", { title_id: t.title_id });
-                void openTitleModal(t.title_id);
+                setConciergeAction({ action: "team", id: t.title_id, title: t.title, poster: t.poster_url });
               }}
               onRate={(t) => {
                 trackEvent("concierge_rate", { title_id: t.title_id });
-                void openTitleModal(t.title_id);
+                setConciergeRating(t);
               }}
-              onRefine={async (kind, extra) => {
-                if (!sessionToken || !conciergeDecision.decision_id || conciergeRefining.current) return;
-                trackEvent("concierge_refine", { kind, decision_id: conciergeDecision.decision_id });
-                if (kind === "new_search") {
-                  setConciergeDecision(null);
-                  return;
-                }
-                conciergeRefining.current = true;
-                setConciergeActionError(null);
-                try {
-                  const idempotency_key = `concierge-refine-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                  const res = await apiRequest<ConciergeDecisionResponse>(
-                    `/me/concierge/decision/${conciergeDecision.decision_id}/refine`,
-                    {
-                      method: "POST",
-                      token: sessionToken,
-                      timeoutMs: 120000,
-                      body: JSON.stringify({
-                        expected_version: conciergeDecision.version,
-                        kind,
-                        featured_title_id: extra?.featured_title_id,
-                        idempotency_key,
-                      }),
-                    },
-                  );
-                  // Carry a turn counter forward so the Undo chip can
-                  // show after the first refinement.
-                  const priorTurns = (conciergeDecision as unknown as { _turn_count?: number })._turn_count ?? 1;
-                  setConciergeDecision((current) => current?.decision_id === conciergeDecision.decision_id ? {
-                    ...res,
-                    _intent: conciergeDecision._intent ?? null,
-                    _turn_count: priorTurns + 1,
-                  } : current);
-                } catch (error) {
-                  if (error instanceof ApiError && error.status === 409) {
-                    try {
-                      const latest = await apiRequest<ConciergeDecisionResponse>(`/me/concierge/decision/${conciergeDecision.decision_id}`, { token: sessionToken });
-                      setConciergeDecision((current) => current?.decision_id === conciergeDecision.decision_id ? { ...latest, _intent: current._intent } : current);
-                    } catch { /* Preserve the displayed results for retry. */ }
-                    setConciergeActionError("Your search changed elsewhere. Review the latest results and try again.");
-                  } else setConciergeActionError("Couldn't refine this search. Your results are still here; please try again.");
-                } finally { conciergeRefining.current = false; }
-
-              }}
+              onRefine={(kind, extra) => { void refineConcierge(kind, extra); }}
             />
           ) : null}
 
@@ -968,28 +1027,13 @@ export default function DiscoverScreen() {
               originalIntent={conciergeDecision._intent ?? null}
               rationale={conciergeDecision.rationale}
               partialReason={conciergeDecision.partial_reason ?? null}
-              onApplyAdjustment={async (prompt) => {
-                if (!sessionToken || !prompt.trim()) return;
-                trackEvent("concierge_adjustment_applied", { status_detail: conciergeDecision.status_detail });
-                // Chunk E completion: for "from my saved list" asks
-                // without a named list, open the picker instead of
-                // re-firing another needs_list_selection.
-                if (conciergeDecision.status_detail === "needs_list_selection") {
-                  setShowListPicker(true);
-                  return;
-                }
-                try {
-                  const idempotency_key = `concierge-adj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                  const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
-                    method: "POST",
-                    token: sessionToken,
-                  timeoutMs: 120000,
-                    body: JSON.stringify({ intent: prompt, idempotency_key }),
-                  });
-                  setConciergeDecision({ ...res, _intent: prompt });
-                } catch {
-                  // Keep the current empty state visible; user can retry.
-                }
+              busy={conciergeBusy}
+              onContinue={() => { void refineConcierge("continue_search"); }}
+              onEdit={() => setConciergeDraft(conciergeDecision._intent ?? "")}
+              onApplyAdjustment={(prompt, adjustment) => {
+                if (conciergeDecision.status_detail === "needs_list_selection") setShowListPicker(true);
+                else if (adjustment === "broaden_catalog") void searchConcierge(prompt);
+                else { setConciergeDraft(prompt); void refineConcierge("edit", { prompt }); }
               }}
             />
           ) : null}
@@ -1004,22 +1048,7 @@ export default function DiscoverScreen() {
               const prompt =
                 conciergeDecision?._intent ??
                 `Help me pick from my list "${listName}".`;
-              try {
-                const idempotency_key = `concierge-list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
-                  method: "POST",
-                  token: sessionToken,
-                  timeoutMs: 120000,
-                  body: JSON.stringify({
-                    intent: prompt,
-                    collection_list_id: listId,
-                    idempotency_key,
-                  }),
-                });
-                setConciergeDecision({ ...res, _intent: prompt });
-              } catch {
-                // Keep whatever's on screen so the user can retry.
-              }
+              void searchConcierge(prompt, listId);
             }}
           />
 
@@ -1204,6 +1233,9 @@ export default function DiscoverScreen() {
           }}
         />
       )}
+      <TitleActionSheets target={conciergeAction} token={sessionToken} source="concierge" onClose={() => setConciergeAction(null)} />
+      <RatingEditor visible={conciergeRating !== null} token={sessionToken} titleId={conciergeRating?.title_id ?? null}
+        titleName={conciergeRating?.title} initial={null} onClose={() => setConciergeRating(null)} />
       <SaveToListSheet
         visible={showSaveSheet}
         token={sessionToken}

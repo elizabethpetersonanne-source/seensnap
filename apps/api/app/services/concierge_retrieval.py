@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 import json
+import hashlib
+from contextvars import copy_context
 from uuid import UUID
 
 import httpx
@@ -18,6 +20,7 @@ from app.core.config import settings
 from app.models.content import ContentAvailability, ContentTitle
 from app.models.social import Rating, TitleWatchStatus, Watchlist, WatchlistItem
 from app.services import tmdb
+from app.services.concierge_runtime import timeout_for, check_budget, stage, ConciergeDeadlineExceeded
 from app.services.concierge_contract import RelevanceResponse
 
 
@@ -29,7 +32,7 @@ def resolve_people(db, constraints):
     candidates = []
     for person in constraints.person_constraints:
         with httpx.Client(
-            base_url=settings.tmdb_base_url, headers=tmdb._tmdb_headers(), timeout=12
+            base_url=settings.tmdb_base_url, headers=tmdb._tmdb_headers(), timeout=timeout_for(12)
         ) as client:
             response = client.get(
                 "/search/person", params={"query": person["name"], "include_adult": "false"}
@@ -98,7 +101,7 @@ def hydrate_candidates(db, rows, constraints):
             append.append("watch/providers")
         try:
             with httpx.Client(
-                base_url=settings.tmdb_base_url, headers=tmdb._tmdb_headers(), timeout=8
+                base_url=settings.tmdb_base_url, headers=tmdb._tmdb_headers(), timeout=timeout_for(8)
             ) as client:
                 response = client.get(
                     f"/{root}/{row.tmdb_id}", params={"append_to_response": ",".join(append)}
@@ -112,7 +115,9 @@ def hydrate_candidates(db, rows, constraints):
 
     failures = set()
     with ThreadPoolExecutor(max_workers=8) as executor:
-        for row, data, error in executor.map(fetch, jobs):
+        futures = [executor.submit(copy_context().run, fetch, job) for job in jobs]
+        for future in futures:
+            row, data, error = future.result()
             if error:
                 failures.add(row.id)
                 continue
@@ -182,7 +187,7 @@ def relevance_prompt(rows, constraints):
         "Active constraints below override superseded constraints in the request history. "
         f"Request: {json.dumps(constraints.raw_intent)}\n"
         f"Active constraints: {json.dumps(asdict(constraints))}\n"
-        f"Anchors: {json.dumps(constraints.like_anchors)}\n"
+        f"Anchors: {json.dumps(constraints.anchor_evidence or constraints.like_anchors)}\n"
         f"Moods: {json.dumps(constraints.moods)}\nCandidates: {json.dumps(data)}"
     )
 
@@ -198,6 +203,8 @@ def validated_matches(raw, rows):
         seen.add(match.title_id)
         if match.relevance >= 65:
             matches.append(match)
+    if seen != allowed:
+        raise ValueError("Relevance review must cover every supplied candidate")
     return matches
 
 
@@ -223,150 +230,192 @@ def definitely_outside_request(row, constraints):
     return False
 
 
-def retrieve(db, *, user_id, suggested_names, constraints, context, target=5):
-    from app.services.concierge import (
-        RetrievalResult,
-        _ground_suggestions,
-        _intent_matched_catalog_batch,
-        _passes_constraints,
-        _call_configured_model,
-    )
+REVIEW_BATCH_SIZE = 24
+MAX_REVIEW_BATCHES = 6
 
-    scope = constraints.collection_scope
-    rows = []
-    source_complete = scope != "any"
+
+def _fingerprint(user_id, constraints):
+    values = asdict(constraints)
+    for field in ("excluded_title_ids", "anchor_evidence"):
+        values.pop(field, None)
+    # IDs are resolved by the server; names/roles remain stable across turns.
+    values["person_constraints"] = [{k: v for k, v in p.items() if k != "tmdb_person_id"} for p in values["person_constraints"]]
+    return hashlib.sha256(json.dumps([str(user_id), values], sort_keys=True).encode()).hexdigest()
+
+
+def _evidence_signature(title):
+    return hashlib.sha256(json.dumps([title.overview, title.genres, title.runtime_minutes,
+        (title.metadata_raw or {}).get("keywords"), (title.metadata_raw or {}).get("credits")], sort_keys=True).encode()).hexdigest()
+
+
+def catalog_page(db, constraints, page):
+    """Expand real TMDB pages after the initial snapshot; never offset a shrinking pool."""
+    from app.services.discovery_feed import canonical_genre
+    rows, done = [], True
+    kinds = ["movie"] if constraints.media_type == "movie" else ["tv"] if constraints.media_type == "series" else ["movie", "tv"]
+    for kind in kinds:
+        check_budget()
+        genres = tmdb._fetch_genre_map(kind)
+        genre_ids = [tmdb._match_genre_id(genres, canonical_genre(kind, value)) for value in constraints.genres]
+        if constraints.genres and not any(g is not None for g in genre_ids):
+            continue
+        params = {"page": page, "include_adult": "false", "language": "en-US", "sort_by": "popularity.desc"}
+        if genre_ids: params["with_genres"] = "|".join(str(g) for g in genre_ids if g is not None)
+        key = "primary_release_date" if kind == "movie" else "first_air_date"
+        if constraints.year_min: params[key + ".gte"] = f"{constraints.year_min}-01-01"
+        if constraints.year_max: params[key + ".lte"] = f"{constraints.year_max}-12-31"
+        with httpx.Client(base_url=settings.tmdb_base_url, headers=tmdb._tmdb_headers(), timeout=timeout_for(8)) as client:
+            response = client.get(f"/discover/{kind}", params=params)
+            response.raise_for_status()
+        data = response.json()
+        done &= page >= int(data.get("total_pages", 1))
+        for raw in data.get("results", []):
+            raw = dict(raw, media_type=kind, genres=[{"id": g, "name": genres[g]} for g in raw.get("genre_ids", []) if g in genres])
+            row = tmdb._upsert_title_from_tmdb_result(db, raw)
+            if row: rows.append(row)
+    return rows, done
+
+
+def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, continuation=None):
+    from app.services.concierge import RetrievalResult, _ground_suggestions, _intent_matched_catalog_batch, _passes_constraints, _call_configured_model
+    from app.models.taste import UserSignal
+    from app.services.recommendation_service import _personal_score, MODES
+    check_budget()
+    scope, rows = constraints.collection_scope, []
+    complete = scope != "any"
+    allowed_ids = None
+    # Always re-read current membership before using a stored snapshot.
     if scope in ("my_next_watch", "named_list"):
         if scope == "my_next_watch":
             from app.services.watchlists import get_next_watch_list
-
             wl = get_next_watch_list(db, user_id)
         else:
-            if not constraints.collection_list_id:
-                return RetrievalResult([], False)
-            try:
-                lid = UUID(constraints.collection_list_id)
-            except ValueError:
-                return RetrievalResult([], True)
-            wl = db.scalar(
-                select(Watchlist).where(Watchlist.id == lid, Watchlist.owner_user_id == user_id)
-            )
-        if wl is None:
-            return RetrievalResult([], True)
-        rows = list(
-            db.scalars(
-                select(ContentTitle)
-                .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
-                .where(WatchlistItem.watchlist_id == wl.id)
-                .order_by(WatchlistItem.created_at.desc(), ContentTitle.id)
-            ).all()
-        )
+            if not constraints.collection_list_id: return RetrievalResult([], False)
+            try: lid = UUID(constraints.collection_list_id)
+            except ValueError: return RetrievalResult([], True)
+            wl = db.scalar(select(Watchlist).where(Watchlist.id == lid, Watchlist.owner_user_id == user_id))
+        if wl is None: return RetrievalResult([], True)
+        rows = list(db.scalars(select(ContentTitle).join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
+            .where(WatchlistItem.watchlist_id == wl.id).order_by(WatchlistItem.created_at.desc(), ContentTitle.id)).all())
+        allowed_ids = {str(row.id) for row in rows}
     elif scope == "watched":
-        rows = list(
-            db.scalars(
-                select(ContentTitle)
-                .join(Rating, Rating.content_title_id == ContentTitle.id)
-                .where(
-                    Rating.user_id == user_id, Rating.watched_state == "watched", Rating.score >= 7
-                )
-                .order_by(Rating.score.desc(), ContentTitle.id)
-            ).all()
-        )
-    else:
-        ids = _ground_suggestions(db, suggested_names, constraints)
-        by_id = {
-            t.id: t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(ids))).all()
-        }
-        rows = [by_id[tid] for tid in ids if tid in by_id]
-    if constraints.person_constraints:
-        people_rows = resolve_people(db, constraints)
-        if scope == "any":
-            rows.extend(people_rows)
-    if scope == "any":
-        for anchor_name in constraints.like_anchors:
-            anchors = tmdb.search_titles(db, anchor_name)
-            exact = next((a for a in anchors if a.title.casefold() == anchor_name.casefold()), None)
-            if exact:
-                constraints.excluded_title_ids.append(str(exact.id))
-                rows.extend(tmdb.fetch_related_titles(db, exact, limit=20))
-        for genre in constraints.genres[:2]:
-            rows.extend(
-                tmdb.discover_titles_by_genre(
-                    db, genre, media_type=constraints.media_type, limit=40
-                )
-            )
-        # One stable snapshot: never increase OFFSET while changing exclusions.
-        rows.extend(
-            _intent_matched_catalog_batch(
-                db, constraints=constraints, exclude=set(), offset=0, limit=160
-            )
-        )
-    unique = list({row.id: row for row in rows}.values())
+        rows = list(db.scalars(select(ContentTitle).join(Rating, Rating.content_title_id == ContentTitle.id)
+            .where(Rating.user_id == user_id, Rating.watched_state == "watched", Rating.score >= 7)
+            .order_by(Rating.score.desc(), ContentTitle.id)).all())
+        allowed_ids = {str(row.id) for row in rows}
+    resume = continuation if continuation and continuation.get("fingerprint") == _fingerprint(user_id, constraints) else None
+    if not resume:
+        with stage("candidate_sources"):
+            if scope == "any":
+                ids = _ground_suggestions(db, suggested_names, constraints)
+                by_id = {t.id: t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(ids))).all()}
+                rows = [by_id[tid] for tid in ids if tid in by_id]
+            if constraints.person_constraints:
+                people_rows = resolve_people(db, constraints)
+                if scope == "any":
+                    rows.extend(people_rows)
+                    complete = True  # verified combined credits enumerate this source
+            anchor_rows = []
+            if constraints.anchor_title_ids:
+                anchor_rows = list(db.scalars(select(ContentTitle).where(ContentTitle.id.in_([UUID(x) for x in constraints.anchor_title_ids]))).all())
+            else:
+                for name in constraints.like_anchors:
+                    check_budget()
+                    anchors = tmdb.search_titles(db, name)
+                    exact = next((a for a in anchors if a.title.casefold() == name.casefold()), None)
+                    if exact: anchor_rows.append(exact)
+                constraints.anchor_title_ids = [str(a.id) for a in anchor_rows]
+            constraints.anchor_evidence = [{"title_id": str(a.id), "title": a.title,
+                "media_type": a.content_type, "overview": (a.overview or "")[:1400], "genres": a.genres,
+                "keywords": (a.metadata_raw or {}).get("keywords")} for a in anchor_rows]
+            constraints.excluded_title_ids = list(set(constraints.excluded_title_ids) | {str(a.id) for a in anchor_rows})
+            if scope == "any" and not complete:
+                for anchor in anchor_rows:
+                    check_budget()
+                    rows.extend(tmdb.fetch_related_titles(db, anchor, limit=20))
+                for genre in constraints.genres[:2]:
+                    check_budget()
+                    rows.extend(tmdb.discover_titles_by_genre(db, genre, media_type=constraints.media_type, limit=40))
+                rows.extend(_intent_matched_catalog_batch(db, constraints=constraints, exclude=set(), offset=0, limit=160))
     watched = set()
     if scope in ("any", "my_next_watch") and not constraints.rewatch_intent:
-        watched.update(
-            db.scalars(
-                select(Rating.content_title_id).where(
-                    Rating.user_id == user_id, Rating.watched_state == "watched"
-                )
-            ).all()
-        )
-        watched.update(
-            db.scalars(
-                select(TitleWatchStatus.content_title_id).where(
-                    TitleWatchStatus.user_id == user_id, TitleWatchStatus.watched_state == "watched"
-                )
-            ).all()
-        )
-    excluded = set(constraints.excluded_title_ids)
-    unique = [
-        row
-        for row in unique
-        if row.id not in watched
-        and str(row.id) not in excluded
-        and (constraints.media_type == "any" or row.content_type == constraints.media_type)
-        and not definitely_outside_request(row, constraints)
-    ]
-    # Full authorized membership is queried; the relevance budget is explicit.
-    # Different options excludes already-shown IDs BEFORE this budget is applied.
-    limited = len(unique) > 64
-    candidates = unique[:64]
-    failures = hydrate_candidates(db, candidates, constraints)
-    passing = [
-        row
-        for row in candidates
-        if row.id not in failures and _passes_constraints(row, constraints, db=db)
-    ]
-    if not passing:
-        return RetrievalResult(
-            [],
-            source_complete and not limited and not failures,
-            "metadata_unavailable" if failures else "retrieval_budget_reached" if limited else None,
-        )
-    raw = _call_configured_model("", prompt_override=relevance_prompt(passing, constraints))
-    matches = validated_matches(raw, passing)
-    # Existing personal signals are used only within equal relevance bands.
-    from app.models.taste import UserSignal
-    from app.services.recommendation_service import _personal_score, MODES
-
+        watched.update(db.scalars(select(Rating.content_title_id).where(Rating.user_id == user_id, Rating.watched_state == "watched")).all())
+        watched.update(db.scalars(select(TitleWatchStatus.content_title_id).where(TitleWatchStatus.user_id == user_id, TitleWatchStatus.watched_state == "watched")).all())
+    excluded = set(constraints.excluded_title_ids) | {str(x) for x in watched}
+    def permitted(row):
+        return row is not None and str(row.id) not in excluded and (allowed_ids is None or str(row.id) in allowed_ids) and (
+            constraints.media_type == "any" or row.content_type == constraints.media_type) and not definitely_outside_request(row, constraints)
+    if resume:
+        state = json.loads(json.dumps(resume))
+        pending = list(state.get("pending_ids", []))
+        approved = dict(state.get("approved", {}))
+    else:
+        unique = {str(row.id): row for row in rows if permitted(row)}
+        pending, approved = list(unique), {}
+        state = {"fingerprint": _fingerprint(user_id, constraints), "source_complete": complete,
+            "catalog_page": 1, "seen_ids": list(unique)}
+    seen = set(state.get("seen_ids", []))
+    # A saved list may gain titles between turns. Include new current members.
+    if resume and allowed_ids is not None:
+        pending.extend(str(row.id) for row in rows if str(row.id) not in seen and permitted(row))
+        seen.update(allowed_ids)
+    cached = {str(t.id): t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_([UUID(x) for x in approved]))).all()}
+    for key in list(approved):
+        row = cached.get(key)
+        if not permitted(row):
+            approved.pop(key)
+        elif not _passes_constraints(row, constraints, db=db) or approved[key].get("signature") != _evidence_signature(row):
+            approved.pop(key); pending.append(key)
+    failures, reason, batches, pages = [], None, 0, 0
+    while len(approved) < target and batches < MAX_REVIEW_BATCHES:
+        batch_ids = []
+        try:
+            check_budget()
+            if not pending:
+                if state["source_complete"]: break
+                if pages >= 2 or state["catalog_page"] > 500:
+                    reason = "retrieval_budget_reached"; break
+                with stage("catalog_continuation"):
+                    page_rows, done = catalog_page(db, constraints, state["catalog_page"])
+                state["catalog_page"] += 1; state["source_complete"] = done
+                pages += 1
+                for row in page_rows:
+                    key = str(row.id)
+                    if key not in seen and permitted(row): pending.append(key)
+                    seen.add(key)
+                continue
+            batch_ids, pending = pending[:REVIEW_BATCH_SIZE], pending[REVIEW_BATCH_SIZE:]
+            batches += 1
+            by_id = {str(t.id): t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_([UUID(x) for x in batch_ids]))).all()}
+            batch = [by_id[key] for key in batch_ids if permitted(by_id.get(key))]
+            with stage("metadata"):
+                failed = hydrate_candidates(db, batch, constraints)
+            failures.extend(str(x) for x in failed)
+            passing = [row for row in batch if row.id not in failed and _passes_constraints(row, constraints, db=db)]
+            if not passing: continue
+            with stage("relevance"):
+                raw = _call_configured_model("", prompt_override=relevance_prompt(passing, constraints))
+                matches = validated_matches(raw, passing)
+            for match in matches:
+                approved[match.title_id] = {"relevance": match.relevance, "reason": match.reason,
+                    "signature": _evidence_signature(by_id[match.title_id])}
+                cached[match.title_id] = by_id[match.title_id]
+        except ConciergeDeadlineExceeded:
+            pending = list(dict.fromkeys(batch_ids + pending))
+            reason = "retrieval_timeout"; break
+        except (httpx.HTTPError, tmdb.TmdbConfigurationError, ValueError):
+            pending = list(dict.fromkeys(batch_ids + pending))
+            reason = "upstream_failure"; break
     signals = db.scalars(select(UserSignal).where(UserSignal.user_id == user_id)).all()
     index = {(s.signal_type, s.signal_name): float(s.score) for s in signals}
-    titles = {str(row.id): row for row in passing}
-    matches.sort(
-        key=lambda m: (
-            -(m.relevance // 5),
-            -_personal_score(titles[m.title_id], None, index, MODES["perfect"])[0],
-            -m.relevance,
-            m.title_id,
-        )
-    )
-    selected = matches[:target]
-    return RetrievalResult(
-        [UUID(m.title_id) for m in selected],
-        source_complete and not limited and not failures and len(matches) <= target,
-        "metadata_unavailable"
-        if failures and len(selected) < target
-        else "retrieval_budget_reached"
-        if len(selected) < target and (limited or not source_complete)
-        else None,
-        {m.title_id: m.reason for m in selected},
-    )
+    ordered = sorted(approved, key=lambda key: (-approved[key]["relevance"],
+        -_personal_score(cached[key], None, index, MODES["perfect"])[0], key))
+    selected = ordered[:target]
+    rationales = {key: approved.pop(key)["reason"] for key in selected}
+    pending = list(dict.fromkeys([*pending, *failures]))
+    state.update(pending_ids=pending, approved=approved, seen_ids=sorted(seen))
+    exhausted = state["source_complete"] and not pending and not approved
+    if len(selected) < target:
+        reason = reason or ("metadata_unavailable" if failures else "source_exhausted" if exhausted else "retrieval_budget_reached")
+    else: reason = None
+    return RetrievalResult([UUID(key) for key in selected], exhausted, reason, rationales, state)

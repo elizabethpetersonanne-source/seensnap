@@ -7,7 +7,7 @@ is not accepted anywhere.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Literal
 from uuid import UUID, uuid4
 
@@ -152,15 +152,22 @@ def reserve_concierge_decision(
     reservation outcome. Retries don't double-charge; a decision that
     later fails/returns-no-results can be `released` without consuming
     the slot."""
+    from app.models.user import User
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     now = now or datetime.now(timezone.utc)
+    # Abandoned work cannot permanently consume a future free-plan slot.
+    from sqlalchemy import update
+    db.execute(update(ConciergeAllowanceEntry).where(
+        ConciergeAllowanceEntry.user_id == user_id, ConciergeAllowanceEntry.state == "reserved",
+        ConciergeAllowanceEntry.reserved_at < now - timedelta(seconds=150),
+    ).values(state="released", finalized_at=now))
     period_start = _first_of_month_utc(now)
     period_end = _first_of_next_month_utc(now)
     ent = resolve_entitlement(db, user_id, now=now)
 
-    # Premium — no slot reservation needed, but still log for observability.
+    # Premium is uncapped, with the same reserve/finalize lifecycle for recovery.
     if ent.tier == "premium":
-        # Store a 'consumed' row keyed by idempotency to prevent duplicate
-        # analytics on retry. No cap enforcement for premium.
+        # Keep one reservation per request key, without cap enforcement.
         existing = db.scalar(
             select(ConciergeAllowanceEntry).where(
                 ConciergeAllowanceEntry.user_id == user_id,
@@ -168,6 +175,11 @@ def reserve_concierge_decision(
             )
         )
         if existing is not None:
+            if existing.state == "released":
+                existing.state = "reserved"
+                existing.reserved_at = now
+                existing.period_start, existing.period_end = period_start, period_end
+                existing.finalized_at = None
             return AllowanceDecision(
                 allowed=True,
                 remaining=None,
@@ -182,9 +194,8 @@ def reserve_concierge_decision(
             period_start=period_start,
             period_end=period_end,
             decision_id=decision_id,
-            state="consumed",  # premium decisions are consumed-on-reserve for logging only
+            state="reserved",
             idempotency_key=idempotency_key,
-            finalized_at=now,
         ))
         db.flush()
         return AllowanceDecision(
@@ -202,7 +213,7 @@ def reserve_concierge_decision(
             ConciergeAllowanceEntry.idempotency_key == idempotency_key,
         )
     )
-    if existing is not None:
+    if existing is not None and existing.state != "released":
         in_period = _active_period_entries(db, user_id, now=now)
         return AllowanceDecision(
             allowed=existing.state in ("reserved", "consumed"),
@@ -222,6 +233,14 @@ def reserve_concierge_decision(
             decision_id=None,
             resets_at=period_end,
         )
+    if existing is not None:
+        existing.state = "reserved"
+        existing.reserved_at = now
+        existing.finalized_at = None
+        existing.period_start, existing.period_end = period_start, period_end
+        db.flush()
+        return AllowanceDecision(True, max(CONCIERGE_FREE_MONTHLY_ALLOWANCE - used - 1, 0),
+                                 "retry_reserved", existing.decision_id, period_end)
     decision_id = uuid4()
     db.add(ConciergeAllowanceEntry(
         id=uuid4(),

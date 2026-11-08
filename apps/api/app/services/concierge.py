@@ -43,6 +43,7 @@ from app.models.content import ContentTitle
 from app.services.concierge_contract import ConciergeIntent
 from app.services.concierge_retrieval import PersonResolutionError
 from app.services.tmdb import TmdbConfigurationError
+from app.services.concierge_runtime import check_budget, timeout_for, stage, error_code, ConciergeDeadlineExceeded
 
 
 # ─── Typed constraints the resolver produces ─────────────────────────
@@ -96,6 +97,8 @@ class ConciergeConstraints:
     person_constraints: list[dict] = field(default_factory=list)
     excluded_title_ids: list[str] = field(default_factory=list)
     requested_count: int = 5
+    anchor_title_ids: list[str] = field(default_factory=list)
+    anchor_evidence: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -128,6 +131,7 @@ class ConciergeDecision:
     # client surfaces the current featured title's rationale, so
     # promoting a thumbnail changes the explanation per Oct-27 brief.
     title_rationales: dict[str, str] = field(default_factory=dict)
+    retrieval_state: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -137,6 +141,7 @@ class RetrievalResult:
     exhausted: bool  # True only when the authorized source actually drained
     partial_reason: str | None = None
     title_rationales: dict[str, str] = field(default_factory=dict)
+    retrieval_state: dict = field(default_factory=dict)
 
 
 # ─── Personal context (Concierge brief chunk B) ─────────────────────
@@ -332,6 +337,7 @@ def resolve_concierge_decision(
     collection_list_id: UUID | None = None,
     effective_constraints: ConciergeConstraints | None = None,
     excluded_title_ids: list[str] | None = None,
+    retrieval_state: dict | None = None,
 ) -> ConciergeDecision:
     """Resolve a natural-language intent to a typed decision + grounded
     titles. Returns an honest unavailable state if no provider is
@@ -347,6 +353,7 @@ def resolve_concierge_decision(
             status_detail="empty_intent",
         )
 
+    check_budget()
     provider = (settings.concierge_ai_provider or os.environ.get("CONCIERGE_AI_PROVIDER", "")).strip().lower()
     api_key = (settings.concierge_ai_api_key or os.environ.get("CONCIERGE_AI_API_KEY", "")).strip()
     # Vertex uses ADC — api_key is not required for that provider.
@@ -363,47 +370,37 @@ def resolve_concierge_decision(
 
     # Chunk B: build the personal context block ONCE per decision so
     # every adapter sees the same bounded summary.
-    context = build_personal_context(db, user_id)
+    with stage("personal_context"):
+        context = build_personal_context(db, user_id)
     context_summary = _context_summary_for_prompt(context)
 
-    # Keep provider selection identical for interpretation and relevance review.
-    try:
-        raw = _call_configured_model(intent, context_summary=context_summary)
-    except VertexConfigError:
-        return ConciergeDecision(
-            decision_id=None,
-            constraints=ConciergeConstraints(raw_intent=intent),
-            rationale="",
-            title_ids=[],
-            status="unavailable",
-            status_detail="provider_configuration_error",
-        )
-    except (httpx.HTTPError, ValueError, KeyError, IndexError):
-        return ConciergeDecision(
-            decision_id=None,
-            constraints=ConciergeConstraints(raw_intent=intent),
-            rationale="",
-            title_ids=[],
-            status="error",
-            status_detail="provider_request_failed",
-            partial_reason="upstream_failure",
-        )
-
-    try:
-        validated = _constraints_from_raw(raw, intent)
-        constraints = effective_constraints or validated
-    except (ValidationError, ValueError):
-        # One repair attempt, with the actual schema rather than trusting
-        # arbitrary/coerced fields. No unbounded model retries.
+    # Deterministic refinements reuse validated constraints. They do not need
+    # another interpretation call that might reset a filter or collection.
+    if effective_constraints is not None:
+        constraints, raw = effective_constraints, {"suggested_titles": []}
+    else:
         try:
-            raw = _call_configured_model(intent, context_summary=context_summary,
-                prompt_override="Interpret this request. Return ONLY JSON matching this schema. "
-                + json.dumps(ConciergeIntent.model_json_schema())
-                + "\nRequest: " + json.dumps(intent) + "\nPersonal context: " + context_summary)
-            constraints = effective_constraints or _constraints_from_raw(raw, intent)
-        except (ValidationError, ValueError, httpx.HTTPError, VertexConfigError, KeyError, IndexError):
+            with stage("interpretation"):
+                raw = _call_configured_model(intent, context_summary=context_summary)
+            try:
+                constraints = _constraints_from_raw(raw, intent)
+            except (ValidationError, ValueError):
+                with stage("schema_repair"):
+                    raw = _call_configured_model(intent, context_summary=context_summary,
+                        prompt_override="Interpret this request. Return ONLY JSON matching this schema. "
+                        + json.dumps(ConciergeIntent.model_json_schema())
+                        + "\nRequest: " + json.dumps(intent) + "\nPersonal context: " + context_summary)
+                constraints = _constraints_from_raw(raw, intent)
+        except VertexConfigError:
+            return ConciergeDecision(None, ConciergeConstraints(raw_intent=intent), "", [], "unavailable",
+                status_detail="provider_configuration_error", retrieval_exhausted=False)
+        except (httpx.HTTPError, ConciergeDeadlineExceeded) as error:
             return ConciergeDecision(None, ConciergeConstraints(raw_intent=intent), "", [], "error",
-                                     status_detail="invalid_provider_response", partial_reason="upstream_failure")
+                status_detail=error_code(error), retrieval_exhausted=False,
+                partial_reason="retrieval_timeout" if error_code(error) == "request_timed_out" else "upstream_failure")
+        except (ValidationError, ValueError, KeyError, IndexError):
+            return ConciergeDecision(None, ConciergeConstraints(raw_intent=intent), "", [], "error",
+                status_detail="invalid_provider_response", partial_reason="upstream_failure", retrieval_exhausted=False)
     constraints.raw_intent = intent
     constraints.excluded_title_ids = list(dict.fromkeys([
         *constraints.excluded_title_ids, *(excluded_title_ids or []),
@@ -428,7 +425,7 @@ def resolve_concierge_decision(
                                      [], "empty", status_detail="services_needed")
     if any(p in low for p in ("rent or buy", "rent/buy", "available to rent", "can rent")):
         constraints.subscription_access_only = False
-    else:
+    elif effective_constraints is None:
         constraints.subscription_access_only = True
 
     # Chunk B: resolve "my number one" / "my #1" / "my top pick" from
@@ -436,7 +433,8 @@ def resolve_concierge_decision(
     # If the model already added a canonical anchor we leave it alone;
     # we only INJECT when the intent clearly references the user's own
     # ranking and the catalog can supply a title.
-    constraints = _resolve_personal_references(constraints, intent, context)
+    if effective_constraints is None:
+        constraints = _resolve_personal_references(constraints, intent, context)
 
     # Chunk C: resolve the source collection from the intent.
     # "pick from my next watch" / "something from my list" / "a
@@ -471,8 +469,11 @@ def resolve_concierge_decision(
     try:
         retrieval = _retrieve_candidates(
             db, user_id=user_id, suggested_names=suggested_names,
-            constraints=constraints, context=context, target=target,
+            constraints=constraints, context=context, target=target, retrieval_state=retrieval_state,
         )
+    except ConciergeDeadlineExceeded:
+        return ConciergeDecision(None, constraints, "", [], "error", status_detail="request_timed_out",
+            requested_count=target, partial_reason="retrieval_timeout", retrieval_exhausted=False)
     except PersonResolutionError:
         return ConciergeDecision(None, constraints, "Please specify the person's full name or open People search.",
                                  [], "empty", status_detail="person_needs_clarification",
@@ -492,10 +493,13 @@ def resolve_concierge_decision(
             rationale=rationale,
             title_ids=[],
             status="error" if retrieval.partial_reason in {"metadata_unavailable", "upstream_failure"} else "empty",
-            status_detail="metadata_unavailable" if retrieval.partial_reason == "metadata_unavailable" else _empty_detail_for(constraints),
+            status_detail=(retrieval.partial_reason if retrieval.partial_reason in {
+                "metadata_unavailable", "upstream_failure", "retrieval_timeout", "retrieval_budget_reached"
+            } else _empty_detail_for(constraints)),
             retrieval_exhausted=retrieval.exhausted,
             exact_match_count=0,
             requested_count=target,
+            retrieval_state=retrieval.retrieval_state,
             partial_reason=retrieval.partial_reason or (
                 "source_exhausted" if retrieval.exhausted else None
             ),
@@ -537,6 +541,7 @@ def resolve_concierge_decision(
         requested_count=target,
         partial_reason=partial_reason,
         title_rationales=title_rationales,
+        retrieval_state=retrieval.retrieval_state,
     )
 
 
@@ -717,7 +722,7 @@ def _empty_detail_for(constraints: ConciergeConstraints) -> str:
     if constraints.collection_scope == "watched":
         return "empty_watched_scope"
     if constraints.collection_scope == "named_list":
-        return "needs_list_selection"
+        return "empty_named_list_scope" if constraints.collection_list_id else "needs_list_selection"
     if constraints.required_providers:
         return "empty_provider_constraint"
     if constraints.runtime_max or constraints.runtime_min:
@@ -727,10 +732,10 @@ def _empty_detail_for(constraints: ConciergeConstraints) -> str:
 
 def _retrieve_candidates(db: Session, *, user_id: UUID, suggested_names: list[str],
                          constraints: ConciergeConstraints, context: PersonalContext,
-                         target: int = 5) -> RetrievalResult:
+                         target: int = 5, retrieval_state: dict | None = None) -> RetrievalResult:
     from app.services.concierge_retrieval import retrieve
     return retrieve(db, user_id=user_id, suggested_names=suggested_names,
-                    constraints=constraints, context=context, target=target)
+                    constraints=constraints, context=context, target=target, continuation=retrieval_state)
 
 
 _PERSONAL_NUMBER_ONE_PATTERNS = (
@@ -764,6 +769,8 @@ def _resolve_personal_references(
     low_intent = intent.lower()
     if not any(p in low_intent for p in _PERSONAL_NUMBER_ONE_PATTERNS):
         return constraints
+    if context.ranked_number_one.get("title_id"):
+        constraints.anchor_title_ids = [str(context.ranked_number_one["title_id"])]
     # Avoid duplicating an anchor the model already surfaced.
     existing_lower = {a.lower() for a in constraints.like_anchors}
     if anchor_title.lower() not in existing_lower:
@@ -948,7 +955,7 @@ def _ground_suggestions(
 
         def lookup(name):
             try:
-                with httpx.Client(base_url=settings.tmdb_base_url, headers=tmdb._tmdb_headers(), timeout=5) as client:
+                with httpx.Client(base_url=settings.tmdb_base_url, headers=tmdb._tmdb_headers(), timeout=timeout_for(5)) as client:
                     response = client.get("/search/multi", params={"query": name, "include_adult": "false"})
                     response.raise_for_status()
                     return name, response.json().get("results", [])
@@ -978,6 +985,7 @@ def _ground_suggestions(
     # state with specific adjustment chips.
     ordered: list[UUID] = []
     for name in suggested_names:
+        check_budget()
         target = _normalize_title_for_match(name)
         for r in rows:
             if (
@@ -1066,6 +1074,7 @@ _HTTP_TIMEOUT = httpx.Timeout(connect=5.0, read=25.0, write=5.0, pool=5.0)
 
 
 def _call_configured_model(intent: str, *, context_summary: str = "{}", prompt_override: str | None = None) -> dict:
+    check_budget()
     provider = (settings.concierge_ai_provider or os.environ.get("CONCIERGE_AI_PROVIDER", "")).strip().lower()
     api_key = (settings.concierge_ai_api_key or os.environ.get("CONCIERGE_AI_API_KEY", "")).strip()
     kwargs = {"context_summary": context_summary, "prompt_override": prompt_override}
@@ -1120,7 +1129,11 @@ def _vertex_access_token() -> str:
 
     if not _VERTEX_CREDS.valid:
         try:
-            _VERTEX_CREDS.refresh(Request())
+            class BudgetedRequest(Request):
+                def __call__(self, *args, **kwargs):
+                    kwargs["timeout"] = timeout_for(min(float(kwargs.get("timeout") or 10), 10))
+                    return super().__call__(*args, **kwargs)
+            _VERTEX_CREDS.refresh(BudgetedRequest())
         except Exception as exc:
             raise VertexConfigError(f"Could not refresh ADC token: {exc}") from exc
     return _VERTEX_CREDS.token  # type: ignore[attr-defined]
@@ -1161,7 +1174,7 @@ def _call_vertex(
             "responseMimeType": "application/json",
         },
     }
-    with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+    with httpx.Client(timeout=httpx.Timeout(timeout_for(25), connect=timeout_for(5))) as client:
         r = client.post(
             url,
             headers={
@@ -1184,7 +1197,7 @@ def _call_vertex(
 
 def _call_anthropic(intent: str, api_key: str, model: str, *, context_summary: str = "{}", prompt_override: str | None = None) -> dict:
     prompt = prompt_override or _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
-    with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+    with httpx.Client(timeout=httpx.Timeout(timeout_for(25), connect=timeout_for(5))) as client:
         r = client.post(
             "https://api.anthropic.com/v1/messages",
             headers={
@@ -1210,7 +1223,7 @@ def _call_anthropic(intent: str, api_key: str, model: str, *, context_summary: s
 
 def _call_openai(intent: str, api_key: str, model: str, *, context_summary: str = "{}", prompt_override: str | None = None) -> dict:
     prompt = prompt_override or _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
-    with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
+    with httpx.Client(timeout=httpx.Timeout(timeout_for(25), connect=timeout_for(5))) as client:
         r = client.post(
             "https://api.openai.com/v1/chat/completions",
             headers={"authorization": f"Bearer {api_key}", "content-type": "application/json"},
@@ -1259,4 +1272,5 @@ def decision_to_dict(d: ConciergeDecision) -> dict:
         "requested_count": d.requested_count,
         "partial_reason": d.partial_reason,
         "title_rationales": d.title_rationales,
+        "retrieval_state": d.retrieval_state,
     }

@@ -24,6 +24,7 @@ export type ConciergeRefineKind =
   | "shorter"
   | "longer"
   | "different_options"
+  | "continue_search"
   | "more_like_selected"
   | "edit"
   | "undo"
@@ -39,6 +40,8 @@ export function ConciergeResult({
   partialReason,
   requestedCount,
   exactMatchCount,
+  retrievalExhausted,
+  busy,
   titleRationales,
   onPressFeatured,
   onRefine,
@@ -58,6 +61,8 @@ export function ConciergeResult({
   partialReason?: string | null;
   requestedCount?: number;
   exactMatchCount?: number;
+  retrievalExhausted?: boolean;
+  busy?: boolean;
   // C16: per-title "why this fits" — rendered under the featured
   // hero when present so promoting a thumbnail changes the copy.
   titleRationales?: Record<string, string>;
@@ -71,6 +76,7 @@ export function ConciergeResult({
   onAddToTeam?: (t: ConciergeTitleCard) => void;
   onRate?: (t: ConciergeTitleCard) => void;
 }) {
+  const [stripWidth, setStripWidth] = useState(320);
   const [featuredId, setFeaturedId] = useState<string | null>(null);
 
   // Reset promotion when the backing title set changes (new turn).
@@ -80,7 +86,7 @@ export function ConciergeResult({
 
   if (titles.length === 0) return null;
   const featured = titles.find((t) => t.title_id === featuredId) ?? titles[0];
-  const continuation = titles.filter((t) => t.title_id !== featured.title_id).slice(0, 4);
+  const continuation = titles.filter((t) => t.title_id !== featured.title_id);
   // C16: per-title rationale takes precedence over the shared one so
   // promoting a thumbnail changes the explanation. Falls back to the
   // model's shared rationale when none is available for the featured.
@@ -179,21 +185,22 @@ export function ConciergeResult({
         </View>
       ) : null}
 
-      {/* Continuation strip — up to four smaller posters. Tap promotes. */}
+      {/* Four visible at a time; every requested match remains browsable. */}
       {continuation.length > 0 ? (
-        <View
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} directionalLockEnabled
+          onLayout={(event) => setStripWidth(event.nativeEvent.layout.width)}
           // Oct-27 fix: force a remount of the strip on every title
           // set change so the Image components reload cleanly after
           // a refinement — otherwise iOS can hold onto the previous
           // decoded poster even after the URI prop updates.
           key={titles.map((t) => t.title_id).join("|")}
-          style={styles.continuationRow}
+          contentContainerStyle={styles.continuationRow}
         >
           {continuation.map((t) => (
             <Pressable
               key={t.title_id}
               onPress={() => setFeaturedId(t.title_id)}
-              style={({ pressed }) => [styles.smallCard, pressed && { opacity: 0.78 }]}
+              style={({ pressed }) => [styles.smallCard, { width: Math.max(64, Math.min(140, (stripWidth - 24) / 4)) }, pressed && { opacity: 0.78 }]}
               accessibilityRole="button"
               accessibilityLabel={`Feature ${t.title}`}
             >
@@ -207,7 +214,7 @@ export function ConciergeResult({
               <Text style={styles.smallTitle} numberOfLines={2}>{t.title}</Text>
             </Pressable>
           ))}
-        </View>
+        </ScrollView>
       ) : null}
 
       {status === "partial" && (requestedCount ?? 5) > 1 ? (
@@ -220,8 +227,10 @@ export function ConciergeResult({
         </Text>
       ) : null}
 
-      {/* Follow-up chips. Order: refinements first, then undo / new. */}
-      {onRefine ? (
+      {titles.length > 5 ? <Text style={styles.lowCountNote}>{titles.length} matches · Swipe the posters to see every pick</Text> : null}
+      {busy ? <Text accessibilityRole="alert" style={styles.lowCountNote}>Checking more matches…</Text> : null}
+      {/* Follow-up chips preserve the current request. */}
+      {onRefine && !busy ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow} directionalLockEnabled>
           {runtimeConstrained ? (
             <RefineChip label="Shorter" onPress={() => onRefine("shorter")} />
@@ -229,6 +238,7 @@ export function ConciergeResult({
           {runtimeConstrained ? (
             <RefineChip label="Longer" onPress={() => onRefine("longer")} />
           ) : null}
+          {retrievalExhausted === false ? <RefineChip label="Keep looking" onPress={() => onRefine("continue_search")} /> : null}
           <RefineChip label="Different options" onPress={() => onRefine("different_options")} />
           <RefineChip
             label={`More like ${truncate(featured.title, 18)}`}
@@ -274,8 +284,9 @@ function partialNoteFor({
   switch (reason) {
     case "upstream_failure":
       return `${prefix}, but couldn't finish checking the others. Retry below.`;
+    case "retrieval_timeout":
     case "retrieval_budget_reached":
-      return `${prefix} within this turn's budget. Try an adjustment below for more.`;
+      return `${prefix}. There are more titles to check; Keep looking continues with the same request.`;
     case "metadata_unavailable":
       return `${prefix}; some titles were missing metadata and were skipped.`;
     case "source_exhausted":
@@ -345,7 +356,7 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   smallCard: {
-    flex: 1,
+    flexShrink: 0,
     gap: 4,
   },
   smallPoster: {
@@ -375,7 +386,7 @@ const styles = StyleSheet.create({
     paddingRight: 32,
   },
   chip: {
-    minHeight: 36,
+    minHeight: 44,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,

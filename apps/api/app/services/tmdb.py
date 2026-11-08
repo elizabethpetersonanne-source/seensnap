@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.concierge_runtime import timeout_for
 from app.models.content import ContentAvailability, ContentTitle
 
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
@@ -199,7 +200,7 @@ def _upsert_title_from_tmdb_result(
 
 
 def search_titles(db: Session, query: str) -> list[ContentTitle]:
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get("/search/multi", params={"query": query, "include_adult": "false", "language": "en-US"})
         response.raise_for_status()
 
@@ -257,7 +258,7 @@ def _pick_language_neutral_backdrop(images_response: dict[str, Any]) -> str | No
 
 def refresh_title_details(db: Session, title: ContentTitle) -> ContentTitle:
     endpoint = f"/movie/{title.tmdb_id}" if title.content_type == "movie" else f"/tv/{title.tmdb_id}"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(
             endpoint,
             params={"language": "en-US", "append_to_response": "credits,images,keywords", "include_image_language": "en,null"},
@@ -286,7 +287,7 @@ def refresh_streaming_options(db: Session, title: ContentTitle, region: str = "U
         if title.content_type == "movie"
         else f"/tv/{title.tmdb_id}/watch/providers"
     )
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(endpoint)
         response.raise_for_status()
 
@@ -359,7 +360,7 @@ def fetch_title_videos(title: ContentTitle, *, client: "httpx.Client | None" = N
     the connection pool — otherwise we build a one-shot client."""
     endpoint = f"/movie/{title.tmdb_id}/videos" if title.content_type == "movie" else f"/tv/{title.tmdb_id}/videos"
     if client is None:
-        with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=10) as c:
+        with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(10)) as c:
             response = c.get(endpoint, params={"language": "en-US"})
             response.raise_for_status()
     else:
@@ -388,7 +389,7 @@ def fetch_title_videos(title: ContentTitle, *, client: "httpx.Client | None" = N
 
 def fetch_title_gallery(title: ContentTitle, limit: int = 12) -> list[dict[str, Any]]:
     endpoint = f"/movie/{title.tmdb_id}/images" if title.content_type == "movie" else f"/tv/{title.tmdb_id}/images"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(endpoint)
         response.raise_for_status()
 
@@ -433,7 +434,7 @@ def fetch_title_gallery(title: ContentTitle, limit: int = 12) -> list[dict[str, 
 
 def fetch_related_titles(db: Session, title: ContentTitle, limit: int = 10) -> list[ContentTitle]:
     endpoint_root = "movie" if title.content_type == "movie" else "tv"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         rec_response = client.get(
             f"/{endpoint_root}/{title.tmdb_id}/recommendations",
             params={"language": "en-US", "page": 1},
@@ -465,7 +466,7 @@ def fetch_related_titles(db: Session, title: ContentTitle, limit: int = 10) -> l
 
 def fetch_trending_titles(db: Session, limit: int = 20) -> list[ContentTitle]:
     hydrated: list[ContentTitle] = []
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         for page in range(1, 4):  # up to 3 pages = up to 60 trending items
             if len(hydrated) >= limit:
                 break
@@ -488,7 +489,7 @@ def fetch_now_playing_titles(db: Session, limit: int = 20, region: str = "US") -
     """TMDB `movie/now_playing` — movies currently in theaters for the
     user's region. Discover brief: movie-only, no implied showtimes."""
     hydrated: list[ContentTitle] = []
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         for page in range(1, 3):
             if len(hydrated) >= limit:
                 break
@@ -554,7 +555,7 @@ def fetch_popular_titles(
         endpoints = (("movie", "/movie/popular"),) if want_server_type == "movie" else (("tv", "/tv/popular"),)
     else:
         endpoints = (("movie", "/movie/popular"), ("tv", "/tv/popular"))
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         for offset in range(max_pages):
             page = ((start_page - 1 + offset) % 500) + 1  # wrap at TMDB's max
             for media_type, path in endpoints:
@@ -632,7 +633,7 @@ def discover_titles_by_genre(
 
     fetched: list[ContentTitle] = []
     seen_tmdb_ids: set[tuple[str, int]] = set()
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         if media_type in {"all", "movie"} and movie_id is not None:
             response = client.get(
                 "/discover/movie",
@@ -701,7 +702,7 @@ def _fetch_genre_map(kind: str) -> dict[int, str]:
     cached = _GENRE_MAP_CACHE.get(kind)
     if cached and monotonic() - cached[0] < 86400:
         return dict(cached[1])
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(f"/genre/{kind}/list", params={"language": "en-US"})
         response.raise_for_status()
     mapping = {
@@ -726,11 +727,11 @@ def fetch_person_details(person_id: int) -> dict[str, Any]:
     headers = _tmdb_headers()
     base_url = settings.tmdb_base_url or "https://api.themoviedb.org/3"
 
-    person_resp = httpx.get(f"{base_url}/person/{person_id}", headers=headers, timeout=10)
+    person_resp = httpx.get(f"{base_url}/person/{person_id}", headers=headers, timeout=timeout_for(10))
     person_resp.raise_for_status()
     person_data = person_resp.json()
 
-    credits_resp = httpx.get(f"{base_url}/person/{person_id}/combined_credits", headers=headers, timeout=10)
+    credits_resp = httpx.get(f"{base_url}/person/{person_id}/combined_credits", headers=headers, timeout=timeout_for(10))
     credits_resp.raise_for_status()
     credits_data = credits_resp.json()
 

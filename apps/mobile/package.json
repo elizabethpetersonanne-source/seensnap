@@ -10,7 +10,8 @@
     "web": "expo start --web",
     "web:build": "expo export --platform web --clear",
     "web:serve": "npx serve dist -l 8081 --single",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test:concierge": "node --test tests/concierge-recovery.test.cjs"
   },
   "engines": {
     "node": ">=20 <21"

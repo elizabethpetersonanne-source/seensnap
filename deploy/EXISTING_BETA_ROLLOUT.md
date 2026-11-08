@@ -32,7 +32,7 @@ If preflight passes and this is the reviewed commit:
 python3 deploy/rollout_existing.py --apply --expected-commit "$(git rev-parse HEAD)"
 ```
 
-The command uploads only committed API files, builds an immutable image, takes a Cloud SQL backup, updates only the migration job's image and waits for the migration. It then deploys the API image with no live traffic, checks `/health` and new routes on the exact tagged revision, and promotes that revision. It preserves existing environment variables, secret references, service accounts and Cloud SQL connections. A failure stops the sequence. Existing users continue using the old API while the new revision is prepared; the reviewed migrations through `20261108_0038` remove a ranking limit and add discovery history/session tables. They are additive for the old API. Old releases will not write the new discovery ledger: deploy the new API promptly after migration; do not claim complete discovery history across that transition.
+The command uploads only committed API files, builds an immutable image, takes a Cloud SQL backup, updates only the migration job's image and waits for the migration. It then deploys the API image with no live traffic, checks `/health` and new routes on the exact tagged revision, and promotes that revision. It preserves existing environment variables, secret references, service accounts and Cloud SQL connections. A failure stops the sequence. Existing users continue using the old API while the new revision is prepared; the reviewed migrations through `20261108_0039` remove a ranking limit and add discovery history/session tables plus Concierge request receipts. They are additive for the old API. Old releases will not write the new discovery ledger: deploy the new API promptly after migration; do not claim complete discovery history across that transition.
 
 The command prints a traffic rollback command before changes and a final report containing commit, revision and image digest. Save that report. Do not use the older `deploy_staging.sh` bootstrap as an update command: it sets complete environment/secret lists and deploys the service before migration.
 
@@ -49,7 +49,7 @@ If the preflight stops, inspect the named configuration in Cloud Console rather 
 
 If a candidate check fails, traffic is not promoted. If a later live check fails, use the printed command to restore the original traffic allocation and keep the frontend PR unmerged. Avoid concurrent deployments while this command runs; it detects configuration changes between stages but cannot lock external operators out of Cloud Run.
 
-Do not automatically downgrade or restore the database. Migration `20261108_0037` retains rankings and its downgrade cannot safely reinstate a 100-title limit after longer rankings exist. `20261108_0038` also refuses automatic downgrade because discovery history must be preserved. Database restore would also discard later writes; investigate separately if it is necessary.
+Do not automatically downgrade or restore the database. Migration `20261108_0037` retains rankings and its downgrade cannot safely reinstate a 100-title limit after longer rankings exist. `20261108_0038` and `20261108_0039` also refuse automatic downgrade because discovery history and Concierge recovery receipts must be preserved. Database restore would also discard later writes; investigate separately if it is necessary.
 
 ## Local verification of the rollout command
 
@@ -58,3 +58,6 @@ python3 -m unittest discover -s deploy/tests -v
 ```
 
 These tests verify operation ordering and failure boundaries without cloud access. They do not claim a real Cloud Run deployment or a successful live Concierge request.
+
+
+Concierge acceptance after this rollout must include `GET /api/v1/me/concierge/requests/{request_key}` (owner authenticated), a lost-response retry returning the same decision, an expired lease resuming safely, Keep looking retaining the source and filters, and a provider failure releasing its allowance. Old API revisions do not create request receipts; only searches started on the updated API have durable initial-request recovery. The receipt lease is 150 seconds and the cooperative work budget is 75 seconds; process restarts require an explicit client retry after the lease expires. Configure log collection for the `seensnap.concierge` JSON messages and inspect stage durations/outcome codes without recording user prompts or credentials.
