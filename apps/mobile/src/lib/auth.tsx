@@ -8,6 +8,8 @@ import { createContext, PropsWithChildren, useContext, useEffect, useState } fro
 import { deactivatePushToken } from "@/lib/notifications";
 import { ONBOARDING_COMPLETED_KEY } from "@/lib/onboarding";
 import { setAnalyticsToken } from "@/lib/analytics";
+import { publishTasteChange } from "@/lib/taste-events";
+import { clearTitleStateCache } from "@/lib/title-state";
 import { clearRecentSearches } from "@/lib/recent-searches";
 import * as SessionStorage from "@/lib/session-storage";
 
@@ -68,6 +70,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
   // attach the bearer token without needing React context.
   useEffect(() => {
     setAnalyticsToken(sessionToken);
+    clearTitleStateCache();
+    publishTasteChange(null);
   }, [sessionToken]);
   const webClientId = process.env.EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID;
   const iosClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
@@ -366,8 +370,8 @@ export function AuthProvider({ children }: PropsWithChildren) {
     ]);
     // STATE-02: drop viewer-scoped title state so the next account that
     // signs in on this device starts with a cold cache.
-    const { clearTitleStateCache } = await import("@/lib/title-state");
     clearTitleStateCache();
+    publishTasteChange(null);
     // W09: drop the shared Swipe/Preview filter so a prior account's
     // "Horror" doesn't carry over to a new sign-in on the same device.
     const { clearDiscoveryFilter } = await import("@/lib/discovery-filter");

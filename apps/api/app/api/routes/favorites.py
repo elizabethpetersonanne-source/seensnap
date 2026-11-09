@@ -8,7 +8,7 @@
 
   GET  /profiles/{user_id}/favorites/ranked   → public/follower-visible view
 
-The single ordered collection has up to 100 entries. Top 20 is
+The single ordered collection has no product size limit. Top 20 is
 "first 20"; Top 100 is "first 100". They cannot disagree because
 they read the same rows.
 
@@ -52,11 +52,10 @@ class RankedFavoritesResponse(BaseModel):
     # of this page. Oct-27 follow-up explicitly forbids reporting the
     # loaded page size as the total.
     total: int
-    # Rendering hint. The write path still gates at 500, but the read
-    # path paginates past it per R01: all ranked, saved, watched and
-    # custom-list titles must be reachable, including records 501 and
-    # 1001.
-    max_capacity: int = 500
+    # No collection-size limit. Reads are independently paginated.
+    max_capacity: int | None = None
+    added_count: int = 0
+    remaining_unplaced: int | None = None
     # R01: pagination cursor. offset is the index of the first row in
     # `items`; has_more signals the client should fetch the next page.
     offset: int = 0
@@ -141,8 +140,8 @@ def get_ranked_favorites(
 
 class ReplaceOrderRequest(BaseModel):
     # Ordered list of title IDs. Position is derived from the index
-    # (i+1). Max 500; duplicates rejected. Passing [] clears the list.
-    title_ids: list[UUID] = Field(default_factory=list, max_length=500)
+    # (i+1); duplicates rejected. Passing [] explicitly clears the list.
+    title_ids: list[UUID] = Field(default_factory=list)
 
 
 @router.put("/ranked", response_model=RankedFavoritesResponse)
@@ -155,6 +154,9 @@ def replace_ranked_favorites(
     the supplied order. The deferrable unique constraint on (user_id,
     position) allows both the delete + inserts to happen inside a
     single transaction without collision — commit reconciles."""
+    from app.models.user import User
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
+
     if len(set(payload.title_ids)) != len(payload.title_ids):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Duplicate title in ranked list")
     # Validate every title exists (rejects arbitrary UUIDs from clients).
@@ -209,8 +211,7 @@ def rebuild_from_ratings(
     rated_rows = db.scalars(
         select(Rating)
         .where(Rating.user_id == current_user.id, Rating.watched_state == "watched")
-        .order_by(Rating.score.desc(), Rating.updated_at.desc())
-        .limit(100)
+        .order_by(Rating.score.desc(), Rating.updated_at.desc(), Rating.content_title_id)
     ).all()
     # Deterministic secondary sort: (score desc, updated_at desc, title_id asc).
     rated_rows_sorted = sorted(
@@ -220,7 +221,7 @@ def rebuild_from_ratings(
             -(r.updated_at.timestamp() if r.updated_at else 0),
             str(r.content_title_id),
         ),
-    )[:100]
+    )
 
     title_ids = [r.content_title_id for r in rated_rows_sorted]
     titles = _fetch_titles(db, title_ids)
@@ -250,7 +251,8 @@ def rebuild_from_ratings(
 
 
 class MoveRequest(BaseModel):
-    to_position: int = Field(ge=1, le=1000)
+    to_position: int = Field(ge=1)
+    expected_version: int | None = Field(default=None, ge=1)
 
 
 class PublishRankChangeRequest(BaseModel):
@@ -258,7 +260,7 @@ class PublishRankChangeRequest(BaseModel):
     rank move. The viewer passes the previous_rank they saw in the UI;
     the server reads the current (post-move) rank from RankedFavorite.
     `visibility` matches the author's publishing default."""
-    previous_rank: int | None = Field(default=None, ge=1, le=100)
+    previous_rank: int | None = Field(default=None, ge=1)
     visibility: str = Field(default="followers", pattern="^(public|followers|private)$")
 
 
@@ -277,6 +279,9 @@ def move_ranked_favorite(
     titles can move #850 → #3 without loading or re-numbering the
     other 998 rows.
     """
+    from app.models.user import User
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
+
     # Load just the target + its sibling range we'll actually shift.
     target = db.scalar(
         select(RankedFavorite).where(
@@ -286,6 +291,9 @@ def move_ranked_favorite(
     )
     if target is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Not in your ranked favorites")
+
+    if payload.expected_version is not None and payload.expected_version != target.version:
+        raise HTTPException(409, detail={"code": "ranking_version_conflict", "server_version": target.version})
 
     total = int(db.scalar(
         select(func.count()).select_from(RankedFavorite).where(RankedFavorite.user_id == current_user.id)
@@ -309,10 +317,9 @@ def move_ranked_favorite(
         )
 
     now = datetime.now(timezone.utc)
-    # Move the target out of the way (position=0) so the shift of
-    # intermediate rows doesn't collide with it on the deferrable
-    # unique constraint.
-    target.position = 0
+    # Temporary positive position respects the CHECK constraint;
+    # PostgreSQL's deferred uniqueness validates the final order.
+    target.position = total + 1
     target.updated_at = now
     target.version += 1
     db.flush()
@@ -430,6 +437,9 @@ def remove_ranked_favorite(
     current_user: CurrentUser,
     db: DbSession,
 ) -> RankedFavoritesResponse:
+    from app.models.user import User
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
+
     favorites = db.scalars(
         select(RankedFavorite)
         .where(RankedFavorite.user_id == current_user.id)
@@ -452,7 +462,7 @@ def remove_ranked_favorite(
 
 class AddRequest(BaseModel):
     title_id: UUID
-    position: int | None = Field(default=None, ge=1, le=1000)
+    position: int | None = Field(default=None, ge=1)
 
 
 # ─── Rated-but-not-ranked (Oct-27 follow-up R05–R06) ───────────────────
@@ -478,6 +488,7 @@ def get_unplaced_rated(
     current_user: CurrentUser,
     db: DbSession,
     limit: int = Query(default=200, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
 ) -> UnplacedResponse:
     """Return rated titles the viewer hasn't placed in Ranked Favorites.
     Owner-only. Ordered by score desc, then updated_at desc.
@@ -508,7 +519,7 @@ def get_unplaced_rated(
         ))
 
     total = len(unplaced)
-    return UnplacedResponse(items=unplaced[:limit], total=total)
+    return UnplacedResponse(items=unplaced[offset:offset+limit], total=total)
 
 
 class BulkAddRequest(BaseModel):
@@ -527,6 +538,9 @@ def append_unplaced_rated(
 ) -> RankedFavoritesResponse:
     """R06: Add remaining rated titles by score. Appends only — the
     existing manual positions are untouched."""
+    from app.models.user import User
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
+
     ranked = db.scalars(
         select(RankedFavorite)
         .where(RankedFavorite.user_id == current_user.id)
@@ -552,13 +566,10 @@ def append_unplaced_rated(
         candidate_ids.append(t.id)
 
     if not candidate_ids:
-        return RankedFavoritesResponse(items=_hydrate(db, current_user.id, ranked), total=len(ranked))
+        return RankedFavoritesResponse(items=_hydrate(db, current_user.id, ranked[:100]),
+            total=len(ranked), has_more=len(ranked) > 100, remaining_unplaced=0)
 
-    # Enforce the 500-row ranking cap when appending.
-    remaining = 500 - len(ranked)
-    if remaining <= 0:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ranked list is full (500 entries)")
-    to_add = candidate_ids[:remaining]
+    to_add = candidate_ids
 
     now = datetime.now(timezone.utc)
     next_position = len(ranked) + 1
@@ -583,7 +594,9 @@ def append_unplaced_rated(
     total = int(db.scalar(
         select(func.count()).select_from(RankedFavorite).where(RankedFavorite.user_id == current_user.id)
     ) or 0)
-    return RankedFavoritesResponse(items=_hydrate(db, current_user.id, final_rows), total=total)
+    return RankedFavoritesResponse(items=_hydrate(db, current_user.id, final_rows[:100]), total=total,
+        has_more=total > 100, added_count=len(to_add),
+        remaining_unplaced=sum(1 for _, title in rated_rows if title.id not in ranked_ids and title.id not in set(to_add)))
 
 
 @router.post("/ranked", response_model=RankedFavoritesResponse)
@@ -594,6 +607,9 @@ def add_ranked_favorite(
 ) -> RankedFavoritesResponse:
     """Add a title. Defaults to appending at the end; supplying
     `position` inserts at that slot (shifting others down)."""
+    from app.models.user import User
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
+
     existing = _fetch_titles(db, [payload.title_id])
     if payload.title_id not in existing:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
@@ -604,8 +620,6 @@ def add_ranked_favorite(
     ).all()
     if any(f.content_title_id == payload.title_id for f in favorites):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Already in ranked favorites")
-    if len(favorites) >= 500:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Ranked list is full (500 entries)")
 
     insert_position = payload.position if payload.position is not None else len(favorites) + 1
     insert_position = min(insert_position, len(favorites) + 1)

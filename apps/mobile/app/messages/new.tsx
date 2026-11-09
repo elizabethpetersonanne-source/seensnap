@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-27 personalization follow-up: Compose a new message.
  *
@@ -83,13 +84,7 @@ export default function NewMessageScreen() {
 
   return (
     <SafeAreaView style={styles.root} edges={["top"]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>New Message</Text>
-        <View style={{ width: 22 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="New Message" ownsSafeArea={false} />
 
       <View style={styles.searchWrap}>
         <Ionicons name="search-outline" size={16} color={colors.muted} />

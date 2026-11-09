@@ -8,7 +8,7 @@ from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentAvailability, ContentTitle
-from app.models.social import Watchlist, WatchlistItem
+from app.models.social import WatchlistItem
 from app.schemas.content import (
     PersonCreditResponse,
     PersonDetailResponse,
@@ -118,6 +118,14 @@ def get_calibration_candidates(
         except TmdbConfigurationError:
             continue
 
+    # Reopening onboarding starts with unhandled titles; never offset a
+    # freshly shuffled pool by an old swipe count.
+    from app.models.taste import SwipeRecord
+    handled = set(db.scalars(select(SwipeRecord.content_title_id).where(
+        SwipeRecord.user_id == _current_user.id,
+        SwipeRecord.source_surface == "onboarding_calibration",
+    )).all())
+    pool = [title for title in pool if title.id not in handled]
     random.shuffle(pool)
     return [_to_title_response(t) for t in pool[:50]]
 
@@ -274,6 +282,20 @@ def get_streaming_options(title_id: UUID, db: DbSession) -> list[StreamingOption
     return [_to_streaming_response(option) for option in options]
 
 
+@router.get("/recommendations/feed")
+def get_discovery_feed(
+    current_user: CurrentUser, db: DbSession,
+    limit: int = Query(default=20, ge=1, le=40),
+    preferred_type: str | None = Query(default=None, pattern="^(movie|show)$"),
+    genre: str | None = Query(default=None, max_length=40),
+    cursor: str | None = Query(default=None, max_length=128),
+    mode: str = Query(default="streaming", pattern="^(streaming|all)$"),
+) -> dict:
+    from app.services.discovery_feed import get_feed
+    return get_feed(db, current_user.id, preferred_type=preferred_type, genre=genre,
+                    cursor=cursor, limit=limit, mode=mode)
+
+
 @router.get("/recommendations/for-me", response_model=list[RecommendationResponse])
 def get_my_recommendations(
     current_user: CurrentUser,
@@ -288,20 +310,15 @@ def get_my_recommendations(
     genre: str | None = Query(default=None, max_length=40),
     session_id: str | None = Query(default=None, max_length=80),
 ) -> list[RecommendationResponse]:
+    from app.services.for_you import for_you_recommendations
     try:
-        return get_social_recommendations(
-            db,
-            current_user.id,
-            limit=limit,
-            preferred_type=preferred_type,
-            genre_filter=genre,
-            session_id=session_id,
-        )
-    except TmdbConfigurationError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
+        return for_you_recommendations(db, current_user.id, limit=limit, preferred_type=preferred_type, genre=genre)
+    except (TmdbConfigurationError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=503, detail="Your picks could not load right now. Please retry.") from exc
 
 
 class SwipeUndoResponse(BaseModel):
+    watched: bool | None = None
     ok: bool = True
     # Honest description of what WAS reversed. UI can show
     # "Removed from My Next Watch" / "Reset to Not watched" / etc.
@@ -318,88 +335,9 @@ def undo_title_swipe(
     current_user: CurrentUser,
     db: DbSession,
 ) -> SwipeUndoResponse:
-    """Oct-27 followup W06: reverse the most recent swipe's
-    server-side effect — swipe record, Watched state (for up/down),
-    and Save (for right). Only acts if the swipe is the user's most
-    recent action for that title. If a newer rating / watch-status
-    change exists for the title, un-watch is skipped and
-    partial_reason explains why so the client can tell the user
-    rather than silently claiming success.
-    """
-    from datetime import datetime, timezone
-    from app.models.taste import SwipeRecord
-    from app.models.social import Rating, TitleWatchStatus, WatchlistItem
-
-    record = db.scalar(
-        select(SwipeRecord).where(
-            SwipeRecord.id == swipe_id,
-            SwipeRecord.user_id == current_user.id,
-        )
-    )
-    if record is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Swipe not found")
-
-    reversed_bits: list[str] = []
-    partial_reason: str | None = None
-    title_id = record.content_title_id
-    now = datetime.now(timezone.utc)
-
-    if record.direction in ("up", "down"):
-        # Reverse Watched only if no newer independent evidence of
-        # watching exists. A rating created AFTER this swipe is the
-        # authoritative truth and must not be clobbered.
-        rating = db.scalar(select(Rating).where(
-            Rating.user_id == current_user.id,
-            Rating.content_title_id == title_id,
-        ))
-        ws = db.scalar(select(TitleWatchStatus).where(
-            TitleWatchStatus.user_id == current_user.id,
-            TitleWatchStatus.content_title_id == title_id,
-        ))
-        rating_is_newer = rating is not None and rating.updated_at and rating.updated_at > record.created_at
-        if rating_is_newer and rating.score is not None:
-            partial_reason = "rating_exists_newer"
-        else:
-            if rating is not None and rating.score is None:
-                # Rating-row with no score (watched-only). Reset to want_to_watch.
-                rating.watched_state = "want_to_watch"
-                rating.updated_at = now
-                rating.version += 1
-                reversed_bits.append("watched")
-            elif ws is not None:
-                # TitleWatchStatus row — safe to delete; mark_watched
-                # created or flipped this row on the swipe. If it was
-                # flipped from an older want_to_watch, revert.
-                if ws.updated_at and ws.updated_at <= record.created_at + timedelta(seconds=5):
-                    db.delete(ws)
-                else:
-                    ws.watched_state = "want_to_watch"
-                    ws.updated_at = now
-                reversed_bits.append("watched")
-
-    if record.direction == "right":
-        # Un-save: delete the WatchlistItem on the default Next
-        # Watch list for this title ONLY if it exists and was added
-        # around this swipe time. QUEUE01: canonical resolver by role.
-        from app.services.watchlists import get_next_watch_list as _get_next_watch
-        next_watch_list = _get_next_watch(db, current_user.id)
-        if next_watch_list is not None:
-            item = db.scalar(
-                select(WatchlistItem).where(
-                    WatchlistItem.watchlist_id == next_watch_list.id,
-                    WatchlistItem.content_title_id == title_id,
-                )
-            )
-            if item is not None:
-                db.delete(item)
-                reversed_bits.append("saved_to_next_watch")
-
-    # Delete the swipe record itself regardless — the viewer's
-    # intent to undo is the authority on the record. Signals
-    # recompute on next write.
-    db.delete(record)
-    db.commit()
-    return SwipeUndoResponse(reversed=reversed_bits, partial_reason=partial_reason)
+    from app.services.discovery_decisions import undo_decision
+    result = undo_decision(db, current_user.id, swipe_id)
+    return SwipeUndoResponse(**result)
 
 
 @router.post("/swipes", response_model=SwipeRecordResponse)

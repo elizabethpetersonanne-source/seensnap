@@ -82,3 +82,15 @@ api_router.include_router(picks.router, prefix="/me/picks", tags=["picks"])
 # returns top_picks / recently_added / both_want_to_watch / watched
 # in one call.
 api_router.include_router(team_home.router, prefix="/teams", tags=["teams"])
+
+from app.api.routes import media_assets
+api_router.include_router(media_assets.router, prefix="/media-assets", tags=["media-assets"])
+
+from app.api.routes import onboarding_draft
+api_router.include_router(onboarding_draft.router, prefix="/me/onboarding-draft", tags=["onboarding"])
+
+from app.api.routes import title_compatibility
+api_router.include_router(title_compatibility.router, prefix="/me/title-compatibility", tags=["scenedna"])
+
+from app.api.routes import discovery_resume
+api_router.include_router(discovery_resume.router, prefix="/me/discovery-resume", tags=["discovery"])

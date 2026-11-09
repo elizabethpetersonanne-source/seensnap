@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-27 spec SET-04: a working bug-report flow with description, optional
  * screenshots, optional device/app diagnostics and a clear submit
@@ -116,13 +117,7 @@ export default function ReportAProblemScreen() {
   if (submitted) {
     return (
       <SafeAreaView style={styles.root}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-            <Ionicons name="chevron-back" size={22} color={colors.ink} />
-          </Pressable>
-          <Text style={styles.headerTitle}>Report a Problem</Text>
-          <View style={{ width: 36 }} />
-        </View>
+        <AppHeader variant="detail" leftKind="back" title="Report a Problem" ownsSafeArea={false} />
         <View style={styles.confirmBody}>
           <View style={styles.confirmIcon}>
             <Ionicons name="checkmark" size={36} color={colors.background} />
@@ -142,13 +137,7 @@ export default function ReportAProblemScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Report a Problem</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Report a Problem" ownsSafeArea={false} />
 
       <ScrollView contentContainerStyle={styles.body}>
         <Text style={styles.lead}>

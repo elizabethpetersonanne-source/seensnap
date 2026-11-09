@@ -398,6 +398,7 @@ def add_title_to_team(
     suggested_rank: int | None,
     also_post_to_feed: bool,
 ) -> TeamTitle:
+    db.scalar(select(Team.id).where(Team.id == team.id).with_for_update())
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == content_title_id))
     if title is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
@@ -406,7 +407,8 @@ def add_title_to_team(
         select(TeamTitle).where(TeamTitle.team_id == team.id, TeamTitle.content_title_id == content_title_id)
     )
     if existing is not None:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Title already in team")
+        db.commit()
+        return existing
 
     team_title = TeamTitle(
         team_id=team.id,
@@ -427,19 +429,8 @@ def add_title_to_team(
         payload={"title_name": title.title, "note": team_title.note},
     )
 
-    if also_post_to_feed:
-        db.add(
-            TeamActivity(
-                team_id=team.id,
-                actor_user_id=actor_user_id,
-                activity_type="team_post",
-                content_title_id=content_title_id,
-                payload={
-                    "text": (note or "").strip() or f"Added {title.title} to the team library.",
-                    "title_name": title.title,
-                },
-            )
-        )
+    # The title-added activity already appears in the private team feed.
+    # Do not generate a second identical event for the same mutation.
 
     ranking_exists = db.scalar(
         select(TeamRanking).where(TeamRanking.team_id == team.id, TeamRanking.content_title_id == content_title_id)
@@ -447,7 +438,8 @@ def add_title_to_team(
     if ranking_exists is None:
         max_rank = db.scalar(select(func.max(TeamRanking.rank)).where(TeamRanking.team_id == team.id)) or 0
         rank_value = int(max_rank) + 1
-        if suggested_rank is not None:
+        member = get_team_member(db, team.id, actor_user_id)
+        if suggested_rank is not None and member and member.role in {"owner", "admin"}:
             rank_value = max(1, min(10, suggested_rank))
             db.execute(
                 TeamRanking.__table__.update()
@@ -459,7 +451,7 @@ def add_title_to_team(
                 team_id=team.id,
                 content_title_id=content_title_id,
                 rank=rank_value,
-                score=max(10.1 - float(rank_value), 6.0),
+                score=0,  # Deprecated column; never a synthetic member rating.
                 movement="new",
                 weeks_on_list=1,
             )

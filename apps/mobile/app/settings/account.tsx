@@ -1,3 +1,5 @@
+import { ConfirmDialog } from "@/components/confirm-dialog";
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-18 UI/UX rebuild: Account sub-screen.
  * Spec image 4 (step 8). Signed-in-with, subscription, legal, delete.
@@ -7,7 +9,6 @@ import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Linking,
   Pressable,
   ScrollView,
@@ -39,6 +40,8 @@ export default function AccountSettingsScreen() {
   const [loading, setLoading] = useState(true);
   const [showPaywall, setShowPaywall] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleteError, setDeleteError] = useState<string|null>(null);
 
   useEffect(() => {
     if (!sessionToken) return;
@@ -52,24 +55,14 @@ export default function AccountSettingsScreen() {
 
   async function handleDeleteAccount() {
     if (!sessionToken || deleting) return;
-    const proceed = await new Promise<boolean>((resolve) => {
-      Alert.alert(
-        "Delete account?",
-        "This permanently removes your profile, lists, ratings and activity. This cannot be undone.",
-        [
-          { text: "Cancel", style: "cancel", onPress: () => resolve(false) },
-          { text: "Delete", style: "destructive", onPress: () => resolve(true) },
-        ],
-      );
-    });
-    if (!proceed) return;
     setDeleting(true);
+    setDeleteError(null);
     try {
       await apiRequest("/auth/me", { method: "DELETE", token: sessionToken });
       await signOut();
       router.replace("/sign-in");
     } catch (err) {
-      Alert.alert("Could not delete account", err instanceof Error ? err.message : "Try again.");
+      setDeleteError("Your account could not be deleted. Please try again.");
     } finally {
       setDeleting(false);
     }
@@ -77,13 +70,7 @@ export default function AccountSettingsScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Account</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Account" ownsSafeArea={false} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
@@ -132,7 +119,7 @@ export default function AccountSettingsScreen() {
 
           <Pressable
             style={[styles.deleteBtn, deleting && { opacity: 0.5 }]}
-            onPress={handleDeleteAccount}
+            onPress={() => { setDeleteError(null); setConfirmDelete(true); }}
             disabled={deleting}
           >
             <Ionicons name="trash-outline" size={18} color={colors.danger} />
@@ -141,6 +128,9 @@ export default function AccountSettingsScreen() {
         </ScrollView>
       )}
 
+      <ConfirmDialog visible={confirmDelete} title="Delete account?"
+        message={`This permanently removes your profile, lists, ratings and activity. This cannot be undone.${deleteError ? "\n\n"+deleteError : ""}`}
+        confirmLabel="Delete my account" busy={deleting} onCancel={()=>setConfirmDelete(false)} onConfirm={()=>void handleDeleteAccount()} />
       <PremiumPaywallSheet
         visible={showPaywall}
         onClose={() => setShowPaywall(false)}

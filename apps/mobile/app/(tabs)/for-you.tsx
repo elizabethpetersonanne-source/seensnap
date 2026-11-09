@@ -1,3 +1,4 @@
+import { SceneDnaBadge } from "@/components/scene-dna-badge";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { useRouter } from "expo-router";
@@ -20,7 +21,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { Avatar } from "@/components/avatar";
 import { GoldButton } from "@/components/gold-button";
 import { SSAnimatedRule } from "@/components/ss-animated-rule";
-import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { AppHeader } from "@/components/headers/app-header";
 import { PosterStack } from "@/components/poster-stack";
 import { TasteSignal } from "@/components/taste-signal";
 import { useCyclingBackdrop, useFallbackBackdrop } from "@/lib/backdrop-pool";
@@ -438,12 +439,7 @@ export default function ForYouScreen() {
           revisiting the tab doesn't always show the exact same backdrop
           (it was reading `[0]` before, which felt hardcoded to whichever
           title happened to sit at the top of current_obsessions). */}
-      <SeenSnapHeader
-        title="SceneDNA"
-        subtitle="Your taste, decoded."
-        artworkSource={sceneDnaHeaderBackdrop ?? headerBackdrop ?? fallbackBackdrop}
-        fallbackSeed={4}
-      />
+      <AppHeader variant="primary" title="SceneDNA" />
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         {/* Compact Identity Hero — SceneDNA UX Overhaul brief §4. Single
             headline archetype + one-sentence explanation + credibility line
@@ -581,7 +577,7 @@ export default function ForYouScreen() {
                       {group.items.map((item) => (
                         <AnimatedCard key={item.title.id} style={styles.recommendationCard} onPress={() => void openDetails(item)}>
                           <Poster uri={item.title.poster_url} style={styles.recommendationPoster} iconSize={20} />
-                          <MatchBadge score={computeMatchScore(item, taste)} />
+                          <SceneDnaBadge titleId={item.title.id} />
                           <View style={styles.recommendationOverlay}>
                             <Text style={styles.recommendationReason}>{humanizeReason(item.reason)}</Text>
                             <Text style={styles.recommendationTitle} numberOfLines={2}>{item.title.title}</Text>
@@ -1538,16 +1534,6 @@ function buildEraTimeline(taste: TasteProfile | null): EraEntry[] {
   const currentEra = labels[0]?.label ?? (genres[0]?.genre ? `${genres[0].genre} Phase` : null);
   if (!currentEra) return [];
   return [{ era: currentEra, period: "Right now", isCurrent: true }];
-}
-
-function computeMatchScore(item: RecommendationItem, taste: TasteProfile | null): number {
-  const topGenres = new Set((taste?.top_genres ?? []).slice(0, 4).map((g) => g.genre.toLowerCase()));
-  const topThemes = new Set((taste?.top_themes ?? []).slice(0, 4).map((t) => t.toLowerCase()));
-  const titleGenres = (item.title.genres ?? []).map((g) => g.toLowerCase());
-  const genreHits = titleGenres.filter((g) => topGenres.has(g)).length;
-  const themeHits = titleGenres.filter((g) => [...topThemes].some((t) => g.includes(t) || t.includes(g))).length;
-  const idHash = item.title.id.split("").reduce((acc, c, i) => acc + c.charCodeAt(0) * (i + 1), 0);
-  return Math.min(99, 72 + (idHash % 14) + Math.min(14, genreHits * 7 + themeHits * 4));
 }
 
 function buildHeroIntro(name?: string | null, taste?: TasteProfile | null) {

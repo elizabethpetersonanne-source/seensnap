@@ -1203,8 +1203,13 @@ def _source_social_saves(
     on the blender side — this function returns up to `limit` so the
     blender has choices for diversity/interleave.
     """
+    from app.services.visibility import visible_list_clause, unblocked_owner_clause
     following_ids_row = db.execute(
-        select(UserFollow.following_user_id).where(UserFollow.follower_user_id == user_id)
+        select(UserFollow.following_user_id).join(User, User.id == UserFollow.following_user_id).where(
+            UserFollow.follower_user_id == user_id,
+            User.is_demo.is_(False),
+            unblocked_owner_clause(UserFollow.following_user_id, user_id),
+        )
     ).all()
     following_ids = {row[0] for row in following_ids_row if row[0] is not None}
     if not following_ids:
@@ -1221,6 +1226,7 @@ def _source_social_saves(
         .join(UserProfile, UserProfile.user_id == Watchlist.owner_user_id)
         .where(
             Watchlist.owner_user_id.in_(following_ids),
+            visible_list_clause(user_id),
             WatchlistItem.created_at >= cutoff,
         )
         .order_by(WatchlistItem.created_at.desc())
@@ -1965,6 +1971,20 @@ def record_swipe(
     if direction not in SWIPE_DIRECTION_WEIGHTS:
         raise ValueError(f"Unsupported swipe direction: {direction}")
 
+    from app.models.discovery import DiscoveryDecision
+    from app.services.discovery_decisions import watch_snapshot, create_decision
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
+    if idempotency_key:
+        receipt = db.scalar(select(DiscoveryDecision).where(
+            DiscoveryDecision.user_id == user_id, DiscoveryDecision.idempotency_key == idempotency_key,
+        ))
+        if receipt is not None:
+            if receipt.content_title_id != title_id or receipt.direction != direction:
+                raise ValueError("This retry key belongs to a different decision")
+            if receipt.undone_at:
+                raise ValueError("This decision was undone; use a new decision key")
+            return receipt
+
     # Idempotency per Onboarding spec §12: if the client already
     # posted this key, return the existing record without creating a
     # duplicate signal. Skip when no key was provided (legacy callers).
@@ -1997,6 +2017,16 @@ def record_swipe(
                 title_id=title_id,
             )
 
+    before = watch_snapshot(db, user_id, title_id)
+    if direction in ("up", "down"):
+        from app.services.watchlists import get_next_watch_list
+        queue = get_next_watch_list(db, user_id)
+        item = db.scalar(select(WatchlistItem).where(
+            WatchlistItem.watchlist_id == queue.id, WatchlistItem.content_title_id == title_id,
+        )) if queue else None
+        if item:
+            before["removed_queue_item"] = {"watchlist_id": str(queue.id), "added_via": item.added_via,
+                                            "position": item.position, "notes": item.notes}
     record = SwipeRecord(
         user_id=user_id,
         content_title_id=title_id,
@@ -2030,142 +2060,34 @@ def record_swipe(
     # returned is unambiguous.
     if direction in ("up", "down"):
         from app.services.title_state import mark_watched
-        try:
-            mark_watched(db, user_id, title_id)
-        except Exception:
-            db.delete(record)
-            db.commit()
-            raise
-
-    _prune_old_swipes(db, user_id)
-    refresh_taste_profile(db, user_id)
-    # Also recompute UserSignal rows so the SceneDNA "Strongest Signals"
-    # section reflects reality after every swipe. Without this, signals
-    # only updated on the 6h staleness refresh — heavy swipers saw their
-    # signals stuck at "early / 0 recent titles" for hours after building
-    # substantial history.
+        mark_watched(db, user_id, title_id, commit=False)
+    create_decision(db, record, before, source_surface)
+    db.commit()
+    # Taste refresh is derived work. A failure cannot undo an accepted action.
     try:
+        _prune_old_swipes(db, user_id)
+        refresh_taste_profile(db, user_id)
         from app.services.user_signals import compute_user_signals
         compute_user_signals(db, user_id)
+        db.commit()
     except Exception:
-        # Non-blocking — a signal recompute failure shouldn't reject the
-        # underlying swipe record.
-        pass
+        db.rollback()
     db.refresh(record)
     return record
 
 
 def _collect_title_signals(db: Session, user_id: UUID) -> tuple[defaultdict[str, float], list[dict], list[int]]:
+    from app.services.user_signals import _collect_interactions
     genre_scores: defaultdict[str, float] = defaultdict(float)
-    title_refs: dict[UUID, dict] = {}
-    release_years: list[int] = []
-    team_ids = [team.id for team, _ in list_user_teams(db, user_id)]
-
-    def apply_title(title: ContentTitle | None, weight: float) -> None:
-        if title is None:
-            return
-        for genre in _title_genres(title):
-            genre_scores[genre] += weight
-        if title.id not in title_refs:
-            title_refs[title.id] = {
-                "title_id": str(title.id),
-                "title_name": title.title,
-                "poster_url": title.poster_url,
-                "weight": 0.0,
-            }
-        title_refs[title.id]["weight"] += weight
-        if title.release_date is not None:
-            release_years.append(title.release_date.year)
-
-    ratings = db.execute(
-        select(Rating, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        .where(Rating.user_id == user_id)
-    ).all()
-    for rating, title in ratings:
-        # Oct-18 brief §3 fix 3: unify signal semantics across the
-        # recommendation stack. The old `max(score - 4.5, 0.5) * 6`
-        # formula floored every rating to a positive contribution, so
-        # a 1/10 rating still added +3 affinity for that title's
-        # traits — contradicting user_signals.py which (correctly)
-        # treats score <= 4 as negative evidence. Switch to a
-        # symmetric mapping centered at 5.5:
-        #   10 →  +27   7 →  +9    5 →  -3
-        #    1 →  -27   4 →  -9    6 →  +3
-        # so low ratings REDUCE affinity in this consumer the same way
-        # they do in user_signals.py's weight table.
-        apply_title(title, (float(rating.score) - 5.5) * 6)
-
-    reviews = db.execute(
-        select(Review, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Review.content_title_id)
-        .where(Review.user_id == user_id)
-    ).all()
-    for review, title in reviews:
-        apply_title(title, 5 if review.body else 3)
-
-    watchlist_items = db.execute(
-        select(WatchlistItem, Watchlist, ContentTitle)
-        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id)
-    ).all()
-    for item, watchlist, title in watchlist_items:
-        bonus = 14 if watchlist.name.lower() == "favorites" else 10 if watchlist.is_default else 8
-        if item.position is not None:
-            bonus += max(10 - item.position, 1)
-        apply_title(title, bonus)
-
-    team_rankings = (
-        db.execute(
-            select(TeamRanking, ContentTitle)
-            .join(ContentTitle, ContentTitle.id == TeamRanking.content_title_id)
-            .where(TeamRanking.team_id.in_(team_ids))
-        ).all()
-        if team_ids
-        else []
-    )
-    for ranking, title in team_rankings:
-        apply_title(title, max(12 - ranking.rank, 2) + float(ranking.score))
-
-    reactions = db.scalar(select(func.count(FeedReaction.id)).where(FeedReaction.user_id == user_id)) or 0
-    if reactions and genre_scores:
-        lead_genre = max(genre_scores.items(), key=lambda item: item[1])[0]
-        genre_scores[lead_genre] += reactions * 0.35
-
-    comments = db.scalar(select(func.count(FeedComment.id)).where(FeedComment.user_id == user_id)) or 0
-    if comments and genre_scores:
-        lead_genre = max(genre_scores.items(), key=lambda item: item[1])[0]
-        genre_scores[lead_genre] += comments * 0.5
-
-    swipe_rows = db.execute(
-        select(SwipeRecord, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == SwipeRecord.content_title_id)
-        .where(SwipeRecord.user_id == user_id)
-        .order_by(SwipeRecord.created_at.desc())
-        .limit(250)
-    ).all()
-    for swipe, title in swipe_rows:
-        if title is None:
-            continue
-        # S04: branch on action_version so legacy v1 Up events keep
-        # their original "more like this" semantics but current v2 Up
-        # contributes near-neutral weight (watching ≠ liking).
-        version = getattr(swipe, "action_version", 1) or 1
-        if swipe.direction == "up":
-            weight = SWIPE_UP_V1_WEIGHT if version < 2 else SWIPE_DIRECTION_WEIGHTS["up"]
-        else:
-            weight = SWIPE_DIRECTION_WEIGHTS.get(swipe.direction, 0.0)
+    title_refs, release_years = [], []
+    for title, weight, _at in _collect_interactions(db, user_id):
+        genres = _title_genres(title)
+        for genre in genres: genre_scores[genre] += weight / max(1, len(genres))
         if weight > 0:
-            apply_title(title, weight)
-            continue
-        for genre in _title_genres(title):
-            genre_scores[genre] += weight
-            if genre_scores[genre] < 0:
-                genre_scores[genre] = 0
-
-    ordered_titles = sorted(title_refs.values(), key=lambda item: item["weight"], reverse=True)
-    return genre_scores, ordered_titles, release_years
+            title_refs.append({"title_id":str(title.id), "title_name":title.title, "poster_url":title.poster_url, "weight":weight})
+            if title.release_date: release_years.append(title.release_date.year)
+    title_refs.sort(key=lambda item: (-item['weight'],item['title_id']))
+    return genre_scores, title_refs, release_years
 
 
 def _derive_themes(genre_scores: dict[str, float]) -> list[str]:

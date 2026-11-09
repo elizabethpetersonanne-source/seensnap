@@ -1,3 +1,4 @@
+import { COUNTRIES } from "@/lib/countries";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
 import { router } from "expo-router";
@@ -24,13 +25,16 @@ import { useCyclingBackdrop } from "@/lib/backdrop-pool";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
 import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleCard } from "@/components/concierge-composer";
+import { TitleActionSheets, type TitleActionTarget } from "@/components/title-action-sheets";
+import { RatingEditor } from "@/components/rating-editor";
+import { newConciergeKey, pendingConciergeSearch, runConciergeSearch } from "@/lib/concierge-requests";
 import { ConciergeEmptyState } from "@/components/concierge-empty-state";
 import { ConciergeListPicker } from "@/components/concierge-list-picker";
-import { ConciergeResult } from "@/components/concierge-result";
+import { ConciergeResult, type ConciergeRefineKind } from "@/components/concierge-result";
 import { DiscoverSection, MediaToggle, type DiscoverTitle } from "@/components/discover-section";
 import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-section";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { useEntitlement } from "@/lib/entitlement";
 import { Avatar } from "@/components/avatar";
@@ -356,12 +360,115 @@ export default function DiscoverScreen() {
 
   // Oct-18 §4 Concierge
   const entitlement = useEntitlement(sessionToken);
+  const [conciergeActionError, setConciergeActionError] = useState<string | null>(null);
+  const conciergeRefining = useRef(false);
+  const [conciergeBusy, setConciergeBusy] = useState(false);
+  const conciergeGeneration = useRef(0);
+  const refineRetry = useRef<{ fingerprint: string; key: string } | null>(null);
+  const [conciergeDraft, setConciergeDraft] = useState("");
+  const recoveryScope = useRef<{ intent: string; listId?: string } | null>(null);
+  const [conciergeAction, setConciergeAction] = useState<TitleActionTarget | null>(null);
+  const [conciergeRating, setConciergeRating] = useState<Pick<ConciergeTitleCard, "title_id" | "title"> | null>(null);
   const [conciergeDecision, setConciergeDecision] = useState<ConciergeDecisionResponse | null>(null);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [showListPicker, setShowListPicker] = useState(false);
 
+  useEffect(() => {
+    const generation = ++conciergeGeneration.current;
+    conciergeRefining.current = false;
+    setConciergeBusy(false);
+    setConciergeDecision(null);
+    setConciergeActionError(null);
+    setConciergeDraft("");
+    setConciergeAction(null);
+    setConciergeRating(null);
+    recoveryScope.current = null;
+    if (user?.user_id) void pendingConciergeSearch(user.user_id).then((pending) => {
+      if (generation !== conciergeGeneration.current || !pending) return;
+      recoveryScope.current = { intent: pending.intent, listId: pending.collection_list_id };
+      setConciergeDraft(pending.intent);
+      setConciergeActionError("Your unfinished search is ready to resume. Tap the arrow to check for results.");
+    });
+    return () => { conciergeGeneration.current += 1; };
+  }, [user?.user_id, sessionToken]);
+
+  async function searchConcierge(prompt: string, listId?: string) {
+    if (!sessionToken || !user?.user_id || conciergeRefining.current) return;
+    conciergeRefining.current = true;
+    setConciergeBusy(true);
+    setConciergeActionError(null);
+    const generation = ++conciergeGeneration.current;
+    recoveryScope.current = { intent: prompt.trim(), listId };
+    setConciergeDraft(prompt);
+    try {
+      const decision = await runConciergeSearch(user.user_id, sessionToken, prompt, listId);
+      if (generation !== conciergeGeneration.current) return;
+      setConciergeDecision(decision);
+      trackEvent("concierge_decision", { status: decision.status, title_count: decision.titles.length });
+      if (decision.status === "processing") setConciergeActionError(decision.can_retry
+        ? "Your search was interrupted. Tap the arrow to resume."
+        : "Your search is still running. Tap the arrow to check for results.");
+      else if (decision.status === "error" || decision.status === "unavailable")
+        setConciergeActionError("Concierge couldn't finish this search. Your request is saved; tap the arrow to retry.");
+      else if (decision.status === "allowance_exhausted")
+        setConciergeActionError("Your monthly search allowance is used up. It resets next month.");
+      return decision;
+    } catch {
+      if (generation === conciergeGeneration.current)
+        setConciergeActionError("Couldn't retrieve this search. Your request is saved; tap the arrow to retry.");
+    } finally {
+      if (generation === conciergeGeneration.current) {
+        conciergeRefining.current = false;
+        setConciergeBusy(false);
+      }
+    }
+  }
+
+  async function refineConcierge(kind: ConciergeRefineKind, extra?: { featured_title_id?: string; prompt?: string }) {
+    if (!sessionToken || !conciergeDecision?.decision_id || conciergeRefining.current) return;
+    if (kind === "new_search") {
+      conciergeGeneration.current += 1;
+      setConciergeDecision(null);
+      setConciergeDraft("");
+      setConciergeActionError(null);
+      recoveryScope.current = null;
+      return;
+    }
+    conciergeRefining.current = true;
+    setConciergeBusy(true);
+    setConciergeActionError(null);
+    const generation = ++conciergeGeneration.current;
+    const body = { expected_version: conciergeDecision.version, kind, ...extra };
+    const fingerprint = JSON.stringify([conciergeDecision.decision_id, body]);
+    if (refineRetry.current?.fingerprint !== fingerprint) refineRetry.current = { fingerprint, key: newConciergeKey() };
+    try {
+      const res = await apiRequest<ConciergeDecisionResponse>(`/me/concierge/decision/${conciergeDecision.decision_id}/refine`, {
+        method: "POST", token: sessionToken, timeoutMs: 95000,
+        body: JSON.stringify({ ...body, idempotency_key: refineRetry.current.key }),
+      });
+      if (generation !== conciergeGeneration.current) return;
+      refineRetry.current = null;
+      setConciergeDecision({ ...res, _intent: extra?.prompt ?? conciergeDecision._intent, _turn_count: res.version });
+    } catch (error) {
+      if (generation !== conciergeGeneration.current) return;
+      if (error instanceof ApiError && error.status === 409) {
+        try {
+          const latest = await apiRequest<ConciergeDecisionResponse>(`/me/concierge/decision/${conciergeDecision.decision_id}`, { token: sessionToken });
+          if (generation === conciergeGeneration.current) setConciergeDecision({ ...latest, _intent: String(latest.constraints?.raw_intent ?? conciergeDecision._intent ?? "") });
+        } catch { /* Keep the visible results if recovery cannot connect. */ }
+        if (generation === conciergeGeneration.current) setConciergeActionError("Your search changed elsewhere. Review the latest results and try again.");
+      } else setConciergeActionError("Couldn't finish checking more matches. Your results are still here; please retry.");
+    } finally {
+      if (generation === conciergeGeneration.current) {
+        conciergeRefining.current = false;
+        setConciergeBusy(false);
+      }
+    }
+  }
+
   // Oct-19 Discover rebrief: Now in Theaters uses TMDB now_playing.
+  const [theaterRegion, setTheaterRegion] = useState<string | null>(null);
   const [nowInTheatersItems, setNowInTheatersItems] = useState<TitleItem[]>([]);
   const [nowInTheatersLoading, setNowInTheatersLoading] = useState(true);
   // Oct-27 spec CON-01: Concierge background = highest-ranked MOVIE
@@ -385,8 +492,21 @@ export default function DiscoverScreen() {
 
   // ── Load discover content ─────────────────────────────────────────────────
 
+  const trendingRequest = useRef(0);
+  const theaterRequest = useRef(0);
+  const sourceScope = `${sessionToken}|${trendingMedia}`;
+  const sourceScopeRef = useRef(sourceScope); sourceScopeRef.current = sourceScope;
+  const accountScopeRef = useRef(sessionToken); accountScopeRef.current = sessionToken;
+  function handleDiscoverAction(action: "save" | "send" | "team" | "rate", title: DiscoverTitle) {
+    if (action === "save") { setSaveTitleId(title.id); setShowSaveSheet(true); }
+    else if (action === "rate") setConciergeRating({ title_id: title.id, title: title.title });
+    else setConciergeAction({ action, id: title.id, title: title.title, poster: title.poster_url });
+  }
+
   async function loadTrending(mediaOverride?: "movie" | "tv") {
     if (!sessionToken) return;
+    const request = ++trendingRequest.current, scope = sourceScope;
+    setTrending(null);
     try {
       const media = mediaOverride ?? trendingMedia;
       // DISC01: server-filtered trending so the toggle produces a
@@ -396,11 +516,11 @@ export default function DiscoverScreen() {
         `/discover/trending?limit=12&media_type=${media === "movie" ? "movie" : "tv"}`,
         { token: sessionToken },
       );
-      setTrending(result);
+      if (request === trendingRequest.current && sourceScopeRef.current === scope) setTrending(result);
     } catch {
       // silently degrade — trending stays null
     } finally {
-      setTrendingLoading(false);
+      if (request === trendingRequest.current && sourceScopeRef.current === scope) setTrendingLoading(false);
     }
   }
 
@@ -460,6 +580,7 @@ export default function DiscoverScreen() {
         return;
       }
       setForYouLoading(true);
+      setForYouFiltered(null);
       try {
         const preferredType = forYouMedia === "movie" ? "movie" : "show";
         const result = await apiRequest<RecommendationItem[]>(
@@ -499,17 +620,21 @@ export default function DiscoverScreen() {
 
   async function loadNowInTheaters() {
     if (!sessionToken) return;
+    const request = ++theaterRequest.current, scope = sessionToken;
+    setNowInTheatersItems([]);
     setNowInTheatersLoading(true);
     setNowInTheatersError(null);
     try {
       const result = await apiRequest<TrendingResponse>("/discover/now-in-theaters?limit=12", {
         token: sessionToken,
       });
+      if (request !== theaterRequest.current || accountScopeRef.current !== scope) return;
       setNowInTheatersItems(result.items ?? []);
+      setTheaterRegion(result.display_label.split("·").pop()?.trim() ?? null);
     } catch (err) {
-      setNowInTheatersError(err instanceof Error ? err.message : "Could not load now in theaters");
+      if (request === theaterRequest.current && accountScopeRef.current === scope) setNowInTheatersError("Could not load now in theaters. Please retry.");
     } finally {
-      setNowInTheatersLoading(false);
+      if (request === theaterRequest.current && accountScopeRef.current === scope) setNowInTheatersLoading(false);
     }
   }
 
@@ -868,13 +993,10 @@ export default function DiscoverScreen() {
               allowanceCap={entitlement.concierge_monthly_cap}
               resetsAt={null}
               backdropUri={conciergeBackdropUri}
-              onDecision={(decision) => {
-                setConciergeDecision(decision);
-                trackEvent("concierge_decision", {
-                  status: decision.status,
-                  title_count: decision.titles.length,
-                });
-              }}
+              key={user?.user_id ?? "signed-out"}
+              draft={conciergeDraft}
+              disabled={conciergeBusy}
+              onSubmit={(prompt) => searchConcierge(prompt, recoveryScope.current?.intent === prompt.trim() ? recoveryScope.current.listId : undefined)}
             />
           ) : null}
 
@@ -889,7 +1011,9 @@ export default function DiscoverScreen() {
               requestedCount={conciergeDecision.requested_count ?? 5}
               exactMatchCount={conciergeDecision.exact_match_count ?? conciergeDecision.titles.length}
               titleRationales={conciergeDecision.title_rationales ?? {}}
-              canUndo={(conciergeDecision as unknown as { _turn_count?: number })._turn_count !== undefined && (conciergeDecision as unknown as { _turn_count?: number })._turn_count! > 1}
+              canUndo={(conciergeDecision.version ?? 1) > 1}
+              busy={conciergeBusy}
+              retrievalExhausted={conciergeDecision.retrieval_exhausted}
               onPressFeatured={(t) => {
                 trackEvent("concierge_title_opened", { title_id: t.title_id, decision_id: conciergeDecision.decision_id });
                 void openTitleModal(t.title_id);
@@ -901,52 +1025,21 @@ export default function DiscoverScreen() {
               }}
               onSend={(t) => {
                 trackEvent("concierge_send", { title_id: t.title_id });
-                void openTitleModal(t.title_id);
+                setConciergeAction({ action: "send", id: t.title_id, title: t.title, poster: t.poster_url });
               }}
               onAddToTeam={(t) => {
                 trackEvent("concierge_team", { title_id: t.title_id });
-                void openTitleModal(t.title_id);
+                setConciergeAction({ action: "team", id: t.title_id, title: t.title, poster: t.poster_url });
               }}
               onRate={(t) => {
                 trackEvent("concierge_rate", { title_id: t.title_id });
-                void openTitleModal(t.title_id);
+                setConciergeRating(t);
               }}
-              onRefine={async (kind, extra) => {
-                if (!sessionToken || !conciergeDecision.decision_id) return;
-                trackEvent("concierge_refine", { kind, decision_id: conciergeDecision.decision_id });
-                if (kind === "new_search") {
-                  setConciergeDecision(null);
-                  return;
-                }
-                try {
-                  const idempotency_key = `concierge-refine-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                  const res = await apiRequest<ConciergeDecisionResponse>(
-                    `/me/concierge/decision/${conciergeDecision.decision_id}/refine`,
-                    {
-                      method: "POST",
-                      token: sessionToken,
-                      body: JSON.stringify({
-                        kind,
-                        featured_title_id: extra?.featured_title_id,
-                        idempotency_key,
-                      }),
-                    },
-                  );
-                  // Carry a turn counter forward so the Undo chip can
-                  // show after the first refinement.
-                  const priorTurns = (conciergeDecision as unknown as { _turn_count?: number })._turn_count ?? 1;
-                  setConciergeDecision({
-                    ...res,
-                    _intent: conciergeDecision._intent ?? null,
-                    _turn_count: priorTurns + 1,
-                  } as unknown as ConciergeDecisionResponse);
-                } catch {
-                  // Keep the current result; the user can retry.
-                }
-              }}
+              onRefine={(kind, extra) => { void refineConcierge(kind, extra); }}
             />
           ) : null}
 
+          {conciergeActionError ? <Text accessibilityRole="alert" style={{ color: colors.accent, padding: 16 }}>{conciergeActionError}</Text> : null}
           {/* Chunk D: empty / no-exact-match → diagnosis + adjustment chips */}
           {conciergeDecision && conciergeDecision.status === "empty" ? (
             <ConciergeEmptyState
@@ -954,27 +1047,13 @@ export default function DiscoverScreen() {
               originalIntent={conciergeDecision._intent ?? null}
               rationale={conciergeDecision.rationale}
               partialReason={conciergeDecision.partial_reason ?? null}
-              onApplyAdjustment={async (prompt) => {
-                if (!sessionToken || !prompt.trim()) return;
-                trackEvent("concierge_adjustment_applied", { status_detail: conciergeDecision.status_detail });
-                // Chunk E completion: for "from my saved list" asks
-                // without a named list, open the picker instead of
-                // re-firing another needs_list_selection.
-                if (conciergeDecision.status_detail === "needs_list_selection") {
-                  setShowListPicker(true);
-                  return;
-                }
-                try {
-                  const idempotency_key = `concierge-adj-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                  const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
-                    method: "POST",
-                    token: sessionToken,
-                    body: JSON.stringify({ intent: prompt, idempotency_key }),
-                  });
-                  setConciergeDecision({ ...res, _intent: prompt });
-                } catch {
-                  // Keep the current empty state visible; user can retry.
-                }
+              busy={conciergeBusy}
+              onContinue={() => { void refineConcierge("continue_search"); }}
+              onEdit={() => setConciergeDraft(conciergeDecision._intent ?? "")}
+              onApplyAdjustment={(prompt, adjustment) => {
+                if (conciergeDecision.status_detail === "needs_list_selection") setShowListPicker(true);
+                else if (adjustment === "broaden_catalog") void searchConcierge(prompt);
+                else { setConciergeDraft(prompt); void refineConcierge("edit", { prompt }); }
               }}
             />
           ) : null}
@@ -989,21 +1068,7 @@ export default function DiscoverScreen() {
               const prompt =
                 conciergeDecision?._intent ??
                 `Help me pick from my list "${listName}".`;
-              try {
-                const idempotency_key = `concierge-list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-                const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
-                  method: "POST",
-                  token: sessionToken,
-                  body: JSON.stringify({
-                    intent: prompt,
-                    collection_list_id: listId,
-                    idempotency_key,
-                  }),
-                });
-                setConciergeDecision({ ...res, _intent: prompt });
-              } catch {
-                // Keep whatever's on screen so the user can retry.
-              }
+              void searchConcierge(prompt, listId);
             }}
           />
 
@@ -1054,16 +1119,15 @@ export default function DiscoverScreen() {
             // Primary source is the server-filtered rec list.
             const serverItems = forYouFiltered ?? [];
             if (serverItems.length > 0) {
-              const subtitle = forYouModule?.type === "because_you"
-                ? `${forYouModule.label} — tuned to your SceneDNA`
-                : "Tuned to your SceneDNA";
+              const subtitle = serverItems[0].reason || "Learning your taste";
               return (
                 <DiscoverSection
+                  onAction={handleDiscoverAction}
                   kicker="FOR YOU"
                   subtitle={subtitle}
                   rightSlot={<MediaToggle value={forYouMedia} onChange={setForYouMedia} />}
                   hero={titleItemToDiscover(serverItems[0].title)}
-                  four={serverItems.slice(1, 5).map((r) => titleItemToDiscover(r.title))}
+                  four={serverItems.slice(1).map((r) => titleItemToDiscover(r.title))}
                   onPressTitle={(t) => {
                     trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
                     void openTitleModal(t.id);
@@ -1105,11 +1169,12 @@ export default function DiscoverScreen() {
           {/* 2 · Trending — dedicated /discover/trending (TMDB weekly) */}
           {trending && trending.items && trending.items.length > 0 ? (
             <DiscoverSection
+                  onAction={handleDiscoverAction}
               kicker="TRENDING"
               subtitle="Popular this week"
               rightSlot={<MediaToggle value={trendingMedia} onChange={setTrendingMedia} />}
               hero={titleItemToDiscover(trending.items[0])}
-              four={trending.items.slice(1, 5).map(titleItemToDiscover)}
+              four={trending.items.slice(1).map(titleItemToDiscover)}
               onPressTitle={(t) => {
                 trackEvent("discover_item_clicked", { module: "trending", content_id: t.id });
                 void openTitleModal(t.id);
@@ -1144,10 +1209,11 @@ export default function DiscoverScreen() {
           {/* 3 · In Theaters Now — /discover/now-in-theaters */}
           {nowInTheatersItems.length > 0 ? (
             <DiscoverSection
+                  onAction={handleDiscoverAction}
               kicker="NOW IN THEATERS"
-              locationLabel="United States"
+              locationLabel={COUNTRIES.find(country => country.code === theaterRegion)?.name ?? theaterRegion}
               hero={titleItemToDiscover(nowInTheatersItems[0])}
-              four={nowInTheatersItems.slice(1, 5).map(titleItemToDiscover)}
+              four={nowInTheatersItems.slice(1).map(titleItemToDiscover)}
               onPressTitle={(t) => {
                 trackEvent("discover_item_clicked", { module: "now_in_theaters", content_id: t.id });
                 void openTitleModal(t.id);
@@ -1188,6 +1254,9 @@ export default function DiscoverScreen() {
           }}
         />
       )}
+      <TitleActionSheets target={conciergeAction} token={sessionToken} source="discover" onClose={() => setConciergeAction(null)} />
+      <RatingEditor visible={conciergeRating !== null} token={sessionToken} titleId={conciergeRating?.title_id ?? null}
+        titleName={conciergeRating?.title} initial={null} onClose={() => setConciergeRating(null)} />
       <SaveToListSheet
         visible={showSaveSheet}
         token={sessionToken}

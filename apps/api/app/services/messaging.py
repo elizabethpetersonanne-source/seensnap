@@ -273,6 +273,11 @@ def send_message(
         # public-only later; for MVP, owner-only send).
         if watchlist.owner_user_id != sender_id:
             raise NotAuthorized("You can only send your own lists")
+        if watchlist.visibility == "private":
+            raise NotAuthorized("Choose Followers or Public visibility before sending this list.")
+        from app.services.visibility import can_view_list
+        if other_id is None or not can_view_list(db, watchlist.id, other_id):
+            raise NotAuthorized("This person cannot view the list. Check its audience before sending.")
         snapshot = {
             "name": watchlist.name,
             "description": watchlist.description,
@@ -507,11 +512,11 @@ def _message_to_dict(msg: Message | None) -> dict | None:
         # Fetched lazily by the API route via hydrate_message when needed.
         out["snapshot"] = msg.snapshot_json
     elif msg.content_type == "list":
-        out["snapshot"] = msg.snapshot_json
+        out["snapshot"] = None  # list visibility must be rechecked per reader
     return out
 
 
-def hydrate_message(db: Session, msg: Message) -> dict:
+def hydrate_message(db: Session, msg: Message, viewer_id: UUID) -> dict:
     """Build a fully-rendered message dict including current title/list
     metadata (with graceful fallback to the snapshot when the referenced
     object is deleted / made private)."""
@@ -534,39 +539,10 @@ def hydrate_message(db: Session, msg: Message) -> dict:
             data["title"] = None
     elif msg.content_type == "list" and msg.content_id:
         watchlist = db.scalar(select(Watchlist).where(Watchlist.id == msg.content_id))
-        if watchlist is not None:
-            # Include the public share_token so the recipient can tap the
-            # card and open the list at /lists/{token}. Mint one on
-            # read if the sender never generated one — sending a list
-            # implicitly authorizes access per spec §19 (MVP rule:
-            # sender must own the list, checked at send time).
-            from sqlalchemy import select as _select
-
-            from app.models.social import ListShare
-
-            share_row = db.scalar(
-                _select(ListShare).where(
-                    ListShare.watchlist_id == watchlist.id,
-                    ListShare.revoked_at.is_(None),
-                ).order_by(ListShare.created_at.desc())
-            )
-            share_token: str | None = share_row.token if share_row is not None else None
-            if share_token is None:
-                from app.services.social_feed import _ensure_list_share_token
-                share_token = _ensure_list_share_token(
-                    db,
-                    list_id=watchlist.id,
-                    author_user_id=watchlist.owner_user_id,
-                )
-                db.commit()
-
-            data["list"] = {
-                "id": str(watchlist.id),
-                "name": watchlist.name,
-                "description": watchlist.description,
-                "owner_user_id": str(watchlist.owner_user_id),
-                "share_token": share_token,
-            }
-        else:
-            data["list"] = None
+        from app.services.visibility import can_view_list
+        data['snapshot'] = None
+        if watchlist is not None and can_view_list(db,watchlist.id,viewer_id):
+            data['list'] = {'id':str(watchlist.id),'name':watchlist.name,'description':watchlist.description,
+                'owner_user_id':str(watchlist.owner_user_id),'share_token':None}
+        else: data['list'] = None
     return data

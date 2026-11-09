@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-18 UI/UX rebuild: Settings menu.
  *
@@ -22,6 +23,7 @@ type Row = {
 };
 
 const ROWS: Row[] = [
+  { key: "stories", icon: "albums-outline", title: "Your stories", body: "View and delete active or archived stories", path: "/my-stories" },
   { key: "edit", icon: "person-circle-outline", title: "Edit Profile", body: "Photo, name, bio and more", path: "/settings/edit-profile" },
   { key: "scenedna", icon: "sparkles-outline", title: "Your SceneDNA", body: "Signals, evidence and corrections", path: "/scene-dna" },
   { key: "notifications", icon: "notifications-outline", title: "Notifications", body: "Control what you want to receive", path: "/settings/notifications" },
@@ -38,13 +40,7 @@ export default function SettingsScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="close" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Settings</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Settings" ownsSafeArea={false} />
 
       <ScrollView contentContainerStyle={styles.body}>
         {ROWS.map((row) => (

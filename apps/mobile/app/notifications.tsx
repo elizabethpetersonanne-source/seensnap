@@ -11,7 +11,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { SSCompactHeader } from "@/components/headers/ss-compact-header";
+import { AppHeader } from "@/components/headers/app-header";
 
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
@@ -19,6 +19,7 @@ import {
   fetchNotifications,
   markAllNotificationsRead,
   markNotificationRead,
+  resolveNotificationDestination,
   type NotificationItem,
 } from "@/lib/notifications";
 import { trackEvent } from "@/lib/analytics";
@@ -80,13 +81,15 @@ export default function NotificationsScreen() {
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(false);
-  const loadedRef = useRef(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const tokenRef = useRef(sessionToken); tokenRef.current = sessionToken;
 
   const load = useCallback(
     async (cursor?: string) => {
       if (!sessionToken) return;
       try {
         const result = await fetchNotifications(sessionToken, cursor);
+        if (tokenRef.current !== sessionToken) return;
         if (cursor) {
           setItems((prev) => [...prev, ...result.items]);
         } else {
@@ -103,9 +106,10 @@ export default function NotificationsScreen() {
   );
 
   useEffect(() => {
-    if (loadedRef.current) return;
-    loadedRef.current = true;
-    void load().finally(() => setIsLoading(false));
+    let cancelled = false;
+    setItems([]); setNotice(null); setNextCursor(null); setHasMore(false); setUnreadCount(0); setIsLoading(true);
+    void load().finally(() => { if (!cancelled) setIsLoading(false); });
+    return () => { cancelled = true; };
   }, [load]);
 
   async function handleLoadMore() {
@@ -138,34 +142,29 @@ export default function NotificationsScreen() {
       destination: item.route ?? "none",
     });
 
-    // Navigate to the notification's route
-    if (item.route) {
-      try {
-        router.push(item.route as Parameters<typeof router.push>[0]);
-      } catch {
-        router.back();
-      }
+    try {
+      const destination = await resolveNotificationDestination(sessionToken, item.id);
+      if (tokenRef.current !== sessionToken) return;
+      if (destination.available) router.push(destination.route as Parameters<typeof router.push>[0]);
+      else setNotice(destination.message);
+    } catch {
+      setNotice("Couldn't open this activity. Please try again.");
     }
   }
 
   return (
     <SafeAreaView style={styles.root} edges={["left", "right"]}>
-      <SSCompactHeader
-        title="Notifications"
-        supporting={unreadCount > 0 ? `${unreadCount} unread` : undefined}
-        right={
-          <>
-            {unreadCount > 0 ? (
-              <Pressable onPress={() => void handleMarkAllRead()} hitSlop={8}>
-                <Text style={styles.markAllRead}>Mark all read</Text>
-              </Pressable>
-            ) : null}
-            <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
-              <Ionicons name="close" size={20} color={colors.ink} />
-            </Pressable>
-          </>
-        }
-      />
+      <AppHeader variant="detail" leftKind="back" title={unreadCount > 0 ? `Notifications · ${unreadCount}` : "Notifications"}
+        onLeftPress={() => router.canGoBack() ? router.back() : router.replace("/(tabs)/social")}
+        rightSlot={unreadCount > 0 ? <Pressable onPress={() => void handleMarkAllRead()} accessibilityLabel="Mark all notifications read" style={{minWidth:44,minHeight:44,justifyContent:'center',alignItems:'center'}}><Ionicons name="checkmark-done" size={22} color={colors.accent}/></Pressable> : null} />
+
+
+      {notice ? <View style={{ padding: spacing.md, gap: 12 }}>
+        <Text accessibilityRole="alert" style={{ color: colors.ink }}>{notice}</Text>
+        <Pressable onPress={() => router.replace("/(tabs)/social")} style={{ minHeight: 44, justifyContent: "center" }}>
+          <Text style={{ color: colors.accent }}>Back to Social</Text>
+        </Pressable>
+      </View> : null}
 
       {isLoading ? (
         <View style={styles.loadingState}>

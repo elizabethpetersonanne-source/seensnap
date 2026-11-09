@@ -1,8 +1,9 @@
 import * as AppleAuthentication from "expo-apple-authentication";
-import { router } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
 import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 
+import { safeReturnPath } from "@/lib/return-path";
 import { SSLogo } from "@/components/branding/ss-logo";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { resolvedApiBaseUrl } from "@/lib/api";
@@ -11,16 +12,13 @@ import { useAuth } from "@/lib/auth";
 export default function SignInScreen() {
   const { isExpoGo, isLoading, sessionToken, signInDemo, signInWithGoogle, signInWithApple, signInWithDevEmail } =
     useAuth();
+  const {returnTo}=useLocalSearchParams<{returnTo?:string}>();
+  const hasSharedDestination=!!safeReturnPath(returnTo);
   const [error, setError] = useState<string | null>(null);
   const [appleAvailable, setAppleAvailable] = useState(false);
   const [devEmail, setDevEmail] = useState("");
   const [devMode, setDevMode] = useState(false);
 
-  useEffect(() => {
-    if (sessionToken) {
-      router.replace("/(tabs)");
-    }
-  }, [sessionToken]);
 
   useEffect(() => {
     if (Platform.OS === "ios" && !isExpoGo) {
@@ -71,6 +69,7 @@ export default function SignInScreen() {
         <View style={styles.header}>
           <SSLogo variant="gold" size={96} style={styles.logo} />
           <Text style={styles.welcome}>Welcome to SeenSnap</Text>
+          {hasSharedDestination?<Text style={{color:colors.muted,fontSize:16,textAlign:"center"}}>Sign in to open what was shared with you.</Text>:null}
         </View>
 
         {/* Auth actions */}

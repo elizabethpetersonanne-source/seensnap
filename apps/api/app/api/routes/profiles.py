@@ -7,27 +7,43 @@ from sqlalchemy import func, select
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
 from app.models.social import FeedEvent, ListShare, UserFollow, Watchlist, WatchlistItem
-from app.models.user import UserProfile
+from app.models.user import UserProfile, UserPreferences
 from app.schemas.user import PublicProfilePostResponse, PublicProfileResponse
 from app.schemas.taste import CompatibilityResponse, TasteProfileResponse
 from app.services.compatibility import get_compatibility, to_compatibility_response
 from app.services.follows import follow_user, get_follow_counts, is_following, unfollow_user
 from app.services.taste import get_taste_profile, to_taste_profile_response
+from app.services.visibility import visible_list_clause, can_view_list, unblocked_owner_clause, can_view_profile
+from app.services.social_feed import _visible_to_viewer_clause
 
 router = APIRouter()
+
+def _require_profile(db, user_id, viewer_id):
+    if not can_view_profile(db, user_id, viewer_id):
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return db.get(UserProfile, user_id)
+
+
+def _ranked_posters(db, user_id):
+    from app.models.social import RankedFavorite
+    return list(db.scalars(select(ContentTitle.poster_url).join(RankedFavorite,
+        RankedFavorite.content_title_id == ContentTitle.id).where(
+        RankedFavorite.user_id == user_id, ContentTitle.poster_url.is_not(None),
+    ).order_by(RankedFavorite.position).limit(4)).all())
+
 
 
 @router.get("/{user_id}", response_model=PublicProfileResponse)
 def get_public_profile(user_id: UUID, current_user: CurrentUser, db: DbSession) -> PublicProfileResponse:
-    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
-    if profile is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+    profile = _require_profile(db, user_id, current_user.id)
     taste_profile = get_taste_profile(db, profile.user_id)
     follower_count, following_count = get_follow_counts(db, user_id)
     post_count = db.scalar(
         select(func.count(FeedEvent.id)).where(
             FeedEvent.actor_user_id == user_id,
             FeedEvent.team_id.is_(None),
+            _visible_to_viewer_clause(current_user.id),
+            unblocked_owner_clause(FeedEvent.actor_user_id, current_user.id),
         )
     ) or 0
     compatibility = (
@@ -55,25 +71,25 @@ def get_public_profile(user_id: UUID, current_user: CurrentUser, db: DbSession) 
         favorite_genres=taste_profile.top_genres or [],
         favorite_platforms=taste_profile.top_platforms or [],
         profile_summary=taste_profile.profile_summary,
-        current_obsessions=taste_profile.current_obsessions or [],
-        top_posters=taste_profile.top_posters or [],
+        current_obsessions=(taste_profile.current_obsessions or []) if current_user.id == user_id else [],
+        top_posters=_ranked_posters(db, user_id),
         compatibility=compatibility,
     )
 
 
 @router.get("/{user_id}/taste", response_model=TasteProfileResponse)
 def get_public_taste_profile(user_id: UUID, current_user: CurrentUser, db: DbSession) -> TasteProfileResponse:
-    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
-    if profile is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
-    return to_taste_profile_response(get_taste_profile(db, profile.user_id, force_refresh=True))
+    profile = _require_profile(db, user_id, current_user.id)
+    response = to_taste_profile_response(get_taste_profile(db, profile.user_id, force_refresh=True))
+    if current_user.id != user_id:
+        response.current_obsessions = []
+        response.top_posters = _ranked_posters(db, user_id)
+    return response
 
 
 @router.get("/{user_id}/compatibility", response_model=CompatibilityResponse)
 def get_profile_compatibility(user_id: UUID, current_user: CurrentUser, db: DbSession) -> CompatibilityResponse:
-    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
-    if profile is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+    profile = _require_profile(db, user_id, current_user.id)
     return to_compatibility_response(
         get_compatibility(db, current_user.id, profile.user_id, force_refresh=True),
         current_user.id,
@@ -89,9 +105,7 @@ def get_public_profile_posts(
     db: DbSession,
     limit: int = Query(default=50, ge=1, le=100),
 ) -> list[PublicProfilePostResponse]:
-    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
-    if profile is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+    profile = _require_profile(db, user_id, current_user.id)
 
     # A01: enforce audience at the QUERY level, not just the serializer.
     # Self-view sees everything; a follower sees public + followers; a
@@ -112,6 +126,8 @@ def get_public_profile_posts(
             FeedEvent.actor_user_id == user_id,
             FeedEvent.team_id.is_(None),
             FeedEvent.visibility.in_(allowed_visibilities),
+            _visible_to_viewer_clause(current_user.id),
+            unblocked_owner_clause(FeedEvent.actor_user_id, current_user.id),
         )
         .order_by(FeedEvent.created_at.desc())
         .limit(limit)
@@ -164,7 +180,7 @@ class PublicProfileListSummary(BaseModel):
 @router.get("/{user_id}/public-lists", response_model=list[PublicProfileListSummary])
 def get_public_profile_lists(
     user_id: UUID,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
     db: DbSession,
 ) -> list[PublicProfileListSummary]:
     """Return the user's watchlists that have an active public share
@@ -172,9 +188,7 @@ def get_public_profile_lists(
     owner publishes it (POST /me/watchlist/lists/{id}/share) OR posts
     it to the social feed (create_social_post auto-mints a token).
     """
-    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
-    if profile is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+    profile = _require_profile(db, user_id, current_user.id)
 
     # Latest non-revoked share per watchlist, owned by this user.
     share_rows = db.execute(
@@ -183,6 +197,9 @@ def get_public_profile_lists(
         .where(
             Watchlist.owner_user_id == user_id,
             ListShare.revoked_at.is_(None),
+            Watchlist.visibility == "public",
+            visible_list_clause(current_user.id),
+            ListShare.created_by_user_id == Watchlist.owner_user_id,
         )
         .order_by(ListShare.created_at.desc())
     ).all()
@@ -260,6 +277,7 @@ def get_authorized_list(
     current_user: CurrentUser,
     db: DbSession,
     limit: int = Query(default=100, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
 ) -> PublicListResponse:
     """Authenticated viewer-aware fetch of someone else's list. Enables
     "Watch previews" from ANY list — the viewer's own, a followed
@@ -278,7 +296,7 @@ def get_authorized_list(
     watchlist = db.scalar(
         select(_W).where(_W.id == list_id, _W.owner_user_id == user_id)
     )
-    if watchlist is None:
+    if watchlist is None or not can_view_list(db, watchlist.id, current_user.id):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
 
     # A01/A02: enforce audience.
@@ -296,6 +314,7 @@ def get_authorized_list(
         .where(_WI.watchlist_id == watchlist.id)
         .order_by(_WI.position.asc().nullslast(), _WI.created_at.asc())
         .limit(limit)
+        .offset(offset)
     ).all()
 
     return PublicListResponse(
@@ -305,7 +324,7 @@ def get_authorized_list(
         owner_user_id=user_id,
         owner_display_name=profile.display_name,
         visibility=getattr(watchlist, "visibility", "private") or "private",
-        item_count=len(rows),
+        item_count=int(db.scalar(select(func.count(_WI.id)).where(_WI.watchlist_id == watchlist.id)) or 0),
         items=[
             PublicListTitleRow(
                 title_id=t.id,
@@ -324,9 +343,10 @@ def get_authorized_list(
 @router.get("/{user_id}/favorites/ranked", response_model=PublicRankedFavoritesResponse)
 def get_public_ranked_favorites(
     user_id: UUID,
-    _current_user: CurrentUser,
+    current_user: CurrentUser,
     db: DbSession,
     limit: int = Query(default=100, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
 ) -> PublicRankedFavoritesResponse:
     """Public view of a user's ranked favorites list. Personal scores
     are intentionally NOT included on this endpoint — the viewer sees
@@ -334,14 +354,13 @@ def get_public_ranked_favorites(
     private 1-10 score (Sep-22 brief §7 privacy rule)."""
     from app.models.social import RankedFavorite
 
-    profile = db.scalar(select(UserProfile).where(UserProfile.user_id == user_id))
-    if profile is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Profile not found")
+    profile = _require_profile(db, user_id, current_user.id)
 
     favorites = db.scalars(
         select(RankedFavorite)
         .where(RankedFavorite.user_id == user_id)
         .order_by(RankedFavorite.position.asc())
+        .offset(offset)
         .limit(limit)
     ).all()
     title_ids = [f.content_title_id for f in favorites]
@@ -364,7 +383,7 @@ def get_public_ranked_favorites(
         owner_display_name=profile.display_name,
         owner_user_id=user_id,
         items=items,
-        total=len(items),
+        total=int(db.scalar(select(func.count(RankedFavorite.id)).where(RankedFavorite.user_id == user_id)) or 0),
     )
 
 
@@ -386,18 +405,21 @@ class FollowRow(BaseModel):
     display_name: str | None
     avatar_url: str | None
     bio: str | None
+    is_following: bool = False
     followed_at: str  # ISO8601 — when the current user started following (or was followed)
 
 
 class FollowListResponse(BaseModel):
     items: list[FollowRow]
     total: int
+    next_offset: int | None = None
 
 
 def _list_relationships(
     db,
     *,
     subject_user_id: UUID,
+    viewer_id: UUID,
     direction: str,  # "following" (subject follows others) | "followers" (others follow subject)
     limit: int,
     offset: int,
@@ -409,16 +431,14 @@ def _list_relationships(
         subj_col = UserFollow.following_user_id
         other_col = UserFollow.follower_user_id
 
-    total = db.scalar(select(func.count(UserFollow.id)).where(subj_col == subject_user_id)) or 0
-
-    rows = db.execute(
-        select(UserFollow, UserProfile)
-        .join(UserProfile, UserProfile.user_id == other_col)
-        .where(subj_col == subject_user_id)
-        .order_by(UserFollow.created_at.desc())
-        .limit(limit)
-        .offset(offset)
-    ).all()
+    from app.services.visibility import visible_profile_clause
+    _require_profile(db, subject_user_id, viewer_id)
+    stmt = select(UserFollow, UserProfile).join(UserProfile, UserProfile.user_id == other_col).where(
+        subj_col == subject_user_id, visible_profile_clause(UserProfile.user_id, viewer_id))
+    total = db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
+    rows = db.execute(stmt.order_by(UserFollow.created_at.desc(), UserFollow.id).limit(limit).offset(offset)).all()
+    followed = set(db.scalars(select(UserFollow.following_user_id).where(UserFollow.follower_user_id==viewer_id,
+        UserFollow.following_user_id.in_([profile.user_id for _,profile in rows]))).all())
 
     items = [
         FollowRow(
@@ -428,10 +448,11 @@ def _list_relationships(
             avatar_url=profile.avatar_url,
             bio=profile.bio,
             followed_at=follow.created_at.isoformat(),
+            is_following=profile.user_id in followed,
         )
         for follow, profile in rows
     ]
-    return FollowListResponse(items=items, total=int(total))
+    return FollowListResponse(items=items, total=int(total),next_offset=offset+len(items) if offset+len(items)<total else None)
 
 
 @router.get("/{user_id}/following", response_model=FollowListResponse)
@@ -446,7 +467,7 @@ def list_profile_following(
     identity restriction beyond auth."""
     _ = current_user  # auth required, but no additional per-viewer filter
     return _list_relationships(
-        db, subject_user_id=user_id, direction="following", limit=limit, offset=offset
+        db, subject_user_id=user_id, viewer_id=current_user.id, direction="following", limit=limit, offset=offset
     )
 
 
@@ -461,5 +482,5 @@ def list_profile_followers(
     """Hydrated list of users who follow this profile."""
     _ = current_user
     return _list_relationships(
-        db, subject_user_id=user_id, direction="followers", limit=limit, offset=offset
+        db, subject_user_id=user_id, viewer_id=current_user.id, direction="followers", limit=limit, offset=offset
     )

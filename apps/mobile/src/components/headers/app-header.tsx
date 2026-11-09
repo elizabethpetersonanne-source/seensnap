@@ -19,7 +19,8 @@
  * header must NOT also pass `edges=['top']` to a SafeAreaView around it.
  */
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useSegments } from "expo-router";
+import { useUnreadMessages } from "@/lib/unread-messages";
 import { useEffect, useState } from "react";
 import { AppState, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -113,7 +114,10 @@ export function AppHeader({
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
   const { user, sessionToken } = useAuth();
-  const hz = width < 380 ? 16 : 20;
+  const hz = width < 380 ? 12 : 20;
+  const { count: unreadMessages } = useUnreadMessages();
+  const segments = useSegments();
+  const showChat = !!sessionToken && !["messages","sign-in","onboarding"].includes(segments[0]);
 
   // Notifications bell on primary surfaces (regression fix: the
   // old legacy headers had a bell; the Oct-19 AppHeader was
@@ -161,15 +165,6 @@ export function AppHeader({
         ) : null}
       </Pressable>
       <Pressable
-        onPress={() => router.push("/messages")}
-        hitSlop={10}
-        accessibilityRole="button"
-        accessibilityLabel="Open messages"
-        style={styles.chatBtn}
-      >
-        <Ionicons name="chatbubble-outline" size={20} color={colors.ink} />
-      </Pressable>
-      <Pressable
         onPress={() => router.push(`/profile/${user.user_id}`)}
         hitSlop={10}
         accessibilityRole="button"
@@ -202,7 +197,7 @@ export function AppHeader({
       router.push("/(tabs)");
       return;
     }
-    router.back();
+    if (router.canGoBack()) router.back(); else router.replace("/(tabs)");
   }
 
   return (
@@ -214,19 +209,6 @@ export function AppHeader({
       ]}
     >
       <View style={[styles.row, { paddingHorizontal: hz }]}>
-        {/* Centered title / selector is absolutely positioned so its
-            baseline stays locked to the viewport regardless of whether
-            the slots are symmetric. */}
-        <View style={styles.center}>
-          {variant === "immersive" && mode && onModeChange ? (
-            <ModeSelector mode={mode} onChange={onModeChange} />
-          ) : title ? (
-            <Text style={styles.title} numberOfLines={1}>
-              {title}
-            </Text>
-          ) : null}
-        </View>
-
         <HeaderSlot
           side="left"
           onPress={handleLeft}
@@ -249,9 +231,26 @@ export function AppHeader({
           )}
         </HeaderSlot>
 
-        <View style={{ flex: 1 }} />
+        {/* Centered title / selector is absolutely positioned so its
+            baseline stays locked to the viewport regardless of whether
+            the slots are symmetric. */}
+        <View style={styles.center}>
+          {variant === "immersive" && mode && onModeChange ? (
+            <ModeSelector mode={mode} onChange={onModeChange} />
+          ) : title ? (
+            <Text style={styles.title} numberOfLines={1}>
+              {title}
+            </Text>
+          ) : null}
+        </View>
 
-        <HeaderSlot side="right">{resolvedRight}</HeaderSlot>
+        <View style={styles.rightCluster}>
+          {showChat ? <Pressable onPress={()=>router.push('/messages')} accessibilityRole="button" accessibilityLabel={unreadMessages?`Messages, ${unreadMessages} unread conversations`:'Open messages'} style={styles.chatBtn}>
+            <Ionicons name="chatbubble-outline" size={20} color={colors.ink}/>
+            {unreadMessages>0?<View style={styles.unreadDot}><Text style={styles.unreadDotText}>{unreadMessages>9?'9+':unreadMessages}</Text></View>:null}
+          </Pressable>:null}
+          {resolvedRight ? <HeaderSlot side="right">{resolvedRight}</HeaderSlot> : null}
+        </View>
       </View>
     </View>
   );
@@ -314,17 +313,7 @@ const styles = StyleSheet.create({
     alignItems: "flex-end",
     paddingRight: 2,
   },
-  center: {
-    position: "absolute",
-    left: 60,
-    right: 60,
-    top: 0,
-    bottom: 0,
-    alignItems: "center",
-    justifyContent: "center",
-    zIndex: 1,
-    pointerEvents: "box-none",
-  },
+  center: { flex: 1, minWidth: 0, alignItems: "center", justifyContent: "center", paddingHorizontal: 6 },
   title: {
     fontFamily: fonts.sansSemiBold,
     color: colors.ink,
@@ -335,11 +324,11 @@ const styles = StyleSheet.create({
   modeSelector: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 24,
+    gap: 16,
   },
   modeOption: {
     alignItems: "center",
-    paddingVertical: 4,
+    paddingVertical: 10,
   },
   modeLabel: {
     fontFamily: fonts.sansSemiBold,
@@ -361,11 +350,11 @@ const styles = StyleSheet.create({
   rightCluster: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 2,
   },
   chatBtn: {
-    width: 36,
-    height: 36,
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
     position: "relative",

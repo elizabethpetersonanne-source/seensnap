@@ -4,7 +4,7 @@
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -19,6 +19,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { pickImageForm } from "@/lib/image-upload";
+import { AppHeader } from "@/components/headers/app-header";
 import { Avatar } from "@/components/avatar";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 import { apiRequest } from "@/lib/api";
@@ -35,17 +37,22 @@ type Me = {
 
 
 export default function EditProfileScreen() {
-  const { sessionToken } = useAuth();
+  const { sessionToken, updateSessionUser } = useAuth();
   const [me, setMe] = useState<Me | null>(null);
   const [name, setName] = useState("");
   const [username, setUsername] = useState("");
   const [bio, setBio] = useState("");
+  const [photoBusy,setPhotoBusy]=useState(false);
+  const [error,setError]=useState<string|null>(null);
   const [saving, setSaving] = useState(false);
+  const photoLock=useRef(false);
+  const currentToken=useRef(sessionToken);currentToken.current=sessionToken;
+  const [retry,setRetry]=useState(0);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!sessionToken) return;
-    let cancelled = false;
+    let cancelled = false;setLoading(true);setError(null);setMe(null);
     apiRequest<Me>("/me", { token: sessionToken })
       .then((res) => {
         if (cancelled) return;
@@ -54,42 +61,48 @@ export default function EditProfileScreen() {
         setUsername(res.username ?? "");
         setBio(res.bio ?? "");
       })
-      .catch(() => {})
+      .catch(() => {if(!cancelled)setError("Could not load your profile. Please retry.");})
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [sessionToken]);
+  }, [sessionToken,retry]);
 
   async function save() {
-    if (!sessionToken || saving) return;
+    if (!sessionToken || saving || photoBusy || !me) return;
     setSaving(true);
     try {
-      await apiRequest("/me", {
+      const updated=await apiRequest<Me>("/me", {
         method: "PATCH",
         token: sessionToken,
         body: JSON.stringify({ display_name: name, username, bio }),
       });
+      if(currentToken.current!==sessionToken)return;
+      await updateSessionUser({display_name:updated.display_name,avatar_url:updated.avatar_url});
       router.back();
     } catch (err) {
-      Alert.alert("Could not save", err instanceof Error ? err.message : "Try again.");
+      setError("Could not save those changes. Check your username and try again.");
     } finally {
       setSaving(false);
     }
   }
 
+  async function changePhoto(remove=false){
+    if(!sessionToken||photoLock.current||saving||!me)return;
+    photoLock.current=true;
+    setPhotoBusy(true);setError(null);
+    try{
+      const form=remove?null:await pickImageForm();
+      if(!remove&&!form)return;
+      const updated=await apiRequest<Me>('/me/avatar',{token:sessionToken,method:remove?'DELETE':'POST',body:form ?? undefined,timeoutMs:30000});
+      if(currentToken.current!==sessionToken)return;
+      setMe(updated);await updateSessionUser({avatar_url:updated.avatar_url});
+    }catch(failure){setError(failure instanceof Error && !failure.message.startsWith('{')?failure.message:'Could not upload the picture. Your previous photo is unchanged.');}
+    finally{photoLock.current=false;setPhotoBusy(false);}
+  }
+
   return (
-    <SafeAreaView style={styles.root}>
+    <SafeAreaView style={styles.root} edges={[]}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
-        <View style={styles.header}>
-          <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-            <Ionicons name="chevron-back" size={22} color={colors.ink} />
-          </Pressable>
-          <Text style={styles.headerTitle}>Edit Profile</Text>
-          <Pressable onPress={save} hitSlop={10} disabled={saving}>
-            <Text style={[styles.saveLabel, saving && { opacity: 0.5 }]}>
-              {saving ? "Saving…" : "Save"}
-            </Text>
-          </Pressable>
-        </View>
+        <AppHeader variant="detail" leftKind="back" title="Edit profile" rightSlot={<Pressable onPress={save} disabled={saving||photoBusy||!me} style={{minHeight:44,minWidth:44,justifyContent:'center'}}><Text style={styles.saveLabel}>{saving?'Saving…':'Save'}</Text></Pressable>}/>
 
         {loading ? (
           <View style={styles.center}>
@@ -97,19 +110,23 @@ export default function EditProfileScreen() {
           </View>
         ) : (
           <ScrollView contentContainerStyle={styles.body}>
+            {!me?<Pressable style={{minHeight:44}} onPress={()=>setRetry(n=>n+1)}><Text style={styles.saveLabel}>Retry loading profile</Text></Pressable>:null}
             <View style={styles.avatarRow}>
-              <View style={styles.avatarWrap}>
+              <Pressable style={styles.avatarWrap} disabled={photoBusy} onPress={()=>void changePhoto()} accessibilityRole="button" accessibilityLabel="Change profile picture">
                 <Avatar uri={me?.avatar_url ?? null} label={me?.display_name ?? ""} size={80} />
                 <View style={styles.avatarEdit}>
                   <Ionicons name="camera" size={14} color="#0b0f17" />
                 </View>
-              </View>
-              <Pressable style={styles.coverEdit}>
+              </Pressable>
+              <Pressable style={styles.coverEdit} disabled={photoBusy} onPress={()=>void changePhoto()}>
                 <Ionicons name="camera-outline" size={14} color={colors.ink} />
-                <Text style={styles.coverEditLabel}>Change Cover</Text>
+                <Text style={styles.coverEditLabel}>Change photo</Text>
               </Pressable>
             </View>
 
+            {photoBusy ? <ActivityIndicator color={colors.accent}/> : null}
+            {error ? <Text accessibilityRole="alert" style={{color:colors.accent,fontSize:16}}>{error}</Text> : null}
+            {me?.avatar_url ? <Pressable style={{minHeight:44,justifyContent:"center"}} disabled={photoBusy} onPress={()=>void changePhoto(true)}><Text style={{color:colors.muted}}>Remove photo</Text></Pressable> : null}
             <Text style={styles.label}>Name</Text>
             <TextInput value={name} onChangeText={setName} style={styles.input} placeholderTextColor={colors.muted2} maxLength={50} />
 
@@ -155,7 +172,7 @@ const styles = StyleSheet.create({
   headerTitle: { flex: 1, textAlign: "center", fontFamily: fonts.sansSemiBold, color: colors.ink, fontSize: 15 },
   saveLabel: { fontFamily: fonts.sansSemiBold, color: colors.accent, fontSize: 14 },
   center: { flex: 1, alignItems: "center", justifyContent: "center" },
-  body: { padding: spacing.lg, gap: 10 },
+  body: { padding: spacing.lg, paddingBottom:100, gap: 10, width:"100%", maxWidth:720, alignSelf:"center" },
   avatarRow: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: spacing.md },
   avatarWrap: { position: "relative" },
   avatarEdit: {
@@ -197,7 +214,7 @@ const styles = StyleSheet.create({
     backgroundColor: colors.surface,
     color: colors.ink,
     fontFamily: fonts.sans,
-    fontSize: 14,
+    fontSize: 16,
   },
   counter: { textAlign: "right", fontFamily: fonts.monoMedium, color: colors.muted2, fontSize: 11 },
 });

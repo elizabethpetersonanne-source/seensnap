@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * SceneDNA — Recent Signals list with Remove influence controls.
  *
@@ -28,6 +29,7 @@ type SignalRow = {
   title: string;
   poster_url: string | null;
   action: "left" | "right" | "up" | string;
+  action_version?: number | null;
   influence_active: boolean;
   created_at: string;
 };
@@ -93,18 +95,15 @@ export default function SceneDNASignalsScreen() {
     }
   }
 
-  const actionLabel = (a: string) =>
-    a === "right" ? "Liked" : a === "up" ? "Saved" : a === "left" ? "Passed" : a;
+  const actionLabel = (row: SignalRow) => {
+    if(row.action_version == null) return `${row.action[0].toUpperCase()}${row.action.slice(1)} swipe`;
+    if(row.action_version>=2)return ({right:'Interested',left:'Passed',up:'Watched',down:"Watched · didn't like"} as Record<string,string>)[row.action]??row.action;
+    return ({right:'Liked',left:'Passed',up:'Watch now',down:'Skipped'} as Record<string,string>)[row.action]??row.action;
+  };
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={12} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.heading}>Recent SceneDNA signals</Text>
-        <View style={{ width: 24 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Recent SceneDNA signals" ownsSafeArea={false} />
       <Text style={styles.subheading}>
         {total > 0
           ? `${total} signal${total === 1 ? "" : "s"} shaping your taste. Remove any that don't feel like you.`
@@ -145,7 +144,7 @@ export default function SceneDNASignalsScreen() {
               <View style={{ flex: 1 }}>
                 <Text style={styles.rowTitle} numberOfLines={2}>{item.title}</Text>
                 <Text style={styles.rowMeta}>
-                  {actionLabel(item.action)}
+                  {actionLabel(item)}
                   {" · "}
                   {new Date(item.created_at).toLocaleDateString()}
                 </Text>

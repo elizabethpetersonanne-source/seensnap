@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Image, Text, View } from "react-native";
 
+import { ProtectedImage } from "@/components/protected-image";
 import { colors } from "@/constants/theme";
 import { resolveMediaUrl } from "@/lib/api";
 
@@ -64,7 +65,7 @@ export function Avatar({
 
   if (resolvedUri && !failed) {
     return (
-      <Image
+      <ProtectedImage
         source={{ uri: resolvedUri }}
         style={[baseStyle, { backgroundColor: colors.backgroundElevated }, style]}
         onError={() => setFailed(true)}

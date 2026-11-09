@@ -219,6 +219,12 @@ def update_watchlist(
     if visibility is not None:
         if visibility not in _ALLOWED_VISIBILITIES:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Unknown visibility: {visibility}")
+        if visibility != watchlist.visibility and visibility != "public":
+            # Old public URLs must not revive if the owner later republishes.
+            for share in db.scalars(select(ListShare).where(
+                ListShare.watchlist_id == watchlist.id, ListShare.revoked_at.is_(None),
+            )).all():
+                share.revoked_at = datetime.now(UTC)
         watchlist.visibility = visibility
     watchlist.updated_at = datetime.now(UTC)
     db.commit()

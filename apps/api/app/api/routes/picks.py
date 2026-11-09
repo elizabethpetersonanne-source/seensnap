@@ -11,13 +11,13 @@ Returning them together saves five round-trips when the user opens
 My Picks and keeps the client simple — one fetch, five renderable
 collections.
 """
+
 from __future__ import annotations
 
-from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import func, select, and_, or_
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
@@ -72,7 +72,9 @@ class PicksCollections(BaseModel):
     watched_count: int = 0
 
 
-def _title_to_pick(t: ContentTitle, score: int | None = None, rank: int | None = None, context: str | None = None) -> PickTitle:
+def _title_to_pick(
+    t: ContentTitle, score: int | None = None, rank: int | None = None, context: str | None = None
+) -> PickTitle:
     return PickTitle(
         id=str(t.id),
         title=t.title,
@@ -86,158 +88,135 @@ def _title_to_pick(t: ContentTitle, score: int | None = None, rank: int | None =
     )
 
 
+class PicksPage(BaseModel):
+    items: list[PickTitle]
+    total: int
+    offset: int
+    has_more: bool
+
+
+def _section_query(uid, category):
+    rating_join = and_(Rating.content_title_id == ContentTitle.id, Rating.user_id == uid)
+    if category == "ranked_favorites":
+        return (
+            select(ContentTitle, Rating.score, RankedFavorite.position)
+            .join(RankedFavorite, RankedFavorite.content_title_id == ContentTitle.id)
+            .outerjoin(Rating, rating_join)
+            .where(RankedFavorite.user_id == uid)
+            .order_by(RankedFavorite.position)
+        )
+    query = select(ContentTitle, Rating.score).outerjoin(Rating, rating_join)
+    if category == "my_next_watch":
+        query = (
+            query.join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
+            .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
+            .where(Watchlist.owner_user_id == uid, Watchlist.system_role == "next_watch")
+            .order_by(WatchlistItem.created_at.desc(), ContentTitle.id)
+        )
+    elif category == "favorites":
+        query = query.where(Rating.score >= 8).order_by(
+            Rating.score.desc(), Rating.updated_at.desc(), ContentTitle.id
+        )
+    elif category == "watched":
+        query = (
+            query.outerjoin(
+                TitleWatchStatus,
+                and_(
+                    TitleWatchStatus.content_title_id == ContentTitle.id,
+                    TitleWatchStatus.user_id == uid,
+                ),
+            )
+            .where(
+                or_(Rating.watched_state == "watched", TitleWatchStatus.watched_state == "watched")
+            )
+            .order_by(
+                func.coalesce(Rating.updated_at, TitleWatchStatus.updated_at).desc(),
+                ContentTitle.id,
+            )
+        )
+    else:
+        raise HTTPException(404, detail="Collection not found")
+    return query
+
+
+def _section_page(db, uid, category, limit, offset):
+    query = _section_query(uid, category)
+    total = int(db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0)
+    rows = db.execute(query.offset(offset).limit(limit)).all()
+    items = [
+        _title_to_pick(
+            row[0],
+            score=int(round(float(row[1]))) if row[1] is not None else None,
+            rank=row[2] if category == "ranked_favorites" else None,
+        )
+        for row in rows
+    ]
+    return PicksPage(items=items, total=total, offset=offset, has_more=offset + len(items) < total)
+
+
+@router.get("/collections/{category}", response_model=PicksPage)
+def get_collection_page(
+    category: str,
+    current_user: CurrentUser,
+    db: DbSession,
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+):
+    return _section_page(db, current_user.id, category, limit, offset)
+
+
 @router.get("/collections", response_model=PicksCollections)
 def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksCollections:
     uid = current_user.id
-
-    # Oct-27 spec PICKS-01: do not stop at 5/25/100 just because the
-    # client renders a paginated strip. Bump per-section caps so an
-    # average viewer sees their full collection; a true cursor-based
-    # continuation endpoint can land later for whales with 1000+ titles.
-    _SECTION_CAP = 500
-
-    # ── Ranked favorites — explicit order from RankedFavorite ────────
-    ranked_rows = db.scalars(
-        select(RankedFavorite).where(RankedFavorite.user_id == uid).order_by(RankedFavorite.position.asc()).limit(_SECTION_CAP)
-    ).all()
-    ranked_favorites_count = int(db.scalar(
-        select(func.count()).select_from(RankedFavorite).where(RankedFavorite.user_id == uid)
-    ) or 0)
-    ranked_title_ids = [r.content_title_id for r in ranked_rows]
-    ranked_titles_map = {
-        t.id: t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(ranked_title_ids))).all()
-    } if ranked_title_ids else {}
-    ratings_rows = db.scalars(
-        select(Rating).where(Rating.user_id == uid, Rating.content_title_id.in_(ranked_title_ids))
-    ).all() if ranked_title_ids else []
-    rating_lookup = {r.content_title_id: int(round(float(r.score))) for r in ratings_rows}
-    ranked_favorites = [
-        _title_to_pick(
-            ranked_titles_map[r.content_title_id],
-            score=rating_lookup.get(r.content_title_id),
-            rank=r.position,
+    pages = {
+        key: _section_page(db, uid, key, 100, 0)
+        for key in ("ranked_favorites", "my_next_watch", "favorites", "watched")
+    }
+    # Count across the full collection, never just the displayed page.
+    ranked_ids = select(RankedFavorite.content_title_id).where(RankedFavorite.user_id == uid)
+    rated_unplaced_count = int(
+        db.scalar(
+            select(func.count())
+            .select_from(Rating)
+            .where(Rating.user_id == uid, Rating.content_title_id.not_in(ranked_ids))
         )
-        for r in ranked_rows
-        if r.content_title_id in ranked_titles_map
-    ]
-
-    # ── My Next Watch — canonical queue via system_role (QUEUE01) ────
-    from app.services.watchlists import get_next_watch_list as _get_next_watch
-    next_watch_list = _get_next_watch(db, uid)
-    next_watch_titles: list[PickTitle] = []
-    my_next_watch_count = 0
-    if next_watch_list is not None:
-        rows = db.execute(
-            select(WatchlistItem, ContentTitle)
-            .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-            .where(WatchlistItem.watchlist_id == next_watch_list.id)
-            .order_by(WatchlistItem.created_at.desc())
-            .limit(_SECTION_CAP)
-        ).all()
-        next_watch_titles = [_title_to_pick(t) for _, t in rows]
-        my_next_watch_count = int(db.scalar(
-            select(func.count()).select_from(WatchlistItem).where(WatchlistItem.watchlist_id == next_watch_list.id)
-        ) or 0)
-
-    # ── Favorites — titles the user rated 8 or higher ────────────────
-    fav_rows = db.execute(
-        select(Rating, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        .where(Rating.user_id == uid, Rating.score >= 8)
-        .order_by(Rating.score.desc(), Rating.updated_at.desc())
-        .limit(_SECTION_CAP)
+        or 0
+    )
+    lists = db.scalars(
+        select(Watchlist)
+        .where(Watchlist.owner_user_id == uid)
+        .order_by(Watchlist.updated_at.desc())
     ).all()
-    favorites = [_title_to_pick(t, score=int(round(float(r.score)))) for r, t in fav_rows]
-    favorites_count = int(db.scalar(
-        select(func.count()).select_from(Rating).where(Rating.user_id == uid, Rating.score >= 8)
-    ) or 0)
-
-    # ── Watched — union of watched status rows + ratings ─────────────
-    # Users can mark a title watched without rating it (TitleWatchStatus)
-    # OR rate it (which implicitly watches it). Both count.
-    watched_from_rating = db.execute(
-        select(Rating, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        .where(Rating.user_id == uid, Rating.watched_state == "watched")
-        .order_by(Rating.updated_at.desc())
-        .limit(_SECTION_CAP)
-    ).all()
-    seen_ids: set[UUID] = {t.id for _, t in watched_from_rating}
-    watched_titles = [
-        _title_to_pick(t, score=int(round(float(r.score))))
-        for r, t in watched_from_rating
-    ]
-    watched_from_status = db.execute(
-        select(TitleWatchStatus, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == TitleWatchStatus.content_title_id)
-        .where(TitleWatchStatus.user_id == uid, TitleWatchStatus.watched_state == "watched")
-        .order_by(TitleWatchStatus.updated_at.desc())
-        .limit(_SECTION_CAP)
-    ).all()
-    for _ws, t in watched_from_status:
-        if t.id not in seen_ids:
-            watched_titles.append(_title_to_pick(t))
-            seen_ids.add(t.id)
-    watched_rating_count = int(db.scalar(
-        select(func.count()).select_from(Rating).where(Rating.user_id == uid, Rating.watched_state == "watched")
-    ) or 0)
-    watched_status_count = int(db.scalar(
-        select(func.count()).select_from(TitleWatchStatus).where(
-            TitleWatchStatus.user_id == uid,
-            TitleWatchStatus.watched_state == "watched",
-        )
-    ) or 0)
-    # Rough union — the dedupe uses seen_ids on the loaded rows; this
-    # count is directional. Prefer the larger side so the display
-    # never understates.
-    watched_count = max(watched_rating_count, watched_status_count)
-
-    # Oct-27 follow-up: rated but not placed in Ranked Favorites. A
-    # viewer with 60 rated titles and 20 ranked favorites sees "40
-    # rated — not yet placed" and can bulk-add them without reordering
-    # the existing manual rank.
-    ranked_title_ids_set = {r.content_title_id for r in ranked_rows}
-    rated_title_ids = list(db.scalars(
-        select(Rating.content_title_id).where(Rating.user_id == uid)
-    ).all())
-    rated_unplaced_count = sum(1 for tid in rated_title_ids if tid not in ranked_title_ids_set)
-
-    # ── My Lists — all user watchlists with preview posters ──────────
-    list_rows = db.scalars(
-        select(Watchlist).where(Watchlist.owner_user_id == uid).order_by(Watchlist.updated_at.desc())
-    ).all()
-    my_lists: list[PickList] = []
-    for wl in list_rows:
-        items = db.execute(
-            select(WatchlistItem, ContentTitle)
-            .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
+    my_lists = []
+    for wl in lists:
+        titles = db.scalars(
+            select(ContentTitle)
+            .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
             .where(WatchlistItem.watchlist_id == wl.id)
-            .order_by(WatchlistItem.created_at.desc())
-            .limit(_SECTION_CAP)
+            .order_by(WatchlistItem.created_at.desc(), ContentTitle.id)
+            .limit(20)
         ).all()
-        total = int(db.scalar(
-            select(func.count()).select_from(WatchlistItem).where(WatchlistItem.watchlist_id == wl.id)
-        ) or 0)
+        total = int(
+            db.scalar(
+                select(func.count())
+                .select_from(WatchlistItem)
+                .where(WatchlistItem.watchlist_id == wl.id)
+            )
+            or 0
+        )
         my_lists.append(
             PickList(
                 id=str(wl.id),
                 name=wl.name,
                 description=wl.description,
                 is_default=bool(wl.is_default),
-                titles=[_title_to_pick(t) for _, t in items],
+                titles=[_title_to_pick(t) for t in titles],
                 total_count=total,
             )
         )
-
     return PicksCollections(
-        ranked_favorites=ranked_favorites,
-        my_next_watch=next_watch_titles,
-        favorites=favorites,
-        watched=watched_titles,
+        **{key: page.items for key, page in pages.items()},
+        **{key + "_count": page.total for key, page in pages.items()},
         my_lists=my_lists,
-        ranked_favorites_count=ranked_favorites_count,
         rated_unplaced_count=rated_unplaced_count,
-        my_next_watch_count=my_next_watch_count,
-        favorites_count=favorites_count,
-        watched_count=watched_count,
     )

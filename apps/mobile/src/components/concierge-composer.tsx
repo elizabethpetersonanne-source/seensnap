@@ -52,8 +52,12 @@ export type ConciergeTitleCard = {
 };
 
 export type ConciergeDecisionResponse = {
+  version?: number;
+  request_id?: string | null;
+  can_retry?: boolean;
+  retry_after_seconds?: number | null;
   decision_id: string | null;
-  status: "ready" | "partial" | "unavailable" | "empty" | "error" | "allowance_exhausted";
+  status: "ready" | "partial" | "unavailable" | "empty" | "error" | "allowance_exhausted" | "processing";
   status_detail: string;
   rationale: string;
   constraints: Record<string, unknown> | null;
@@ -99,7 +103,9 @@ export function ConciergeComposer({
   allowanceRemaining,
   allowanceCap,
   resetsAt,
-  onDecision,
+  onSubmit,
+  draft,
+  disabled,
   backdropUri,
 }: {
   token: string | null;
@@ -107,7 +113,9 @@ export function ConciergeComposer({
   allowanceRemaining: number | null;
   allowanceCap: number | null;
   resetsAt: string | null;
-  onDecision: (decision: ConciergeDecisionResponse) => void;
+  onSubmit: (intent: string) => Promise<ConciergeDecisionResponse | undefined>;
+  draft?: string;
+  disabled?: boolean;
   backdropUri?: string | null;
 }) {
   const [intent, setIntent] = useState("");
@@ -119,6 +127,9 @@ export function ConciergeComposer({
   // "Replace with a suggestion" stays reversible per spec.
   const previousDraftRef = useRef<string | null>(null);
   const inputRef = useRef<TextInput | null>(null);
+  const requestBusy = useRef(false);
+
+  useEffect(() => { if (draft !== undefined) setIntent(draft); }, [draft]);
 
   const outOfAllowance = tier === "free" && allowanceRemaining != null && allowanceRemaining <= 0;
   const currentExample = ROTATING_EXAMPLES[exampleIdx] ?? DEFAULT_EXAMPLE;
@@ -154,33 +165,18 @@ export function ConciergeComposer({
   }
 
   async function submit() {
-    if (!token || busy) return;
+    if (!token || requestBusy.current || disabled) return;
     const trimmed = intent.trim();
     if (!trimmed) return;
+    requestBusy.current = true;
     setBusy(true);
     setError(null);
     try {
-      const idempotency_key = `concierge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const res = await apiRequest<ConciergeDecisionResponse>("/me/concierge/decision", {
-        method: "POST",
-        token,
-        body: JSON.stringify({ intent: trimmed, idempotency_key }),
-      });
-      // Thread the original intent through so the empty-state
-      // adjustment chips can rebuild "edit this one constraint"
-      // prompts without a round-trip.
-      onDecision({ ...res, _intent: trimmed });
-      if (res.status === "unavailable") setError("Concierge is unavailable right now.");
-      else if (res.status === "error") setError(res.status_detail || "Something went wrong.");
-      else if (res.status === "allowance_exhausted") setError("Monthly allowance used up — resets next month.");
-      // Chunk D: don't surface a flat error for empty. The Discover
-      // screen renders the ConciergeEmptyState with specific chips
-      // instead. Keep the composer input focused on the user's draft.
-      else if (res.status === "empty") setIntent(trimmed);
-      else setIntent("");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Something went wrong.");
+      await onSubmit(trimmed);
+    } catch {
+      setError("Concierge couldn't finish this search. Your request is still here; please try again.");
     } finally {
+      requestBusy.current = false;
       setBusy(false);
     }
   }
@@ -219,7 +215,7 @@ export function ConciergeComposer({
               }
               setIntent(next);
             }}
-            editable={!busy && !outOfAllowance}
+            editable={!disabled && !busy && !outOfAllowance}
             onSubmitEditing={submit}
             returnKeyType="send"
             style={styles.input}
@@ -227,7 +223,7 @@ export function ConciergeComposer({
             maxLength={240}
           />
           <Pressable
-            disabled={busy || outOfAllowance}
+            disabled={disabled || busy || outOfAllowance}
             onPress={() => {
               if (!intent.trim()) {
                 setIntent(placeholder);
@@ -237,7 +233,7 @@ export function ConciergeComposer({
             }}
             style={({ pressed }) => [
               styles.goBtn,
-              (busy || outOfAllowance) && styles.goBtnDisabled,
+              (disabled || busy || outOfAllowance) && styles.goBtnDisabled,
               pressed && !busy && styles.goBtnPressed,
             ]}
             accessibilityRole="button"

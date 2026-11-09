@@ -5,7 +5,7 @@
     "owner": "gregtusar",
     "scheme": "seensnap",
     "version": "0.1.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "userInterfaceStyle": "dark",
     "icon": "./assets/branding/seensnap-logo.png",
     "splash": {
@@ -23,6 +23,14 @@
           "defaultChannel": "default",
           "sounds": []
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "SeenSnap uses the photo you choose for your profile, team picture or bug report.",
+          "cameraPermission": false,
+          "microphonePermission": false
+        }
       ]
     ],
     "experiments": {
@@ -33,10 +41,15 @@
     },
     "ios": {
       "bundleIdentifier": "com.seensnap.app",
-      "associatedDomains": ["applinks:seensnap.app"],
+      "associatedDomains": [
+        "applinks:seensnap.app"
+      ],
       "infoPlist": {
-        "UIBackgroundModes": ["remote-notification"]
-      }
+        "UIBackgroundModes": [
+          "remote-notification"
+        ]
+      },
+      "supportsTablet": true
     },
     "android": {
       "package": "com.seensnap.app",
@@ -50,10 +63,46 @@
           "action": "VIEW",
           "autoVerify": true,
           "data": [
-            { "scheme": "https", "host": "seensnap.app", "pathPrefix": "/lists" },
-            { "scheme": "https", "host": "seensnap.app", "pathPrefix": "/titles" }
+            {
+              "scheme": "https",
+              "host": "seensnap.app",
+              "pathPrefix": "/lists"
+            },
+            {
+              "scheme": "https",
+              "host": "seensnap.app",
+              "pathPrefix": "/titles"
+            },
+            {
+              "scheme": "https",
+              "host": "seensnap.app",
+              "pathPrefix": "/list/"
+            },
+            {
+              "scheme": "https",
+              "host": "seensnap.app",
+              "pathPrefix": "/profile/"
+            },
+            {
+              "scheme": "https",
+              "host": "seensnap.app",
+              "pathPrefix": "/post/"
+            },
+            {
+              "scheme": "https",
+              "host": "seensnap.app",
+              "pathPrefix": "/share/t/"
+            },
+            {
+              "scheme": "https",
+              "host": "seensnap.app",
+              "pathPrefix": "/teams/"
+            }
           ],
-          "category": ["BROWSABLE", "DEFAULT"]
+          "category": [
+            "BROWSABLE",
+            "DEFAULT"
+          ]
         }
       ]
     },

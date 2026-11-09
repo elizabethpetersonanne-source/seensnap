@@ -109,54 +109,9 @@ def submit_bug_report(
     attachment_urls: list[str] = []
 
     try:
-        if attachments:
-            # PRIV02: write to the PRIVATE directory, not /uploads.
-            bug_dir = settings.private_uploads_path() / "bug-reports" / str(report_id)
-            bug_dir.mkdir(parents=True, exist_ok=True)
-            total_bytes = 0
-            for idx, f in enumerate(attachments):
-                # PRIV03: bounded read — don't slurp a huge file into
-                # memory before the size check. Read in 128KB chunks
-                # and stop at the cap + 1 to raise.
-                chunks: list[bytes] = []
-                read_cap = _MAX_FILE_BYTES + 1
-                read_so_far = 0
-                while read_so_far < read_cap:
-                    chunk = f.file.read(min(128 * 1024, read_cap - read_so_far))
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                    read_so_far += len(chunk)
-                if read_so_far > _MAX_FILE_BYTES:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail="Attachment exceeds 6 MB.",
-                    )
-                data = b"".join(chunks)
-                if not data:
-                    continue
-                total_bytes += len(data)
-                if total_bytes > _MAX_FILES * _MAX_FILE_BYTES:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail="Combined attachments exceed limit.",
-                    )
-                # PRIV03: sniff the actual bytes rather than trust the
-                # client-sent MIME header.
-                sniffed = _sniff_image_type(data[:16])
-                if sniffed is None:
-                    raise HTTPException(
-                        status_code=status.HTTP_400_BAD_REQUEST,
-                        detail="Attachment content isn't a supported image.",
-                    )
-                ext = _ALLOWED_IMAGE_TYPES[sniffed]
-                # Server-generated filename — never trust client input.
-                filename = f"attachment_{idx}{ext}"
-                (bug_dir / filename).write_bytes(data)
-                saved_filenames.append(filename)
-                attachment_urls.append(
-                    f"{base}{settings.api_v1_prefix}/me/bug-reports/{report_id}/attachments/{filename}"
-                )
+        from app.services.media_assets import store_image
+        for file in attachments:
+            attachment_urls.append(store_image(db, current_user.id, file.file, 'bug'))
 
         row = BugReport(
             id=report_id,
@@ -177,18 +132,7 @@ def submit_bug_report(
             created_at=row.created_at.isoformat(),
         )
     except HTTPException:
-        # PRIV03: clean up partial files on failure before re-raising
-        # so a 413 doesn't leave orphans on disk.
-        if bug_dir is not None:
-            for name in saved_filenames:
-                try:
-                    (bug_dir / name).unlink(missing_ok=True)
-                except Exception:
-                    pass
-            try:
-                bug_dir.rmdir()
-            except Exception:
-                pass
+        db.rollback()  # partial images and the report are one transaction
         raise
 
 

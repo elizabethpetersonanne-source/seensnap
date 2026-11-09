@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-27 Stefan/Caroline spec SET-02: Direct / Watch Teams / Social
  * notification groups, persisted per-channel on the server.
@@ -120,13 +121,7 @@ export default function NotificationsSettingsScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Notifications</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Notifications" ownsSafeArea={false} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>

@@ -43,6 +43,8 @@ from uuid import UUID, uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.services.title_revisions import current_revision, advance_revision
+from app.models.user import User
 from app.models.content import ContentTitle
 from app.models.social import Rating, RankedFavorite, TitleWatchStatus, Watchlist, WatchlistItem
 
@@ -144,7 +146,7 @@ def _snapshot(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
     updated_at = rating.updated_at if rating else (
         ws.updated_at if ws else datetime.now(timezone.utc)
     )
-    version = rating.version if rating is not None else 0
+    version = current_revision(db,user_id,title_id)
     return TitleStateSnapshot(
         title_id=title_id,
         saved=saved,
@@ -162,6 +164,7 @@ def save_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot
     """Save → add to Next Watch; leaves watched/rating/favorite alone.
     If the user had explicitly saved a previously-watched title, we
     keep both — rewatch intent is independent of past watching."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
     if title is None:
         raise TitleStateError("title_not_found", "Title not found")
@@ -182,6 +185,7 @@ def save_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot
 
 def unsave_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
     """Remove from Next Watch only. Does NOT clear watched/rating/favorite."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     from app.services.watchlists import get_next_watch_list
     wl = get_next_watch_list(db, user_id)
     if wl is not None:
@@ -195,8 +199,9 @@ def unsave_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
     return _snapshot(db, user_id, title_id)
 
 
-def mark_watched(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
+def mark_watched(db: Session, user_id: UUID, title_id: UUID, *, commit: bool = True) -> TitleStateSnapshot:
     """Set watched; remove from Next Watch. Rating optional."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
     if title is None:
         raise TitleStateError("title_not_found", "Title not found")
@@ -205,10 +210,11 @@ def mark_watched(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
         Rating.user_id == user_id,
         Rating.content_title_id == title_id,
     ))
+    version=advance_revision(db,user_id,title_id)
     if rating is not None:
         rating.watched_state = "watched"
         rating.updated_at = datetime.now(timezone.utc)
-        rating.version += 1
+        rating.version = version
     else:
         ws = db.scalar(select(TitleWatchStatus).where(
             TitleWatchStatus.user_id == user_id,
@@ -236,7 +242,10 @@ def mark_watched(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
                 WatchlistItem.content_title_id == title_id,
             )
         )
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return _snapshot(db, user_id, title_id)
 
 
@@ -250,6 +259,7 @@ def rate_title(
 ) -> TitleStateSnapshot:
     """Rate 1-10. Sets watched, removes from Next Watch, updates rating
     atomically. Optimistic concurrency via expected_version."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     if not (1 <= score <= 10):
         raise TitleStateError("invalid_score", "score must be 1-10")
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
@@ -260,23 +270,18 @@ def rate_title(
         Rating.user_id == user_id,
         Rating.content_title_id == title_id,
     ))
+    current=current_revision(db,user_id,title_id)
+    if expected_version is not None and expected_version != current:
+        raise TitleStateError('version_conflict','stale version')
+    version=advance_revision(db,user_id,title_id)
     if existing is not None:
-        if expected_version is not None and expected_version != existing.version:
-            raise TitleStateError("version_conflict", "stale version")
-        existing.score = Decimal(str(score))
-        existing.watched_state = "watched"
-        existing.version += 1
-        existing.updated_at = datetime.now(timezone.utc)
+        existing.score=Decimal(str(score))
+        existing.watched_state='watched'
+        existing.version=version
+        existing.updated_at=datetime.now(timezone.utc)
     else:
-        existing = Rating(
-            id=uuid4(),
-            user_id=user_id,
-            content_title_id=title_id,
-            score=Decimal(str(score)),
-            watched_state="watched",
-            version=1,
-        )
-        db.add(existing)
+        db.add(Rating(id=uuid4(),user_id=user_id,content_title_id=title_id,
+            score=Decimal(str(score)),watched_state='watched',version=version))
 
     # Clean up TitleWatchStatus — the Rating is now the authoritative source.
     db.execute(
@@ -299,16 +304,19 @@ def rate_title(
     return _snapshot(db, user_id, title_id)
 
 
-def clear_rating(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
+def clear_rating(db: Session, user_id: UUID, title_id: UUID, *, expected_version: int | None = None) -> TitleStateSnapshot:
     """Remove rating. Preserves watched (as a Watched TitleWatchStatus
     row) and all independent favorite/list state. Removes ranked entry
     if its origin was derived from the rating (not yet tracked by a
     column — conservative: existing ranked rows are treated as manual
     and preserved)."""
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     rating = db.scalar(select(Rating).where(
         Rating.user_id == user_id,
         Rating.content_title_id == title_id,
     ))
+    if expected_version is not None and expected_version != current_revision(db,user_id,title_id):
+        raise TitleStateError("version_conflict", "stale version")
     if rating is None:
         return _snapshot(db, user_id, title_id)
     # Preserve Watched state by creating a TitleWatchStatus row if there
@@ -324,6 +332,10 @@ def clear_rating(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
             content_title_id=title_id,
             watched_state="watched",
         ))
+    else:
+        ws.watched_state = "watched"
+        ws.updated_at = datetime.now(timezone.utc)
+    advance_revision(db,user_id,title_id)
     db.delete(rating)
     db.commit()
     return _snapshot(db, user_id, title_id)

@@ -1,197 +1,247 @@
-/**
- * Follows list — shows who a given user follows or who follows them.
- *
- * Route: /follows/[userId]?mode=following|followers
- *
- * Product ask: "we should also have an area somewhere to see everyone
- * you follow" — this screen is that area. Same route serves both
- * directions (`?mode=following` default, `?mode=followers` optional)
- * and works for the viewer's own profile OR anyone else's, since the
- * backend endpoints (/profiles/{user_id}/following, /followers) are
- * public-to-auth. Entry point: tapping the Following / Followers
- * counters on any profile screen.
- */
-import { Ionicons } from "@expo/vector-icons";
-import { router, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useLocalSearchParams, router } from "expo-router";
+import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
   Pressable,
-  StyleSheet,
   Text,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-
+import { StyleSheet } from "react-native";
 import { Avatar } from "@/components/avatar";
-import { apiRequest } from "@/lib/api";
+import { AppHeader } from "@/components/headers/app-header";
+import { apiRequest, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
-
-type FollowRow = {
+type Row = {
   user_id: string;
-  username: string | null;
   display_name: string | null;
+  username: string | null;
   avatar_url: string | null;
   bio: string | null;
-  followed_at: string;
+  is_following: boolean;
 };
-
-type FollowListResponse = {
-  items: FollowRow[];
-  total: number;
-};
-
-type Mode = "following" | "followers";
-
+type Page = { items: Row[]; total: number; next_offset: number | null };
 export default function FollowsScreen() {
-  const { userId, mode: initialMode } = useLocalSearchParams<{ userId: string; mode?: Mode }>();
+  const { userId, mode: initialMode } = useLocalSearchParams<{
+    userId: string;
+    mode?: string;
+  }>();
   const { sessionToken, user } = useAuth();
-  const isSelf = user?.user_id === userId;
-  const [mode, setMode] = useState<Mode>(initialMode === "followers" ? "followers" : "following");
-  const [rows, setRows] = useState<FollowRow[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    if (!sessionToken || !userId) return;
-    setLoading(true);
+  const [mode, setMode] = useState(
+    initialMode === "followers" ? "followers" : "following",
+  );
+  const [page, setPage] = useState<Page | null>(null),
+    [busy, setBusy] = useState(false),
+    [error, setError] = useState<string | null>(null),
+    [changing, setChanging] = useState<string | null>(null);
+  const generation = useRef(0),
+    loading = useRef(false),
+    changeLock = useRef(false);
+  async function load(offset = 0, version = generation.current) {
+    if (!sessionToken || loading.current) return;
+    loading.current = true;
+    setBusy(true);
     setError(null);
     try {
-      const data = await apiRequest<FollowListResponse>(
-        `/profiles/${userId}/${mode}?limit=100`,
+      const next = await apiRequest<Page>(
+        `/profiles/${userId}/${mode}?offset=${offset}&limit=40`,
         { token: sessionToken },
       );
-      setRows(data.items);
-      setTotal(data.total);
+      if (version === generation.current)
+        setPage((old) => ({
+          ...next,
+          items:
+            offset && old
+              ? [
+                  ...new Map(
+                    [...old.items, ...next.items].map((r) => [r.user_id, r]),
+                  ).values(),
+                ]
+              : next.items,
+        }));
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load follows.");
+      if (version === generation.current) {
+        if (e instanceof ApiError && [403, 404].includes(e.status))
+          setPage(null);
+        setError(
+          "Could not load these people. The profile may no longer be available to you.",
+        );
+      }
     } finally {
-      setLoading(false);
+      if (version === generation.current) {
+        loading.current = false;
+        setBusy(false);
+      }
     }
-  }, [sessionToken, userId, mode]);
-
+  }
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  const heading = useMemo(() => {
-    if (mode === "following") {
-      return isSelf ? "People you follow" : "Following";
+    const version = ++generation.current;
+    loading.current = false;
+    setPage(null);
+    void load(0, version);
+    return () => {
+      generation.current++;
+      loading.current = false;
+    };
+  }, [sessionToken, userId, mode]);
+  useEffect(
+    () => setMode(initialMode === "followers" ? "followers" : "following"),
+    [initialMode, userId],
+  );
+  async function toggle(row: Row) {
+    if (!sessionToken || changeLock.current) return;
+    changeLock.current = true;
+    setChanging(row.user_id);
+    const version = generation.current;
+    try {
+      await apiRequest(`/profiles/${row.user_id}/follow`, {
+        method: row.is_following ? "DELETE" : "POST",
+        token: sessionToken,
+      });
+      if (version === generation.current) {
+        setPage((old) =>
+          old
+            ? {
+                ...old,
+                items: old.items.map((r) =>
+                  r.user_id === row.user_id
+                    ? { ...r, is_following: !r.is_following }
+                    : r,
+                ),
+              }
+            : old,
+        );
+      }
+    } catch {
+      if (version === generation.current)
+        setError("Could not update this follow. Please try again.");
+    } finally {
+      changeLock.current = false;
+      setChanging(null);
     }
-    return isSelf ? "Your followers" : "Followers";
-  }, [mode, isSelf]);
-
+  }
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <View style={styles.topBar}>
-        <Pressable
-          onPress={() => router.back()}
-          hitSlop={12}
-          style={styles.backBtn}
-          accessibilityRole="button"
-          accessibilityLabel="Back"
-        >
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.heading} numberOfLines={1}>
-          {heading}
-        </Text>
-        <View style={{ width: 28 }} />
-      </View>
-
+    <SafeAreaView style={styles.safeArea} edges={[]}>
+      <AppHeader
+        variant="detail"
+        leftKind="back"
+        title={mode === "following" ? "Following" : "Followers"}
+      />
       <View style={styles.segmentRow}>
-        {(["following", "followers"] as const).map((m) => {
-          const active = m === mode;
-          return (
-            <Pressable
-              key={m}
-              onPress={() => setMode(m)}
-              style={[styles.segmentBtn, active && styles.segmentBtnActive]}
-              accessibilityRole="button"
-              accessibilityLabel={m === "following" ? "Show following" : "Show followers"}
-            >
-              <Text style={[styles.segmentText, active && styles.segmentTextActive]}>
-                {m === "following" ? "Following" : "Followers"}
-              </Text>
-            </Pressable>
-          );
-        })}
+        {["following", "followers"].map((m) => (
+          <Pressable
+            key={m}
+            onPress={() => setMode(m)}
+            style={[styles.segmentBtn, mode === m && styles.segmentBtnActive]}
+          >
+            <Text style={styles.segmentText}>
+              {m === "following" ? "Following" : "Followers"}
+            </Text>
+          </Pressable>
+        ))}
       </View>
-
-      {loading ? (
-        <View style={styles.centerFill}>
-          <ActivityIndicator color={colors.accent} />
-        </View>
-      ) : error ? (
-        <View style={styles.centerFill}>
+      {error ? (
+        <View style={{ padding: 16 }}>
           <Text style={styles.errorText}>{error}</Text>
-          <Pressable onPress={() => void load()} style={styles.retryBtn}>
+          <Pressable
+            style={styles.retryBtn}
+            onPress={() => void load(page?.next_offset ?? 0)}
+          >
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
         </View>
-      ) : rows.length === 0 ? (
-        <View style={styles.centerFill}>
-          <Text style={styles.emptyTitle}>
-            {mode === "following" ? "Not following anyone yet" : "No followers yet"}
-          </Text>
-          <Text style={styles.emptyBody}>
-            {mode === "following"
-              ? "Find people whose taste you trust to fill your feed."
-              : "Share what you're watching to attract followers."}
-          </Text>
-          {mode === "following" ? (
-            <Pressable style={styles.emptyCta} onPress={() => router.push("/social/people")}>
-              <Ionicons name="person-add-outline" size={14} color={colors.background} />
-              <Text style={styles.emptyCtaText}>Find people</Text>
-            </Pressable>
-          ) : null}
-        </View>
-      ) : (
-        <FlatList
-          data={rows}
-          keyExtractor={(item) => item.user_id}
-          contentContainerStyle={styles.listContent}
-          ItemSeparatorComponent={() => <View style={styles.separator} />}
-          ListHeaderComponent={
+      ) : null}
+      {busy && !page ? <ActivityIndicator color={colors.accent} /> : null}
+      <FlatList
+        data={page?.items ?? []}
+        keyExtractor={(r) => r.user_id}
+        contentContainerStyle={[
+          styles.listContent,
+          {
+            paddingBottom: 110,
+            maxWidth: 800,
+            width: "100%",
+            alignSelf: "center",
+          },
+        ]}
+        onEndReached={() => {
+          if (page?.next_offset != null && !error) void load(page.next_offset);
+        }}
+        ListHeaderComponent={
+          page ? (
             <Text style={styles.countText}>
-              {total} {mode === "following" ? "following" : total === 1 ? "follower" : "followers"}
+              {page.total} {mode}
             </Text>
-          }
-          renderItem={({ item }) => (
+          ) : null
+        }
+        ListEmptyComponent={
+          page ? (
+            <Text style={styles.emptyBody}>No people to show here yet.</Text>
+          ) : null
+        }
+        ListFooterComponent={
+          busy ? (
+            <ActivityIndicator color={colors.accent} />
+          ) : page?.next_offset != null ? (
             <Pressable
-              style={styles.row}
+              style={styles.retryBtn}
+              onPress={() => void load(page.next_offset!)}
+            >
+              <Text style={styles.retryText}>Load more</Text>
+            </Pressable>
+          ) : null
+        }
+        renderItem={({ item }) => (
+          <View style={styles.row}>
+            <Pressable
+              style={{
+                flex: 1,
+                flexDirection: "row",
+                gap: 12,
+                alignItems: "center",
+              }}
               onPress={() => router.push(`/profile/${item.user_id}`)}
-              accessibilityRole="button"
-              accessibilityLabel={`Open ${item.display_name ?? item.username ?? "profile"}`}
             >
               <Avatar
-                uri={item.avatar_url ?? null}
-                label={item.display_name ?? item.username ?? ""}
+                uri={item.avatar_url}
+                label={item.display_name ?? ""}
                 size={44}
               />
               <View style={styles.rowMeta}>
-                <Text style={styles.rowName} numberOfLines={1}>
-                  {item.display_name ?? item.username ?? "Someone"}
+                <Text style={styles.rowName}>
+                  {item.display_name ?? item.username ?? "Member"}
                 </Text>
                 {item.username ? (
-                  <Text style={styles.rowHandle} numberOfLines={1}>@{item.username}</Text>
-                ) : null}
-                {item.bio ? (
-                  <Text style={styles.rowBio} numberOfLines={2}>{item.bio}</Text>
+                  <Text style={styles.rowHandle}>@{item.username}</Text>
                 ) : null}
               </View>
-              <Ionicons name="chevron-forward" size={18} color={colors.muted} />
             </Pressable>
-          )}
-        />
-      )}
+            {item.user_id !== user?.user_id ? (
+              <Pressable
+                disabled={!!changing}
+                style={[
+                  styles.retryBtn,
+                  { minHeight: 44, justifyContent: "center", marginTop: 0 },
+                ]}
+                onPress={() => void toggle(item)}
+              >
+                <Text style={styles.retryText}>
+                  {changing === item.user_id
+                    ? "Saving…"
+                    : item.is_following
+                      ? "Unfollow"
+                      : "Follow"}
+                </Text>
+              </Pressable>
+            ) : null}
+          </View>
+        )}
+      />
     </SafeAreaView>
   );
 }
-
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,

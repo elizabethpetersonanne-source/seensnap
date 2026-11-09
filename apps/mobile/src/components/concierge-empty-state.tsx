@@ -37,23 +37,22 @@ function diagnosisFor(
   // CON04: a retrieval failure is NOT a "no matching titles" state.
   // Say so plainly and offer Retry instead of asking the user to
   // broaden their request.
-  if (partialReason === "upstream_failure") {
+  if (partialReason === "upstream_failure" || partialReason === "metadata_unavailable") {
     return {
       headline: "I couldn't finish checking the catalog.",
-      body: "The provider timed out while hydrating results. Your request is preserved — Retry to try again.",
+      body: "Some title information could not be checked. Your request is preserved; try again in a moment.",
       adjustments: [
         { id: "retry", label: "Retry", prompt: originalIntent ?? "" },
         { id: "edit", label: "Edit request", prompt: originalIntent ?? "" },
       ],
     };
   }
-  if (partialReason === "retrieval_budget_reached") {
+  if (partialReason === "retrieval_budget_reached" || partialReason === "retrieval_timeout") {
     return {
-      headline: "I searched a lot but didn't lock five eligible picks.",
-      body: "I checked everything within this turn's budget. Showing what I did find, or try a narrower ask to get all five.",
+      headline: "There are more titles to check.",
+      body: "Keep looking continues from this search with your filters intact.",
       adjustments: [
         { id: "retry", label: "Keep looking", prompt: originalIntent ?? "" },
-        { id: "edit", label: "Narrow it", prompt: originalIntent ?? "" },
       ],
     };
   }
@@ -78,6 +77,10 @@ function diagnosisFor(
           { id: "edit", label: "Edit request", prompt: originalIntent ?? "" },
         ],
       };
+    case "empty_named_list_scope":
+      return { headline: "No matching title in this list.", body: "This list has no verified match for your request. You can edit it or explicitly search the full catalog.",
+        adjustments: [{ id: "broaden_catalog", label: "Try the full catalog", prompt: "Find a new title for me." },
+          { id: "edit", label: "Edit request", prompt: originalIntent ?? "" }] };
     case "needs_list_selection":
       return {
         headline: "Which list?",
@@ -126,23 +129,30 @@ export function ConciergeEmptyState({
   rationale,
   partialReason,
   onApplyAdjustment,
+  onContinue,
+  onEdit,
+  busy,
 }: {
   statusDetail: string | undefined;
   originalIntent: string | null;
   rationale?: string | null;
   partialReason?: string | null;
-  onApplyAdjustment: (prompt: string) => void;
+  onApplyAdjustment: (prompt: string, adjustment: string) => void;
+  onContinue?: () => void;
+  onEdit?: () => void;
+  busy?: boolean;
 }) {
   const d = diagnosisFor(statusDetail, originalIntent, partialReason);
   // Prefer the server's rationale when it's non-empty — Chunk C may
   // have populated it with a precise explanation; otherwise fall back
   // to the generic copy table.
-  const headline = rationale && rationale.trim().length > 0 ? rationale.trim() : d.headline;
+  const incomplete = ["retrieval_timeout", "retrieval_budget_reached", "upstream_failure", "metadata_unavailable"].includes(partialReason ?? "");
+  const headline = incomplete ? d.headline : rationale?.trim() || d.headline;
   return (
     <View style={styles.wrap}>
       <View style={styles.kickerRow}>
         <Ionicons name="alert-circle-outline" size={11} color={colors.accent} />
-        <Text style={styles.kicker}>NO EXACT MATCH</Text>
+        <Text style={styles.kicker}>{incomplete ? "SEARCH IN PROGRESS" : "NO EXACT MATCH"}</Text>
       </View>
       <Text style={styles.headline}>{headline}</Text>
       <Text style={styles.body}>{d.body}</Text>
@@ -150,7 +160,8 @@ export function ConciergeEmptyState({
         {d.adjustments.map((a) => (
           <Pressable
             key={a.id}
-            onPress={() => onApplyAdjustment(a.prompt)}
+            disabled={busy}
+            onPress={() => a.id === "edit" && onEdit ? onEdit() : a.id === "retry" && onContinue ? onContinue() : onApplyAdjustment(a.prompt, a.id)}
             hitSlop={4}
             accessibilityRole="button"
             accessibilityLabel={a.label}
@@ -197,7 +208,7 @@ const styles = StyleSheet.create({
     gap: 6,
   },
   chip: {
-    minHeight: 36,
+    minHeight: 44,
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 999,

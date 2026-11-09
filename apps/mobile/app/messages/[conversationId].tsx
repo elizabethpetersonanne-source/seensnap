@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Conversation screen — Messaging spec §11.
  *
@@ -222,15 +223,7 @@ export default function ConversationScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <View style={styles.headerRow}>
-        <Pressable onPress={() => router.back()} hitSlop={10}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle} numberOfLines={1}>Conversation</Text>
-        <Pressable onPress={() => setShowMenu((v) => !v)} hitSlop={10}>
-          <Ionicons name="ellipsis-horizontal" size={22} color={colors.ink} />
-        </Pressable>
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Conversation" ownsSafeArea={false} rightSlot={<Pressable onPress={()=>setShowMenu(v=>!v)} style={{minHeight:44,minWidth:44,justifyContent:"center",alignItems:"center"}} accessibilityRole="button" accessibilityLabel="Conversation options"><Ionicons name="ellipsis-horizontal" size={22} color={colors.ink}/></Pressable>} />
 
       {showMenu ? (
         <View style={styles.menuSheet}>
@@ -386,12 +379,12 @@ function ContentCard({ message }: { message: MessageDto }) {
         </View>
       );
     }
-    const isOpenable = Boolean(l.share_token);
+    const isOpenable = Boolean(l.id);
     return (
       <Pressable
         style={({ pressed }) => [styles.listCard, pressed && isOpenable && { opacity: 0.75 }]}
         onPress={() => {
-          if (l.share_token) router.push(`/lists/${l.share_token}`);
+          if (l.id) router.push(`/list/${l.id}`);
         }}
         disabled={!isOpenable}
       >

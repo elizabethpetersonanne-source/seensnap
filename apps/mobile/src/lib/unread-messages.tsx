@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useState, type PropsWithChildren } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState, type PropsWithChildren } from "react";
 import { AppState } from "react-native";
 
 import { useAuth } from "@/lib/auth";
@@ -21,6 +21,8 @@ const UnreadContext = createContext<UnreadState>({ count: 0, refresh: async () =
 export function UnreadMessagesProvider({ children }: PropsWithChildren) {
   const { sessionToken } = useAuth();
   const [count, setCount] = useState(0);
+  const currentToken=useRef(sessionToken);currentToken.current=sessionToken;
+  useEffect(()=>setCount(0),[sessionToken]);
 
   const refresh = useCallback(async () => {
     if (!sessionToken) {
@@ -28,7 +30,7 @@ export function UnreadMessagesProvider({ children }: PropsWithChildren) {
       return;
     }
     const c = await fetchUnreadCount(sessionToken);
-    setCount(c);
+    if(currentToken.current===sessionToken)setCount(c);
   }, [sessionToken]);
 
   useEffect(() => {

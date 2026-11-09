@@ -17,8 +17,8 @@
  */
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect } from "@react-navigation/native";
-import { router } from "expo-router";
-import { useCallback, useState } from "react";
+import { router, useLocalSearchParams } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -123,6 +123,8 @@ type UserSearchResult = {
 
 export default function SocialScreen() {
   const { sessionToken } = useAuth();
+  const { post_id: postId } = useLocalSearchParams<{ post_id?: string }>();
+  const feedRequest = useRef(0);
   // Cycling backdrop from the shared trending pool so the header matches the
   // visual weight of Discover / SceneDNA / Teams. Offset 9 is unique to
   // Social so different tabs pull different backdrops from the same pool.
@@ -272,24 +274,29 @@ export default function SocialScreen() {
 
   const loadFeed = useCallback(async () => {
     if (!sessionToken) return;
+    const request = ++feedRequest.current;
     try {
       setError(null);
-      const data = await apiRequest<FeedResponse>("/social/feed?limit=20", {
-        token: sessionToken,
-      });
+      const data: FeedResponse = postId
+        ? { items: [await apiRequest<SocialPost>(`/social/posts/${encodeURIComponent(postId)}`, { token: sessionToken })], next_cursor: null, has_more: false }
+        : await apiRequest<FeedResponse>("/social/feed?limit=20", { token: sessionToken });
+      if (request !== feedRequest.current) return;
       setFeed(data);
     } catch (e) {
+      if (request !== feedRequest.current) return;
+      setFeed(null);
       setError(e instanceof Error ? e.message : "Couldn't load your feed.");
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (request === feedRequest.current) { setLoading(false); setRefreshing(false); }
     }
-  }, [sessionToken]);
+  }, [sessionToken, postId]);
 
   useFocusEffect(
     useCallback(() => {
       trackEvent("social_feed_viewed", {});
+      setLoading(true);
       void loadFeed();
+      return () => { feedRequest.current++; };
     }, [loadFeed]),
   );
 
@@ -481,14 +488,7 @@ export default function SocialScreen() {
     }
   }
 
-  return (
-    <SafeAreaView style={styles.safeArea} edges={[]}>
-      {/* Oct-19 Header Standardization — compact shared app bar. Find
-          People + Create Post relocated into the Social content below
-          per the brief's "preserve Find People and Create Post in the
-          Social content's actions/menu, not a crowded global header." */}
-      <AppHeader variant="primary" title="Social" />
-
+  const feedHeader = (<>
       {/* Oct-27 follow-up S01–S04: Your taste matches carousel sits
           immediately below the header and above Stories, per brief. */}
       <TasteMatchesCarousel />
@@ -605,13 +605,28 @@ export default function SocialScreen() {
         </View>
       ) : null}
 
+  </>);
+
+  return (
+    <SafeAreaView style={styles.safeArea} edges={[]}>
+      {/* Oct-19 Header Standardization — compact shared app bar. Find
+          People + Create Post relocated into the Social content below
+          per the brief's "preserve Find People and Create Post in the
+          Social content's actions/menu, not a crowded global header." */}
+      <AppHeader variant="primary" title="Social" />
+      {postId ? <Pressable
+        onPress={() => router.replace({ pathname: "/(tabs)/social", params: { post_id: "" } })}
+        style={{ minHeight: 44, justifyContent: "center", paddingHorizontal: spacing.lg }}
+        accessibilityRole="button"
+      ><Text style={{ color: colors.accent }}>Back to Social feed</Text></Pressable> : null}
+
       {loading ? (
         <View style={styles.centerState}>
           <ActivityIndicator color={colors.accent} />
         </View>
       ) : error ? (
         <View style={styles.centerState}>
-          <Text style={styles.errorTitle}>Couldn't load your feed</Text>
+          <Text style={styles.errorTitle}>{postId ? "This post is unavailable" : "Couldn't load your feed"}</Text>
           <Text style={styles.errorBody}>{error}</Text>
           <Pressable onPress={() => void loadFeed()} style={styles.retryBtn}>
             <Text style={styles.retryBtnText}>Try again</Text>
@@ -619,6 +634,7 @@ export default function SocialScreen() {
         </View>
       ) : feed && feed.items.length > 0 ? (
         <FlatList
+          ListHeaderComponent={postId ? null : feedHeader}
           data={feed.items}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.content}
@@ -652,6 +668,7 @@ export default function SocialScreen() {
         // Real empty state per §69 — no seeded activity, functional paths to
         // find people the user actually cares about.
         <ScrollView contentContainerStyle={styles.emptyRoot}>
+          {feedHeader}
           <View style={styles.emptyIcon}>
             <Ionicons name="people-outline" size={40} color={colors.accent} />
           </View>
@@ -1136,15 +1153,15 @@ function FeedCard({
         <Pressable
           style={styles.cardListBlock}
           onPress={() => {
-            if (!post.list?.share_token) return;
+            if (!post.list?.id) return;
             trackEvent("social_post_opened", {
               post_id: post.id,
               entry: "list_open",
               post_type: post.post_type,
             });
-            router.push(`/lists/${post.list.share_token}`);
+            router.push(`/list/${post.list.id}`);
           }}
-          disabled={!post.list.share_token}
+          disabled={!post.list.id}
         >
           <Text style={styles.cardListName}>{post.list.name}</Text>
           <Text style={styles.cardListMeta}>

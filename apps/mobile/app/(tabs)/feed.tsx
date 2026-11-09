@@ -22,7 +22,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
-import { SeenSnapHeader } from "@/components/headers/seensnap-header";
+import { AppHeader } from "@/components/headers/app-header";
 import { subscribeTitleState } from "@/lib/title-state";
 import { useCyclingBackdrop, useFallbackBackdrop } from "@/lib/backdrop-pool";
 import { PosterMosaic } from "@/components/poster-mosaic";
@@ -565,12 +565,7 @@ export default function FeedScreen() {
       <KeyboardAvoidingView behavior={Platform.OS === "ios" ? "padding" : undefined} style={styles.flex}>
         {/* Unified Header §7 — Social Feed uses the same shell as every
             other destination so switching tabs never jumps. */}
-        <SeenSnapHeader
-          title="Social Feed"
-          subtitle="See what your world is watching."
-          artworkSource={feedHeaderBackdrop ?? feedFallbackBackdrop}
-          fallbackSeed={6}
-        />
+        <AppHeader variant="primary" title="Social" />
         <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.content}>
 
           <View style={styles.segmented}>

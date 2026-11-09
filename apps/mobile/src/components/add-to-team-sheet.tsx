@@ -51,6 +51,8 @@ export function AddToTeamSheet({ visible, token, title, onClose, onAdded, onErro
     void loadTeams();
   }, [onError, token, visible]);
 
+  useEffect(() => { if (visible) { setAlsoPost(false); setNote(""); } }, [visible, token]);
+
   const selectedTeam = useMemo(() => teams.find((team) => team.id === selectedTeamId) ?? null, [selectedTeamId, teams]);
 
   async function submit() {

@@ -4,12 +4,14 @@ from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from urllib.parse import quote
 from typing import Any
+from time import monotonic
 
 import httpx
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.services.concierge_runtime import timeout_for
 from app.models.content import ContentAvailability, ContentTitle
 
 TMDB_IMAGE_BASE_URL = "https://image.tmdb.org/t/p/w500"
@@ -109,7 +111,7 @@ def _backdrop_url(path: str | None) -> str | None:
 def _normalize_type(media_type: str | None) -> str | None:
     if media_type == "movie":
         return "movie"
-    if media_type in {"tv", "series"}:
+    if media_type in {"tv", "series", "show"}:
         return "series"
     return None
 
@@ -126,12 +128,22 @@ def build_provider_destination(service_id: str, title_name: str) -> tuple[str | 
     return app_url, web_url
 
 
-def _upsert_title_from_tmdb_result(db: Session, item: dict[str, Any]) -> ContentTitle | None:
+def _upsert_title_from_tmdb_result(
+    db: Session, item: dict[str, Any], *, complete: bool = False,
+) -> ContentTitle | None:
+    """Merge partial search/discover data without erasing hydrated details.
+
+    Only a detail response is authoritative for empty fields. Provenance is
+    kept in metadata_raw so existing records can be repaired without a schema
+    migration. The full-detail timestamp never advances on a search result.
+    """
     media_type = _normalize_type(item.get("media_type") or item.get("content_type"))
     if media_type is None:
         return None
 
-    tmdb_id = item["id"]
+    tmdb_id = item.get("id")
+    if not isinstance(tmdb_id, int) or isinstance(tmdb_id, bool) or tmdb_id <= 0:
+        return None
     # Oct-18 brief §3 fix 6: identity is (content_type, tmdb_id).
     # Looking up by tmdb_id alone is ambiguous — a movie id can
     # overlap a TV series id.
@@ -142,47 +154,53 @@ def _upsert_title_from_tmdb_result(db: Session, item: dict[str, Any]) -> Content
         )
     )
     if title is None:
-        title = ContentTitle(
-            tmdb_id=tmdb_id,
-            content_type=media_type,
-            title=item.get("title") or item.get("name") or "Untitled",
-            original_title=item.get("original_title") or item.get("original_name"),
-            overview=item.get("overview"),
-            poster_url=_poster_url(item.get("poster_path")),
-            backdrop_url=_backdrop_url(item.get("backdrop_path")),
-            release_date=_parse_date(item.get("release_date") or item.get("first_air_date")),
-            tmdb_vote_average=Decimal(str(round(item.get("vote_average") or 0, 1))),
-            genres=[
-                genre["name"] for genre in item.get("genres", []) if isinstance(genre, dict) and genre.get("name")
-            ],
-            runtime_minutes=item.get("runtime"),
-            season_count=item.get("number_of_seasons"),
-            metadata_raw=item,
-        )
+        title = ContentTitle(tmdb_id=tmdb_id, content_type=media_type, title="Untitled", genres=[])
         db.add(title)
-        db.flush()
-        return title
-
-    title.content_type = media_type
-    title.title = item.get("title") or item.get("name") or title.title
-    title.original_title = item.get("original_title") or item.get("original_name")
-    title.overview = item.get("overview")
-    title.poster_url = _poster_url(item.get("poster_path"))
-    title.backdrop_url = _backdrop_url(item.get("backdrop_path"))
-    title.release_date = _parse_date(item.get("release_date") or item.get("first_air_date"))
-    title.tmdb_vote_average = Decimal(str(round(item.get("vote_average") or 0, 1)))
-    title.genres = [
-        genre["name"] for genre in item.get("genres", []) if isinstance(genre, dict) and genre.get("name")
-    ]
-    title.runtime_minutes = item.get("runtime")
-    title.season_count = item.get("number_of_seasons")
-    title.metadata_raw = item
+    normalized = dict(item)
+    if "genres" not in normalized and isinstance(item.get("genre_ids"), list):
+        try:
+            mapping = _fetch_genre_map("movie" if media_type == "movie" else "tv")
+        except (httpx.HTTPError, TmdbConfigurationError):
+            mapping = {}
+        normalized["genres"] = [
+            {"id": gid, "name": mapping[gid]} for gid in item["genre_ids"] if gid in mapping
+        ]
+    fields = {
+        "title": normalized.get("title") or normalized.get("name"),
+        "original_title": normalized.get("original_title") or normalized.get("original_name"),
+        "overview": normalized.get("overview"),
+        "poster_url": _poster_url(normalized.get("poster_path")),
+        "backdrop_url": _backdrop_url(normalized.get("backdrop_path")),
+        "release_date": _parse_date(normalized.get("release_date") or normalized.get("first_air_date")),
+        "runtime_minutes": normalized.get("runtime") if media_type == "movie" else None,
+        "season_count": normalized.get("number_of_seasons"),
+    }
+    for key, value in fields.items():
+        if value is not None and value != "":
+            setattr(title, key, value)
+        elif complete and key != "title":
+            setattr(title, key, None)
+    if normalized.get("vote_average") is not None:
+        title.tmdb_vote_average = Decimal(str(round(normalized["vote_average"], 1)))
+    genres = [g["name"] for g in normalized.get("genres", []) if isinstance(g, dict) and g.get("name")]
+    if genres or complete:
+        title.genres = genres
+    previous = dict(title.metadata_raw or {})
+    # Missing keys are never deletions, even in a detail response: appended
+    # credits/keywords may not have been requested by a different caller.
+    previous.update({k: v for k, v in normalized.items() if complete or v not in (None, "", [], {})})
+    stamp = datetime.now(timezone.utc).isoformat()
+    previous["_seensnap_last_ingested_at"] = stamp
+    if complete:
+        previous["_seensnap_details_at"] = stamp
+    title.metadata_raw = previous
+    title.updated_at = datetime.now(timezone.utc)
     db.flush()
     return title
 
 
 def search_titles(db: Session, query: str) -> list[ContentTitle]:
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get("/search/multi", params={"query": query, "include_adult": "false", "language": "en-US"})
         response.raise_for_status()
 
@@ -240,10 +258,10 @@ def _pick_language_neutral_backdrop(images_response: dict[str, Any]) -> str | No
 
 def refresh_title_details(db: Session, title: ContentTitle) -> ContentTitle:
     endpoint = f"/movie/{title.tmdb_id}" if title.content_type == "movie" else f"/tv/{title.tmdb_id}"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(
             endpoint,
-            params={"language": "en-US", "append_to_response": "credits,images", "include_image_language": "en,null"},
+            params={"language": "en-US", "append_to_response": "credits,images,keywords", "include_image_language": "en,null"},
         )
         response.raise_for_status()
     item = response.json()
@@ -258,7 +276,7 @@ def refresh_title_details(db: Session, title: ContentTitle) -> ContentTitle:
 
     # TMDB detail endpoints omit media_type; inject from our stored content_type so upsert doesn't bail
     item.setdefault("media_type", "movie" if title.content_type == "movie" else "tv")
-    refreshed = _upsert_title_from_tmdb_result(db, item)
+    refreshed = _upsert_title_from_tmdb_result(db, item, complete=True)
     db.commit()
     return refreshed or title
 
@@ -269,7 +287,7 @@ def refresh_streaming_options(db: Session, title: ContentTitle, region: str = "U
         if title.content_type == "movie"
         else f"/tv/{title.tmdb_id}/watch/providers"
     )
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(endpoint)
         response.raise_for_status()
 
@@ -342,7 +360,7 @@ def fetch_title_videos(title: ContentTitle, *, client: "httpx.Client | None" = N
     the connection pool — otherwise we build a one-shot client."""
     endpoint = f"/movie/{title.tmdb_id}/videos" if title.content_type == "movie" else f"/tv/{title.tmdb_id}/videos"
     if client is None:
-        with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=10) as c:
+        with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(10)) as c:
             response = c.get(endpoint, params={"language": "en-US"})
             response.raise_for_status()
     else:
@@ -371,7 +389,7 @@ def fetch_title_videos(title: ContentTitle, *, client: "httpx.Client | None" = N
 
 def fetch_title_gallery(title: ContentTitle, limit: int = 12) -> list[dict[str, Any]]:
     endpoint = f"/movie/{title.tmdb_id}/images" if title.content_type == "movie" else f"/tv/{title.tmdb_id}/images"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(endpoint)
         response.raise_for_status()
 
@@ -416,7 +434,7 @@ def fetch_title_gallery(title: ContentTitle, limit: int = 12) -> list[dict[str, 
 
 def fetch_related_titles(db: Session, title: ContentTitle, limit: int = 10) -> list[ContentTitle]:
     endpoint_root = "movie" if title.content_type == "movie" else "tv"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         rec_response = client.get(
             f"/{endpoint_root}/{title.tmdb_id}/recommendations",
             params={"language": "en-US", "page": 1},
@@ -448,7 +466,7 @@ def fetch_related_titles(db: Session, title: ContentTitle, limit: int = 10) -> l
 
 def fetch_trending_titles(db: Session, limit: int = 20) -> list[ContentTitle]:
     hydrated: list[ContentTitle] = []
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         for page in range(1, 4):  # up to 3 pages = up to 60 trending items
             if len(hydrated) >= limit:
                 break
@@ -471,7 +489,7 @@ def fetch_now_playing_titles(db: Session, limit: int = 20, region: str = "US") -
     """TMDB `movie/now_playing` — movies currently in theaters for the
     user's region. Discover brief: movie-only, no implied showtimes."""
     hydrated: list[ContentTitle] = []
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         for page in range(1, 3):
             if len(hydrated) >= limit:
                 break
@@ -526,7 +544,7 @@ def fetch_popular_titles(
     unbounded for internal-alpha needs.
     """
     hydrated: list[ContentTitle] = []
-    seen_tmdb_ids: set[int] = set()
+    seen_tmdb_ids: set[tuple[str, int]] = set()
     exclude_set = exclude_title_ids or set()
     wanted_genre_lower = genre_filter.strip().lower() if genre_filter else None
     # Oct-18 brief §4: respect media type at the TMDB endpoint level.
@@ -537,7 +555,7 @@ def fetch_popular_titles(
         endpoints = (("movie", "/movie/popular"),) if want_server_type == "movie" else (("tv", "/tv/popular"),)
     else:
         endpoints = (("movie", "/movie/popular"), ("tv", "/tv/popular"))
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         for offset in range(max_pages):
             page = ((start_page - 1 + offset) % 500) + 1  # wrap at TMDB's max
             for media_type, path in endpoints:
@@ -551,9 +569,9 @@ def fetch_popular_titles(
                 results = response.json().get("results", [])
                 for item in results:
                     tmdb_id = item.get("id")
-                    if not isinstance(tmdb_id, int) or tmdb_id in seen_tmdb_ids:
+                    if not isinstance(tmdb_id, int) or (media_type, tmdb_id) in seen_tmdb_ids:
                         continue
-                    seen_tmdb_ids.add(tmdb_id)
+                    seen_tmdb_ids.add((media_type, tmdb_id))
                     item["media_type"] = media_type
                     row = _upsert_title_from_tmdb_result(db, item)
                     if row is None:
@@ -590,11 +608,13 @@ def discover_titles_by_genre(
     genre: str,
     media_type: str = "all",
     limit: int = 40,
+    page: int = 1,
 ) -> list[ContentTitle]:
     genre = genre.strip().lower()
     if not genre:
         return []
 
+    media_type = {"tv": "show", "series": "show", "any": "all"}.get(media_type, media_type)
     requested = {"all", "movie", "show"}
     if media_type not in requested:
         media_type = "all"
@@ -612,8 +632,8 @@ def discover_titles_by_genre(
         return []
 
     fetched: list[ContentTitle] = []
-    seen_tmdb_ids: set[int] = set()
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    seen_tmdb_ids: set[tuple[str, int]] = set()
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         if media_type in {"all", "movie"} and movie_id is not None:
             response = client.get(
                 "/discover/movie",
@@ -623,15 +643,15 @@ def discover_titles_by_genre(
                     "include_adult": "false",
                     "include_video": "false",
                     "with_genres": str(movie_id),
-                    "page": 1,
+                    "page": page,
                 },
             )
             response.raise_for_status()
             for item in response.json().get("results", []):
                 tmdb_id = item.get("id")
-                if not isinstance(tmdb_id, int) or tmdb_id in seen_tmdb_ids:
+                if not isinstance(tmdb_id, int) or ("movie", tmdb_id) in seen_tmdb_ids:
                     continue
-                seen_tmdb_ids.add(tmdb_id)
+                seen_tmdb_ids.add(("movie", tmdb_id))
                 item["media_type"] = "movie"
                 item["genres"] = [
                     {"name": movie_map[g]} for g in item.get("genre_ids", []) if isinstance(g, int) and g in movie_map
@@ -651,15 +671,15 @@ def discover_titles_by_genre(
                     "sort_by": "popularity.desc",
                     "include_adult": "false",
                     "with_genres": str(tv_id),
-                    "page": 1,
+                    "page": page,
                 },
             )
             response.raise_for_status()
             for item in response.json().get("results", []):
                 tmdb_id = item.get("id")
-                if not isinstance(tmdb_id, int) or tmdb_id in seen_tmdb_ids:
+                if not isinstance(tmdb_id, int) or ("series", tmdb_id) in seen_tmdb_ids:
                     continue
-                seen_tmdb_ids.add(tmdb_id)
+                seen_tmdb_ids.add(("series", tmdb_id))
                 item["media_type"] = "tv"
                 item["genres"] = [
                     {"name": tv_map[g]} for g in item.get("genre_ids", []) if isinstance(g, int) and g in tv_map
@@ -675,15 +695,23 @@ def discover_titles_by_genre(
     return fetched[:limit]
 
 
+_GENRE_MAP_CACHE: dict[str, tuple[float, dict[int, str]]] = {}
+
+
 def _fetch_genre_map(kind: str) -> dict[int, str]:
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=15) as client:
+    cached = _GENRE_MAP_CACHE.get(kind)
+    if cached and monotonic() - cached[0] < 86400:
+        return dict(cached[1])
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(f"/genre/{kind}/list", params={"language": "en-US"})
         response.raise_for_status()
-    return {
+    mapping = {
         int(item["id"]): str(item["name"])
         for item in response.json().get("genres", [])
         if isinstance(item, dict) and isinstance(item.get("id"), int) and isinstance(item.get("name"), str)
     }
+    _GENRE_MAP_CACHE[kind] = (monotonic(), mapping)
+    return dict(mapping)
 
 
 def _match_genre_id(mapping: dict[int, str], target: str) -> int | None:
@@ -699,11 +727,11 @@ def fetch_person_details(person_id: int) -> dict[str, Any]:
     headers = _tmdb_headers()
     base_url = settings.tmdb_base_url or "https://api.themoviedb.org/3"
 
-    person_resp = httpx.get(f"{base_url}/person/{person_id}", headers=headers, timeout=10)
+    person_resp = httpx.get(f"{base_url}/person/{person_id}", headers=headers, timeout=timeout_for(10))
     person_resp.raise_for_status()
     person_data = person_resp.json()
 
-    credits_resp = httpx.get(f"{base_url}/person/{person_id}/combined_credits", headers=headers, timeout=10)
+    credits_resp = httpx.get(f"{base_url}/person/{person_id}/combined_credits", headers=headers, timeout=timeout_for(10))
     credits_resp.raise_for_status()
     credits_data = credits_resp.json()
 
@@ -711,12 +739,12 @@ def fetch_person_details(person_id: int) -> dict[str, Any]:
     profile_url = f"https://image.tmdb.org/t/p/w342{profile_path}" if profile_path else None
 
     all_credits: list[dict[str, Any]] = []
-    seen_ids: set[int] = set()
+    seen_ids: set[tuple[str, int]] = set()
     for credit in (credits_data.get("cast") or []) + (credits_data.get("crew") or []):
         cid = credit.get("id")
-        if not isinstance(cid, int) or cid in seen_ids:
+        if not isinstance(cid, int) or (credit.get("media_type", "movie"), cid) in seen_ids:
             continue
-        seen_ids.add(cid)
+        seen_ids.add((credit.get("media_type", "movie"), cid))
         poster = credit.get("poster_path")
         all_credits.append({
             "tmdb_id": cid,

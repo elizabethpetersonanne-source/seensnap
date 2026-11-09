@@ -1,14 +1,15 @@
 from uuid import uuid4
 
 from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from pydantic import BaseModel
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.core.config import settings
 from app.models.taste import SwipeRecord
-from app.models.user import UserPreferences, UserProfile
+from app.models.user import User, UserPreferences, UserProfile
 from app.schemas.taste import HotTakeResponse, SceneDnaResponse, TasteAlignmentResponse, TasteEvolutionResponse
 from app.schemas.user import (
     PreferencesResponse,
@@ -18,11 +19,12 @@ from app.schemas.user import (
 )
 from app.services.taste import build_scene_dna_response, get_hot_takes, get_taste_alignment, get_taste_evolution
 
-ONBOARDING_CALIBRATION_TARGET = 20
+ONBOARDING_CALIBRATION_TARGET = 5
 
 
 class OnboardingProgressResponse(BaseModel):
     signal_count: int
+    rated_count: int = 0
     target: int
     completed: bool
 
@@ -112,6 +114,11 @@ def patch_me(payload: ProfileUpdateRequest, current_user: CurrentUser, db: DbSes
         candidate = payload.username.strip().lower()
         if len(candidate) < 3:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username must be at least 3 characters")
+        import re
+        if not re.fullmatch(r'[a-z0-9_.]{3,40}',candidate):
+            raise HTTPException(400,detail='Use 3–40 letters, numbers, underscores or periods for your username.')
+        if db.bind.dialect.name == 'postgresql':
+            db.execute(text('SELECT pg_advisory_xact_lock(hashtextextended(:username, 0))'),{'username':'username:'+candidate})
         duplicate = db.scalar(
             select(UserProfile).where(func.lower(UserProfile.username) == candidate, UserProfile.user_id != current_user.id)
         )
@@ -130,12 +137,24 @@ def patch_me(payload: ProfileUpdateRequest, current_user: CurrentUser, db: DbSes
 
     if payload.avatar_url is not None:
         avatar = payload.avatar_url.strip()
+        if '/media-assets/' in avatar:
+            from uuid import UUID
+            from app.models.team_state import MediaAsset
+            try: asset_id=UUID(avatar.rsplit('/',1)[-1])
+            except ValueError: raise HTTPException(400,detail='Invalid profile photo.')
+            asset=db.get(MediaAsset,asset_id)
+            if asset is None or asset.owner_user_id!=current_user.id or asset.purpose!='avatar':
+                raise HTTPException(400,detail='Choose your own uploaded profile photo.')
         profile.avatar_url = avatar if avatar else None
 
     if payload.country_code is not None:
         profile.country_code = payload.country_code.upper()
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(409,detail="Profile changed. That username may already be taken; please try another.")
     db.refresh(profile)
     return ProfileResponse(
         user_id=current_user.id,
@@ -157,36 +176,12 @@ def upload_avatar(
     file: UploadFile = File(...),
 ) -> ProfileResponse:
     profile = _ensure_profile(db, current_user.id, current_user.email)
-    content_type = (file.content_type or "").lower()
-    extension_map = {
-        "image/jpeg": ".jpg",
-        "image/jpg": ".jpg",
-        "image/png": ".png",
-        "image/webp": ".webp",
-    }
-    ext = extension_map.get(content_type)
-    if ext is None:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Unsupported image type")
-
-    data = file.file.read()
-    if not data:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Image file is empty")
-    if len(data) > 6 * 1024 * 1024:
-        raise HTTPException(status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE, detail="Image too large (max 6MB)")
-
-    avatars_dir = settings.uploads_path() / "avatars"
-    avatars_dir.mkdir(parents=True, exist_ok=True)
-    filename = f"{current_user.id}_{uuid4().hex}{ext}"
-    target = avatars_dir / filename
-    target.write_bytes(data)
-
-    if profile.avatar_url and "/uploads/avatars/" in profile.avatar_url:
-        old_name = profile.avatar_url.split("/uploads/avatars/")[-1]
-        old_path = avatars_dir / old_name
-        if old_path.exists():
-            old_path.unlink(missing_ok=True)
-
-    profile.avatar_url = str(request.base_url).rstrip("/") + f"/uploads/avatars/{filename}"
+    from app.services.media_assets import store_image, remove_owned_asset
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
+    db.refresh(profile)
+    old_url = profile.avatar_url
+    profile.avatar_url = store_image(db, current_user.id, file.file, 'avatar')
+    remove_owned_asset(db, old_url, owner_id=current_user.id)
     db.commit()
     db.refresh(profile)
     return ProfileResponse(
@@ -204,12 +199,10 @@ def upload_avatar(
 @router.delete("/avatar", response_model=ProfileResponse)
 def delete_avatar(current_user: CurrentUser, db: DbSession) -> ProfileResponse:
     profile = _ensure_profile(db, current_user.id, current_user.email)
-    if profile.avatar_url and "/uploads/avatars/" in profile.avatar_url:
-        avatars_dir = settings.uploads_path() / "avatars"
-        old_name = profile.avatar_url.split("/uploads/avatars/")[-1]
-        old_path = avatars_dir / old_name
-        if old_path.exists():
-            old_path.unlink(missing_ok=True)
+    from app.services.media_assets import remove_owned_asset
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
+    db.refresh(profile)
+    remove_owned_asset(db, profile.avatar_url, owner_id=current_user.id)
     profile.avatar_url = None
     db.commit()
     db.refresh(profile)
@@ -259,6 +252,9 @@ def patch_preferences(
     current_user: CurrentUser,
     db: DbSession,
 ) -> PreferencesResponse:
+    # Serialize partial preference updates with draft saves/completion. This also
+    # prevents two first writes from racing to create the same preference row.
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
     preferences = db.scalar(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
     if preferences is None:
         preferences = UserPreferences(user_id=current_user.id)
@@ -281,6 +277,13 @@ def patch_preferences(
             seen.add(key)
         preferences.connected_streaming_services = normalized
 
+    if payload.preferred_regions is not None:
+        region = payload.preferred_regions[0].strip().upper()
+        if len(region) != 2 or not region.isascii() or not region.isalpha():
+            raise HTTPException(422, detail="Use a two-letter country code")
+        preferences.preferred_regions = [region]
+        profile = _ensure_profile(db, current_user.id, current_user.email)
+        profile.country_code = region
     if payload.onboarding_completed is not None:
         preferences.onboarding_completed = payload.onboarding_completed
     if payload.notifications_enabled is not None:
@@ -319,8 +322,11 @@ def get_onboarding_progress(current_user: CurrentUser, db: DbSession) -> Onboard
     )
     prefs = db.scalar(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
     completed = bool(prefs.onboarding_completed) if prefs else False
+    from app.models.social import Rating
+    rated_count = int(db.scalar(select(func.count()).select_from(Rating).where(Rating.user_id == current_user.id)) or 0)
     return OnboardingProgressResponse(
         signal_count=signal_count,
+        rated_count=rated_count,
         target=ONBOARDING_CALIBRATION_TARGET,
         completed=completed,
     )
@@ -408,7 +414,6 @@ def get_my_scene_dna_signal(signal_name: str, current_user: CurrentUser, db: DbS
     """
     from app.models.content import ContentTitle
     from app.models.taste import UserSignal
-    from app.services.recommendation_service import recommend_for_user
     from app.services.user_signals import ensure_signals
     from uuid import UUID as _UUID
 

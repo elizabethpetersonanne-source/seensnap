@@ -1,30 +1,25 @@
-"""List sharing — token-based public access to a user's watchlist.
+"""Share tokens locate lists; current audience and block rules govern every read.
 
-Flow:
-  1. Owner POSTs /me/watchlist/lists/{list_id}/share → server mints a token,
-     returns a shareable URL (constructed against SHARE_BASE_URL).
-  2. Anyone with the token GETs /public/lists/{token} → server returns the
-     list contents (no auth required) unless the share was revoked.
-  3. Owner DELETEs the share → sets revoked_at, future opens 404.
-
-Never exposes private lists without an active token. Track open_count for
-attribution / analytics.
+Only explicitly shared Followers/Public lists receive tokens. Reducing the
+list audience revokes old tokens, including after later republication.
 """
 from __future__ import annotations
 
 import secrets
 from datetime import datetime, timezone
 from uuid import UUID
+from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, func
 
-from app.api.dependencies import CurrentUser, DbSession
+from app.api.dependencies import CurrentUser, DbSession, OptionalCurrentUser
 from app.core.config import settings
 from app.models.content import ContentTitle
 from app.models.social import ListShare, Watchlist, WatchlistItem
 from app.models.user import UserProfile
+from app.services.visibility import can_view_list
 
 router = APIRouter()
 
@@ -63,6 +58,9 @@ class PublicListResponse(BaseModel):
     item_count: int
     shared_by_display_name: str | None
     items: list[PublicListItemResponse]
+    list_id: UUID | None = None
+    owner_user_id: UUID | None = None
+    next_offset: int | None = None
 
 
 @router.post(
@@ -82,6 +80,9 @@ def create_or_reuse_list_share(
     if watchlist is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
 
+    if watchlist.visibility == "private":
+        raise HTTPException(status_code=400, detail="Choose Followers or Public in the list's settings before sharing.")
+
     existing = db.scalar(
         select(ListShare)
         .where(
@@ -95,7 +96,7 @@ def create_or_reuse_list_share(
         return ShareCreatedResponse(
             token=existing.token,
             url=_build_share_url(existing.token),
-            visibility=existing.visibility,
+            visibility=watchlist.visibility,
             revoked=False,
             open_count=existing.open_count,
             created_at=existing.created_at,
@@ -114,7 +115,7 @@ def create_or_reuse_list_share(
     return ShareCreatedResponse(
         token=share.token,
         url=_build_share_url(share.token),
-        visibility=share.visibility,
+        visibility=watchlist.visibility,
         revoked=False,
         open_count=0,
         created_at=share.created_at,
@@ -155,10 +156,10 @@ def get_list_share_status(
         )
         .order_by(ListShare.created_at.desc())
     )
-    if share is None:
+    if share is None or watchlist.visibility == "private":
         return ShareStatusResponse(is_public=False)
     return ShareStatusResponse(
-        is_public=True,
+        is_public=watchlist.visibility == "public",
         token=share.token,
         url=_build_share_url(share.token),
         open_count=share.open_count,
@@ -193,46 +194,41 @@ def revoke_list_share(
 
 
 @router.get("/public/lists/{token}", response_model=PublicListResponse)
-def get_public_shared_list(token: str, db: DbSession) -> PublicListResponse:
-    """No-auth public endpoint. Returns list contents for a valid, non-revoked token."""
+def get_public_shared_list(token: str, db: DbSession, current_user: OptionalCurrentUser, limit: Annotated[int, Query(ge=1,le=100)]=50,offset: Annotated[int, Query(ge=0)]=0) -> PublicListResponse:
+    """A token locates a list; its current audience still controls access."""
     share = db.scalar(
         select(ListShare).where(ListShare.token == token, ListShare.revoked_at.is_(None))
     )
     if share is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Share not found or revoked")
     watchlist = db.scalar(select(Watchlist).where(Watchlist.id == share.watchlist_id))
-    if watchlist is None:
+    if watchlist is None or share.created_by_user_id != watchlist.owner_user_id or not can_view_list(
+        db, watchlist.id, current_user.id if current_user else None,
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="List not found")
 
-    items = db.execute(
-        select(WatchlistItem, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(WatchlistItem.watchlist_id == watchlist.id)
-        .order_by(WatchlistItem.created_at.desc())
-    ).all()
+    if offset == 0:
+        share.open_count = (share.open_count or 0) + 1
+        db.commit()
+    return _read_list(db, watchlist, limit, offset)
 
-    profile = db.scalar(
-        select(UserProfile).where(UserProfile.user_id == watchlist.owner_user_id)
-    )
 
-    share.open_count = (share.open_count or 0) + 1
-    db.commit()
+def _read_list(db, watchlist, limit=50, offset=0):
+    total = db.scalar(select(func.count()).select_from(WatchlistItem).where(WatchlistItem.watchlist_id == watchlist.id)) or 0
+    items = db.execute(select(WatchlistItem,ContentTitle).join(ContentTitle,ContentTitle.id==WatchlistItem.content_title_id)
+        .where(WatchlistItem.watchlist_id==watchlist.id)
+        .order_by(WatchlistItem.position.asc().nulls_last(),WatchlistItem.created_at.desc(),WatchlistItem.id)
+        .limit(limit).offset(offset)).all()
+    profile=db.get(UserProfile,watchlist.owner_user_id)
+    return PublicListResponse(name=watchlist.name,description=watchlist.description,item_count=total,
+        list_id=watchlist.id,owner_user_id=watchlist.owner_user_id, shared_by_display_name=profile.display_name if profile else None,
+        next_offset=offset+len(items) if offset+len(items)<total else None,
+        items=[PublicListItemResponse(title_id=t.id,tmdb_id=t.tmdb_id,title=t.title,content_type=t.content_type,
+            poster_url=t.poster_url,backdrop_url=t.backdrop_url,year=t.release_date.year if t.release_date else None) for _,t in items])
 
-    return PublicListResponse(
-        name=watchlist.name,
-        description=watchlist.description,
-        item_count=len(items),
-        shared_by_display_name=profile.display_name if profile else None,
-        items=[
-            PublicListItemResponse(
-                title_id=t.id,
-                tmdb_id=t.tmdb_id,
-                title=t.title,
-                content_type=t.content_type,
-                poster_url=t.poster_url,
-                backdrop_url=t.backdrop_url,
-                year=t.release_date.year if t.release_date else None,
-            )
-            for _, t in items
-        ],
-    )
+@router.get('/lists/{list_id}', response_model=PublicListResponse)
+def get_visible_list(list_id: UUID, db: DbSession, current_user: OptionalCurrentUser,
+    limit: Annotated[int, Query(ge=1,le=100)]=50,offset: Annotated[int, Query(ge=0)]=0):
+    if not can_view_list(db,list_id,current_user.id if current_user else None):
+        raise HTTPException(404,detail='List unavailable.')
+    return _read_list(db,db.get(Watchlist,list_id),limit,offset)

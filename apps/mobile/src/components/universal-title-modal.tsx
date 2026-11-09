@@ -1,9 +1,11 @@
+import { SceneDnaBadge } from "@/components/scene-dna-badge";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
 import * as WebBrowser from "expo-web-browser";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
+  PanResponder,
   Dimensions,
   Image,
   Linking,
@@ -159,6 +161,19 @@ export function UniversalTitleModal({
   const saveScale = useRef(new Animated.Value(1)).current;
   const toastTranslateY = useRef(new Animated.Value(30)).current;
   const toastOpacity = useRef(new Animated.Value(0)).current;
+
+  const dragY = useRef(new Animated.Value(0)).current;
+  const scrollY = useRef(0);
+  const dismissGesture = useMemo(() => PanResponder.create({
+    onMoveShouldSetPanResponderCapture: (_, gesture) => scrollY.current <= 0 && gesture.dy > 12 && Math.abs(gesture.dy) > Math.abs(gesture.dx) * 1.5,
+    onPanResponderMove: (_, gesture) => dragY.setValue(Math.max(0, gesture.dy)),
+    onPanResponderRelease: (_, gesture) => {
+      if (gesture.dy > 90 || (gesture.dy > 30 && gesture.vy > 0.8)) onClose();
+      else Animated.spring(dragY, { toValue: 0, useNativeDriver: true }).start();
+    },
+    onPanResponderTerminate: () => Animated.spring(dragY, { toValue: 0, useNativeDriver: true }).start(),
+  }), [onClose, dragY]);
+  useEffect(() => { if (visible) { dragY.setValue(0); scrollY.current = 0; } }, [visible, dragY]);
 
   useEffect(() => {
     setActiveTitle(title);
@@ -481,8 +496,8 @@ export function UniversalTitleModal({
           <Animated.View style={[styles.overlay, { opacity: overlayOpacity }]} />
           <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-          <Animated.View style={[styles.shell, { transform: [{ translateY: sheetTranslateY }] }]}>
-            <View style={styles.handleWrap}>
+          <Animated.View {...dismissGesture.panHandlers} style={[styles.shell, { transform: [{ translateY: Animated.add(sheetTranslateY, dragY) }] }]}>
+            <View style={[styles.handleWrap,{minHeight:44}]} accessibilityLabel="Swipe down to close title details">
               <View style={styles.handle} />
             </View>
 
@@ -490,7 +505,7 @@ export function UniversalTitleModal({
               <Ionicons name="close" size={18} color={colors.ink} />
             </Pressable>
 
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} scrollEventThrottle={16} onScroll={e=>{scrollY.current=e.nativeEvent.contentOffset.y;}}>
               {/* Hero image carousel — swipeable through the TMDB
                    gallery (multiple backdrops + posters). Slide width
                    uses the LIVE viewport width so paging aligns after
@@ -555,6 +570,7 @@ export function UniversalTitleModal({
                     </View>
                     <View style={styles.heroCopy}>
                       <Text style={styles.heroTitle}>{currentTitle?.title ?? "Title"}</Text>
+                      {currentTitle ? <SceneDnaBadge titleId={currentTitle.id} /> : null}
                       <Text style={styles.heroFacts}>
                         {[
                           currentTitle?.year ?? "Unknown",

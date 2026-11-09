@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-18 UI/UX rebuild: SceneDNA detail page.
  *
@@ -114,13 +115,7 @@ export default function SceneDnaScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.backBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>SceneDNA</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="SceneDNA" ownsSafeArea={false} />
 
       <View style={styles.tabsRow}>
         {TABS.map((t) => {
@@ -201,7 +196,7 @@ function OverviewTab({
           <Text style={styles.sectionLabel}>YOUR PERSONALITY SIGNALS</Text>
           <View style={styles.signalGrid}>
             {data.signals.slice(0, 3).map((signal, idx) => {
-              const matchPercent = signalMatchPercent(signal);
+              const matchPercent = signalEvidenceLabel(signal);
               const image = signal.contributing_titles[0]?.poster_url ?? null;
               return (
                 <View key={`${signal.label}-${idx}`} style={styles.signalCard}>
@@ -211,7 +206,7 @@ function OverviewTab({
                   <View style={styles.signalCardShade} />
                   <View style={styles.signalCardBody}>
                     <Text style={styles.signalCardLabel}>{signal.label}</Text>
-                    <Text style={styles.signalCardMatch}>{matchPercent}% match</Text>
+                    <Text style={styles.signalCardMatch}>{matchPercent}</Text>
                   </View>
                 </View>
               );
@@ -254,14 +249,14 @@ function DeepDiveTab({ data }: { data: SceneDnaResponse }) {
     <>
       <Text style={styles.sectionLabel}>FULL SIGNAL SET</Text>
       {data.signals.map((signal, idx) => {
-        const match = signalMatchPercent(signal);
+        const match = signalEvidenceLabel(signal);
         return (
           <View key={`${signal.label}-${idx}`} style={styles.deepRow}>
             <View style={{ flex: 1 }}>
               <Text style={styles.deepLabel}>{signal.label}</Text>
               <Text style={styles.deepMeta}>Shows up across {signal.evidence_count} recent signals</Text>
             </View>
-            <Text style={styles.deepMatch}>{match}%</Text>
+            <Text style={styles.deepMatch}>{match}</Text>
           </View>
         );
       })}
@@ -336,14 +331,10 @@ function ColdStartView({ coldStart }: { coldStart: SceneDnaColdStart | null }) {
 }
 
 
-function signalMatchPercent(s: SceneDnaSignal): number {
-  // Translate confidence_tier + evidence_count into a 60–95% match
-  // display. Never fabricate — if evidence is 0 we floor at 60%.
-  const base = s.confidence_tier === "strong" ? 88 : s.confidence_tier === "emerging" ? 76 : 64;
-  const bonus = Math.min(7, Math.floor(s.evidence_count / 3));
-  return Math.min(95, base + bonus);
+function signalEvidenceLabel(signal: SceneDnaSignal): string {
+  if (signal.evidence_count === 0) return "Learning your taste";
+  return signal.confidence_tier === "strong" ? "Established pattern" : "Emerging pattern";
 }
-
 
 const styles = StyleSheet.create({
   root: {

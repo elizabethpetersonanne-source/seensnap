@@ -9,7 +9,9 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentTitle
-from app.models.social import Rating, TeamActivity, TeamMember, TeamRanking, TeamTitle, Watchlist, WatchlistItem
+from app.models.social import RankedFavorite, Rating, TeamActivity, TeamMember, TeamRanking, TeamTitle, Watchlist, WatchlistItem
+from app.models.team_state import TeamTitleState
+from app.services.visibility import can_view_profile
 from app.models.taste import CompatibilityScore, TeamAnalyticsSnapshot
 from app.models.user import UserProfile
 from app.schemas.taste import CompatibilityResponse, TeamAnalyticsResponse, TeamAnalyticsGenreBreakdownResponse, TeamAnalyticsPairResponse, TeamAnalyticsPersonResponse, TasteTitleReferenceResponse
@@ -66,13 +68,8 @@ def refresh_compatibility(db: Session, user_a: UUID, user_b: UUID) -> Compatibil
 
 
 def get_compatibility(db: Session, user_a: UUID, user_b: UUID, *, force_refresh: bool = False) -> CompatibilityScore:
-    first, second = sorted([user_a, user_b], key=str)
-    record = db.scalar(
-        select(CompatibilityScore).where(CompatibilityScore.user_a_id == first, CompatibilityScore.user_b_id == second)
-    )
-    if record is None or force_refresh or _is_stale(record.updated_at, hours=24):
-        return refresh_compatibility(db, user_a, user_b)
-    return record
+    # Beta: recompute rather than exposing a day-old private evidence snapshot.
+    return refresh_compatibility(db,user_a,user_b)
 
 
 # M01 evidence gate: minimum distinct rated titles PER PERSON before
@@ -124,7 +121,7 @@ def to_compatibility_response(
         user_b=other_user_id,
         compatibility=compat,
         top_shared_genres=record.shared_genres or [],
-        top_shared_titles=[TasteTitleReferenceResponse(**item) for item in (record.shared_titles or [])],
+        top_shared_titles=[TasteTitleReferenceResponse(**item) for item in (_shared_titles(db,viewer_user_id,other_user_id) if db is not None else [])],
         shared_labels=record.shared_labels or [],
         shared_platforms=record.shared_platforms or [],
         summary=record.summary,
@@ -178,7 +175,7 @@ def refresh_team_analytics(db: Session, team_id: UUID) -> TeamAnalyticsSnapshot:
         select(TeamRanking, ContentTitle)
         .join(ContentTitle, ContentTitle.id == TeamRanking.content_title_id)
         .where(TeamRanking.team_id == team_id)
-        .order_by(TeamRanking.score.desc(), TeamRanking.rank.asc())
+        .order_by(TeamRanking.rank.asc())
     ).all()
     most_loved = ranking_rows[0][1] if ranking_rows else None
     most_divisive = _most_divisive_title(db, team_id, member_ids)
@@ -202,10 +199,7 @@ def refresh_team_analytics(db: Session, team_id: UUID) -> TeamAnalyticsSnapshot:
 
 
 def get_team_analytics(db: Session, team_id: UUID, *, force_refresh: bool = False) -> TeamAnalyticsSnapshot:
-    snapshot = db.scalar(select(TeamAnalyticsSnapshot).where(TeamAnalyticsSnapshot.team_id == team_id))
-    if snapshot is None or force_refresh or _is_stale(snapshot.updated_at, hours=24):
-        return refresh_team_analytics(db, team_id)
-    return snapshot
+    return refresh_team_analytics(db,team_id)
 
 
 def to_team_analytics_response(snapshot: TeamAnalyticsSnapshot) -> TeamAnalyticsResponse:
@@ -232,34 +226,16 @@ def to_team_analytics_response(snapshot: TeamAnalyticsSnapshot) -> TeamAnalytics
     )
 
 
-def _shared_titles(db: Session, user_a: UUID, user_b: UUID) -> list[dict]:
-    """PRIV01: shared evidence must respect audience. Rating-based
-    overlap is safe to surface — ratings are personal state and the
-    SHARED fact alone doesn't leak either user's individual score.
-    List-based overlap is NOT safe when either side's list is
-    private: naming a title would disclose both users saved it to
-    somewhere, which can leak the viewer's private list membership
-    to the other user and vice versa.
+def _shared_titles(db: Session,user_a: UUID,user_b: UUID) -> list[dict]:
+    """Only named favorites that each person may currently see on the other's profile.
 
-    Resolve by: only rating-based shared titles for compat
-    explanation. Dropping the saved-list fallback is deliberate per
-    the Oct-27 personalization brief.
+    A private rating is not publication, even if the other person rated the same title.
     """
-    rated_a = db.execute(
-        select(ContentTitle)
-        .join(Rating, Rating.content_title_id == ContentTitle.id)
-        .where(Rating.user_id == user_a, Rating.score >= 7.5)
-    ).scalars().all()
-    rated_b = db.execute(
-        select(ContentTitle)
-        .join(Rating, Rating.content_title_id == ContentTitle.id)
-        .where(Rating.user_id == user_b, Rating.score >= 7.5)
-    ).scalars().all()
-    shared_by_id = {title.id: title for title in rated_a if title.id in {other.id for other in rated_b}}
-    return [
-        {"title_id": str(title.id), "title_name": title.title, "poster_url": title.poster_url}
-        for title in list(shared_by_id.values())[:4]
-    ]
+    if not can_view_profile(db,user_a,user_b) or not can_view_profile(db,user_b,user_a): return []
+    a=set(db.scalars(select(RankedFavorite.content_title_id).where(RankedFavorite.user_id==user_a)).all())
+    rows=db.scalars(select(ContentTitle).join(RankedFavorite,RankedFavorite.content_title_id==ContentTitle.id)
+        .where(RankedFavorite.user_id==user_b,RankedFavorite.content_title_id.in_(a)).order_by(RankedFavorite.position).limit(4)).all()
+    return [{'title_id':str(t.id),'title_name':t.title,'poster_url':t.poster_url} for t in rows]
 
 
 def _compatibility_summary(shared_genres: list[str], shared_labels: list[str], shared_platforms: list[str]) -> str | None:
@@ -346,24 +322,17 @@ def _taste_mvp(db: Session, team_id: UUID, member_ids: list[UUID], profiles: dic
     return payload
 
 
-def _most_divisive_title(db: Session, team_id: UUID, member_ids: list[UUID]) -> dict:
-    if not member_ids:
-        return {}
-    title_ids = db.scalars(select(TeamTitle.content_title_id).where(TeamTitle.team_id == team_id)).all()
-    if not title_ids:
-        return {}
-    ratings = db.execute(
-        select(Rating.content_title_id, func.max(Rating.score) - func.min(Rating.score), ContentTitle.title, ContentTitle.poster_url)
-        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        .where(Rating.user_id.in_(member_ids), Rating.content_title_id.in_(title_ids))
-        .group_by(Rating.content_title_id, ContentTitle.title, ContentTitle.poster_url)
-        .order_by((func.max(Rating.score) - func.min(Rating.score)).desc())
-        .limit(1)
-    ).first()
-    if ratings is None:
-        return {}
-    title_id, _, title_name, poster_url = ratings
-    return {"title_id": str(title_id), "title_name": title_name, "poster_url": poster_url}
+def _most_divisive_title(db: Session,team_id: UUID,member_ids: list[UUID]) -> dict:
+    if not member_ids:return {}
+    spread=func.max(TeamTitleState.shared_rating)-func.min(TeamTitleState.shared_rating)
+    row=db.execute(select(TeamTitleState.content_title_id,spread,ContentTitle.title,ContentTitle.poster_url)
+        .join(ContentTitle,ContentTitle.id==TeamTitleState.content_title_id)
+        .join(TeamTitle,(TeamTitle.content_title_id==ContentTitle.id)&(TeamTitle.team_id==team_id))
+        .where(TeamTitleState.team_id==team_id,TeamTitleState.user_id.in_(member_ids),TeamTitleState.state=='watched',TeamTitleState.shared_rating.is_not(None))
+        .group_by(TeamTitleState.content_title_id,ContentTitle.title,ContentTitle.poster_url)
+        .having(func.count(TeamTitleState.id)>=2).order_by(spread.desc(),TeamTitleState.content_title_id).limit(1)).first()
+    if row is None:return {}
+    return {'title_id':str(row[0]),'title_name':row[2],'poster_url':row[3]}
 
 
 def _is_stale(updated_at: datetime | None, *, hours: int) -> bool:

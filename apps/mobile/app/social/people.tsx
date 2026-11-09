@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * People discovery screen — People Discovery spec §6.2.
  *
@@ -168,13 +169,7 @@ export default function PeopleScreen() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={["top"]}>
-      <View style={styles.headerRow}>
-        <Pressable onPress={() => router.back()} hitSlop={10}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>People</Text>
-        <View style={{ width: 22 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="People" ownsSafeArea={false} />
 
       <View style={styles.searchRow}>
         <Ionicons name="search" size={16} color={colors.muted} />

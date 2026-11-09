@@ -71,6 +71,7 @@ export function FullBleedPosterSection({
   // Oct-27: tapping the section kicker navigates somewhere (list
   // detail, see-all, etc). When undefined, the kicker is text-only.
   onPressKicker,
+  onEndReached,
 }: {
   hero: FullBleedTitle | null;
   four: FullBleedTitle[];
@@ -82,6 +83,7 @@ export function FullBleedPosterSection({
   overlay?: React.ReactNode;
   continuationBottomOffset?: number;
   onPressKicker?: () => void;
+  onEndReached?: () => void;
 }) {
   const { width, height } = useWindowDimensions();
   const resolvedHeroHeight = heroHeight ?? Math.min(height * 0.78, 820);
@@ -93,7 +95,7 @@ export function FullBleedPosterSection({
     () => (hero ? four.filter((t) => t.id !== hero.id) : four),
     [hero, four],
   );
-  const smallWidth = (width - spacing.lg * 2 - 24) / 4;
+  const smallWidth = Math.max(44, Math.min(150, resolvedHeroHeight * 0.19, (width - spacing.lg * 2 - 24) / 4));
   const smallHeight = smallWidth * (3 / 2);
   const scrolls = smallList.length > 4;
 
@@ -139,7 +141,7 @@ export function FullBleedPosterSection({
       ) : null}
 
       {/* Overlay slot or default title treatment */}
-      <View style={styles.heroBody} pointerEvents="box-none">
+      <View style={[styles.heroBody, { bottom: smallList.length ? smallHeight + 56 + (continuationBottomOffset ?? 0) : 32 }]} pointerEvents="box-none">
         {overlay ? (
           overlay
         ) : hero ? (
@@ -197,6 +199,10 @@ export function FullBleedPosterSection({
         <View style={[styles.continuationScrollWrap, { height: smallHeight + 40, bottom: (continuationBottomOffset ?? 0) + spacing.sm }]}>
           <ScrollView
             horizontal
+            scrollEventThrottle={200}
+            onScroll={({ nativeEvent: { layoutMeasurement, contentOffset, contentSize } }) => {
+              if (layoutMeasurement.width + contentOffset.x >= contentSize.width - 160) onEndReached?.();
+            }}
             showsHorizontalScrollIndicator={false}
             contentContainerStyle={styles.continuationScrollContent}
           >
@@ -332,6 +338,7 @@ const styles = StyleSheet.create({
   railBtn: {
     alignItems: "center",
     paddingVertical: 4,
+    minHeight: 44,
     minWidth: 44,
   },
   railCount: {

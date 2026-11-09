@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 /**
  * Oct-18 UI/UX rebuild: Privacy & Visibility sub-screen.
  * Spec image 4 (step 6). Public vs Followers-only + activity toggles.
@@ -92,13 +93,7 @@ export default function PrivacySettingsScreen() {
 
   return (
     <SafeAreaView style={styles.root}>
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} hitSlop={10} style={styles.closeBtn}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <Text style={styles.headerTitle}>Privacy & Visibility</Text>
-        <View style={{ width: 36 }} />
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="Privacy & Visibility" ownsSafeArea={false} />
 
       {loading ? (
         <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>

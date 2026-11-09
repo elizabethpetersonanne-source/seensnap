@@ -1,24 +1,11 @@
-/**
- * Previews — Previews spec §7 MVP.
- *
- * Vertical-snapping feed of official teasers/trailers. Each card is
- * a YouTube embed (autoplay + muted on entry; user can unmute to
- * satisfy autoplay policy). Save + open-details wired through the
- * existing sheets so nothing forks the title-action model.
- *
- * Deferred (spec §21 Phase 1.1+):
- *   - Send / share / add-to-team actions (using existing sheets when
- *     I re-open them here in the follow-up commit).
- *   - Structured preview_events analytics (currently uses trackEvent
- *     for impression / play / save-clicked).
- *   - Wi-Fi-only + reduced-motion autoplay preferences.
- *   - End-of-video Replay/Save/Next hold overlay.
- *   - Preview-engagement fast-changing profile (feed adapts only via
- *     the main recommendation engine for now).
- */
+import { discoveryFilterKey } from "@/lib/discovery-recovery";
+import { restoreDiscovery, saveDiscoverySnapshot } from "@/lib/discovery-storage";
+import { SceneDnaBadge } from "@/components/scene-dna-badge";
+/** Continuous previews with shared filters, stable list order and direct title actions. */
+import { usePlaybackMute } from "@/lib/playback-preference";
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
-import { useFocusEffect } from "@react-navigation/native";
+import { useIsFocused } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -41,9 +28,12 @@ import { AppHeader } from "@/components/headers/app-header";
 import { CategoryChips, type CategoryFilter } from "@/components/category-chips";
 import { useDiscoveryFilter } from "@/lib/discovery-filter";
 import { OutlineActionRail } from "@/components/outline-action-rail";
+import { TitleActionSheets, type TitleActionTarget } from "@/components/title-action-sheets";
+import { subscribeTitleState } from "@/lib/title-state";
+import { subscribeRatingChanges } from "@/components/rating-editor";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
-import { apiRequest, resolveMediaUrl } from "@/lib/api";
+import { apiRequest, ApiError, resolveMediaUrl } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { trackEvent } from "@/lib/analytics";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
@@ -74,6 +64,7 @@ type PreviewFeedItem = {
 };
 
 type PreviewFeedResponse = {
+  resume_cursor?: string;
   session_id: string;
   items: PreviewFeedItem[];
   next_cursor: string | null;
@@ -88,7 +79,9 @@ type PreviewFeedResponse = {
 const YouTubeEmbed = YouTubePlayerComponent;
 
 export default function PreviewsScreen() {
-  const { sessionToken } = useAuth();
+  const { sessionToken, user } = useAuth();
+  const focused = useIsFocused();
+  const [actionTarget, setActionTarget] = useState<TitleActionTarget | null>(null);
   const insets = useSafeAreaInsets();
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   // Sep-22 brief §14 "Watch previews": when launched from a ranked
@@ -107,7 +100,7 @@ export default function PreviewsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [muted, setMuted] = useState(true);
+  const [muted, setMuted] = usePlaybackMute();
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
@@ -117,7 +110,16 @@ export default function PreviewsScreen() {
   const listRef = useRef<FlatList<PreviewFeedItem>>(null);
   // W09: shared Swipe/Preview filter session. Picking Comedy on
   // Swipe propagates here and vice versa.
-  const [categoryFilter, setCategoryFilter] = useDiscoveryFilter();
+  const [categoryFilter, setCategoryFilter, filterReady] = useDiscoveryFilter();
+  const mode = categoryFilter.availability_mode ?? "streaming";
+  const filterKey = discoveryFilterKey(categoryFilter.media_type, categoryFilter.genre, mode);
+  const queueScope = `${user?.user_id}|${filterKey}|${rankedSource}|${listId}|${listOwnerId}`;
+  const [queueOwner, setQueueOwner] = useState<string | null>(null);
+  const [resumeCursor, setResumeCursor] = useState<string | null>(null);
+  const generationRef = useRef(0);
+  const pageRequestRef = useRef<number | null>(null);
+  const emptyPagesRef = useRef(0);
+  const [moreError, setMoreError] = useState<string | null>(null);
   // Cursor for the next page. null means the feed hasn't been fetched
   // yet OR the pool is exhausted (see hasMore below).
   const [cursor, setCursor] = useState<string | null>(null);
@@ -125,153 +127,108 @@ export default function PreviewsScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [feedStatus, setFeedStatus] = useState<"ready" | "pending" | "exhausted">("ready");
 
-  const RESERVED_BOTTOM_NAV = 66;
-  const cardHeight = viewportHeight - insets.top - insets.bottom - RESERVED_BOTTOM_NAV;
-  const videoWidth = Math.min(viewportWidth - 24, 720);
-  const videoHeight = Math.min(cardHeight * 0.55, videoWidth * 0.5625);
+  const [availableHeight, setAvailableHeight] = useState(0);
+  const cardHeight = availableHeight || Math.max(320, viewportHeight - insets.top - insets.bottom - 180);
+  const videoWidth = Math.min(viewportWidth - 24, 720, Math.max(200, cardHeight * 0.48) * 16 / 9);
+  const videoHeight = videoWidth * 9 / 16;
 
-  const loadFeed = useCallback(async () => {
-    if (!sessionToken) return;
-    setLoading(true);
-    setError(null);
-    try {
-      // Sep-22 brief §14 list-order mode: fetch the ranked list first,
-      // then resolve videos for each title in order. Category chips +
-      // personalization are intentionally ignored — this is the
-      // OWNER'S order, not a personalized re-rank.
-      if (rankedSource || listId) {
-        // Previews from ANY list: three source shapes.
-        //   1. ranked_source=me                → my ranked favorites
-        //   2. ranked_source=<user_id>         → that user's ranked
-        //   3. list_id=<id> (owner optional)   → a watchlist. If
-        //      owner_id matches me or is absent, use my private route;
-        //      otherwise go through the viewer-aware public path
-        //      which enforces audience server-side.
-        const listUrl = listId
-          ? (listOwnerId && listOwnerId !== "me"
-              ? `/profiles/${listOwnerId}/lists/${listId}?limit=100`
-              : `/me/watchlist/lists/${listId}`)
-          : rankedSource === "me"
-            ? "/me/favorites/ranked?limit=100"
-            : `/profiles/${rankedSource}/favorites/ranked?limit=100`;
-        const raw = await apiRequest<unknown>(listUrl, { token: sessionToken });
-        // Ranked response: { items: [{ title_id, ... }] }
-        // Watchlist response: { items: [{ content_title_id, ... }] }
-        const items = (raw as { items?: unknown[] })?.items ?? [];
-        const orderedIds = items
-          .map((row) => {
-            const r = row as { title_id?: string; content_title_id?: string };
-            return r.title_id ?? r.content_title_id ?? "";
-          })
-          .filter(Boolean)
-          .join(",");
-        if (!orderedIds) {
-          setItems([]);
-          setActiveIndex(0);
-          setCursor(null);
-          setHasMore(false);
-          setFeedStatus("exhausted");
-          return;
-        }
-        const listResp = await apiRequest<{ items: PreviewFeedItem[]; skipped_title_ids: string[] }>(
-          `/previews/for-titles?ids=${encodeURIComponent(orderedIds)}`,
-          { token: sessionToken },
-        );
-        setItems(listResp.items);
-        setActiveIndex(0);
-        setCursor(null);
-        setHasMore(false);
-        setFeedStatus(listResp.items.length > 0 ? "ready" : "exhausted");
-        trackEvent("previews_feed_ranked_loaded", {
-          source: listId ? `list:${listId}` : rankedSource,
-          count: listResp.items.length,
-          skipped: listResp.skipped_title_ids.length,
-        });
-        return;
-      }
-      const p = new URLSearchParams({ limit: "25" });
-      if (categoryFilter.media_type) p.set("preferred_type", categoryFilter.media_type);
-      if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
-      const resp = await apiRequest<PreviewFeedResponse>(`/previews/feed?${p.toString()}`, {
-        token: sessionToken,
-        // Previews fan out to TMDB per candidate — bump timeout to
-        // 60s so a slow pass through 80 candidates doesn't abort.
-        timeoutMs: 60000,
-      });
-      setItems(resp.items);
-      setActiveIndex(0);
-      setCursor(resp.next_cursor);
-      setHasMore(resp.has_more);
-      setFeedStatus(resp.status);
-      trackEvent("previews_feed_loaded", { count: resp.items.length });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load previews.");
-    } finally {
-      setLoading(false);
+  const fetchPage = useCallback(async (nextCursor: string | null): Promise<PreviewFeedResponse> => {
+    if (rankedSource || listId) {
+      const offset = Number(nextCursor?.replace("list:", "") ?? 0);
+      const ownList = !!listId && (!listOwnerId || listOwnerId === "me" || listOwnerId === user?.user_id);
+      const url = listId
+        ? ownList ? `/me/watchlist/lists/${listId}` : `/profiles/${listOwnerId}/lists/${listId}?limit=20&offset=${offset}`
+        : rankedSource === "me" ? `/me/favorites/ranked?limit=20&offset=${offset}`
+          : `/profiles/${rankedSource}/favorites/ranked?limit=20&offset=${offset}`;
+      const raw = await apiRequest<{ items: { title_id?: string; content_title_id?: string }[]; total?: number; item_count?: number }>(url, { token: sessionToken });
+      const rows = ownList ? raw.items.slice(offset, offset + 20) : raw.items;
+      const ids = rows.map((row) => row.title_id ?? row.content_title_id).filter(Boolean);
+      const total = raw.total ?? raw.item_count ?? raw.items.length;
+      const nextOffset = offset + rows.length;
+      const more = rows.length > 0 && nextOffset < total;
+      const resolved = ids.length ? await apiRequest<{ items: PreviewFeedItem[] }>(
+        `/previews/for-titles?ids=${encodeURIComponent(ids.join(","))}`, { token: sessionToken, timeoutMs: 90000 },
+      ) : { items: [] };
+      return { session_id: `list:${listId ?? rankedSource}`, items: resolved.items,
+        next_cursor: more ? `list:${nextOffset}` : null, has_more: more,
+        status: resolved.items.length ? "ready" : more ? "pending" : "exhausted" };
     }
-  }, [sessionToken, rankedSource, listId, categoryFilter.media_type, categoryFilter.genre]);
+    const query = new URLSearchParams({ limit: "20", mode });
+    if (categoryFilter.media_type) query.set("preferred_type", categoryFilter.media_type);
+    if (categoryFilter.genre) query.set("genre", categoryFilter.genre);
+    if (nextCursor) query.set("cursor", nextCursor);
+    return apiRequest<PreviewFeedResponse>(`/previews/feed?${query}`, { token: sessionToken, timeoutMs: 90000 });
+  }, [sessionToken, user?.user_id, listId, listOwnerId, rankedSource, categoryFilter.media_type, categoryFilter.genre, mode]);
 
-  // Continuation fetch — appends to the end of the current list.
-  // Called when the user is ~5 items away from the tail per §4.
+  const loadFeed = useCallback(async (resume = false) => {
+    if (!sessionToken || !filterReady) return;
+    const generation = ++generationRef.current;
+    pageRequestRef.current = null; emptyPagesRef.current = 0;
+    setQueueOwner(null); setResumeCursor(null);
+    setItems([]); setActiveIndex(0); setCursor(null); setLoadingMore(false);
+    setLoading(true); setError(null); setMoreError(null);
+    seenImpressionsRef.current.clear();
+    try {
+      const restored = resume && !rankedSource && !listId && user?.user_id ? await restoreDiscovery<PreviewFeedResponse>(user.user_id, sessionToken, "preview", filterKey,
+        { preferred_type: categoryFilter.media_type, genre: categoryFilter.genre, mode }) : null;
+      if (generation !== generationRef.current) return;
+      const response = restored?.response ?? await fetchPage(null);
+      if (generation !== generationRef.current) return;
+      setItems(response.items); setCursor(response.next_cursor);
+      setResumeCursor(response.resume_cursor ?? null); setQueueOwner(queueScope);
+      setHasMore(response.has_more); setFeedStatus(response.status);
+      listRef.current?.scrollToOffset({ offset: 0, animated: false });
+    } catch (e) {
+      if (generation === generationRef.current) setError(e instanceof Error ? e.message : "Couldn't load previews.");
+    } finally { if (generation === generationRef.current) setLoading(false); }
+  }, [sessionToken, filterReady, fetchPage, rankedSource, listId, user?.user_id, filterKey, categoryFilter.media_type, categoryFilter.genre, mode, queueScope]);
+
+  useEffect(() => { void loadFeed(true); return () => { generationRef.current++; }; }, [loadFeed]);
+
   const loadMore = useCallback(async () => {
-    if (!sessionToken || !hasMore || loadingMore || !cursor) return;
-    setLoadingMore(true);
+    if (!sessionToken || !cursor || !hasMore || pageRequestRef.current !== null) return;
+    const generation = generationRef.current;
+    pageRequestRef.current = generation; setLoadingMore(true); setMoreError(null);
     try {
-      const p = new URLSearchParams({ limit: "25", cursor });
-      if (categoryFilter.media_type) p.set("preferred_type", categoryFilter.media_type);
-      if (categoryFilter.genre) p.set("genre", categoryFilter.genre);
-      const resp = await apiRequest<PreviewFeedResponse>(`/previews/feed?${p.toString()}`, {
-        token: sessionToken,
-        // Previews fan out to TMDB per candidate — bump timeout to
-        // 60s so a slow pass through 80 candidates doesn't abort.
-        timeoutMs: 60000,
+      const response = await fetchPage(cursor);
+      if (generation !== generationRef.current) return;
+      setItems((previous) => {
+        const seen = new Set(previous.map((item) => item.title_id));
+        return [...previous, ...response.items.filter((item) => {
+          if (seen.has(item.title_id)) return false;
+          seen.add(item.title_id); return true;
+        })];
       });
-      setItems((prev) => {
-        // Append + dedupe by feed_item_id so a late duplicate can't
-        // jump the viewport per §4 "append without jumping".
-        const seen = new Set(prev.map((it) => it.feed_item_id));
-        const merged = [...prev];
-        for (const it of resp.items) {
-          if (!seen.has(it.feed_item_id)) merged.push(it);
-        }
-        return merged;
-      });
-      setCursor(resp.next_cursor);
-      setHasMore(resp.has_more);
-      setFeedStatus(resp.status);
-      trackEvent("previews_feed_more", { added: resp.items.length, has_more: resp.has_more });
+      setCursor(response.next_cursor); setResumeCursor(response.resume_cursor ?? null); setHasMore(response.has_more); setFeedStatus(response.status);
+      emptyPagesRef.current = response.items.length ? 0 : emptyPagesRef.current + 1;
+      if (emptyPagesRef.current >= 3 && response.has_more) setMoreError("Still looking for playable previews. Tap Continue to search further.");
     } catch (e) {
-      trackEvent("previews_feed_more_error", {});
+      if (generation === generationRef.current) {
+        if (e instanceof ApiError && e.status === 409) { setCursor(null); setHasMore(false); }
+        setMoreError(e instanceof Error ? e.message : "Couldn't load more previews. Retry keeps your filters.");
+      }
     } finally {
-      setLoadingMore(false);
+      if (pageRequestRef.current === generation) { pageRequestRef.current = null; setLoadingMore(false); }
     }
-  }, [sessionToken, cursor, hasMore, loadingMore, categoryFilter.media_type, categoryFilter.genre]);
+  }, [sessionToken, cursor, hasMore, fetchPage]);
 
-  // Prefetch when ~5 items remain per spec §4.
   useEffect(() => {
-    if (items.length === 0) return;
-    if (activeIndex >= items.length - 5 && hasMore && !loadingMore) {
-      void loadMore();
-    }
-  }, [activeIndex, items.length, hasMore, loadingMore, loadMore]);
+    if (!loading && !error && !moreError && !loadingMore && hasMore && activeIndex >= items.length - 5) void loadMore();
+  }, [loading, error, moreError, loadingMore, hasMore, activeIndex, items.length, loadMore]);
 
-  useFocusEffect(
-    useCallback(() => {
-      if (items.length === 0) void loadFeed();
-    }, [items.length, loadFeed]),
-  );
-
-  // Reload when the filter changes (independent of first-mount focus).
   useEffect(() => {
-    setItems([]);
-    setActiveIndex(0);
-    seenImpressionsRef.current = new Set();
-    void loadFeed();
-    // loadFeed is stable per (sessionToken, filter); intentionally
-    // not putting loadFeed itself in the deps to keep this a filter
-    // watcher, not a general-purpose reloader.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [categoryFilter.media_type, categoryFilter.genre]);
+    if (rankedSource || listId) return;
+    const remove = (id: string) => setItems((previous) => previous.filter((item, index) => index <= activeIndex || item.title_id !== id));
+    const stopState = subscribeTitleState((state) => { if (state.saved || state.watched) remove(state.title_id); });
+    const stopRating = subscribeRatingChanges((id, state) => { if (state.watched_state === "watched") remove(id); });
+    return () => { stopState(); stopRating(); };
+  }, [activeIndex, rankedSource, listId]);
+
+  useEffect(() => {
+    const ids = items.slice(activeIndex).map(item => item.title_id);
+    if (!user?.user_id || rankedSource || listId || loading || queueOwner !== queueScope || !resumeCursor || ids.length > 100) return;
+    saveDiscoverySnapshot(user.user_id, "preview", { version: 1, filter: filterKey, cursor: resumeCursor, title_ids: ids, saved_at: Date.now(), filters_hidden: false });
+  }, [items, activeIndex, loading, queueOwner, queueScope, resumeCursor, filterKey, user?.user_id, rankedSource, listId]);
 
   // Impression event when a card becomes active — spec §12 events.
   useEffect(() => {
@@ -327,9 +284,13 @@ export default function PreviewsScreen() {
         }}
       />
       {/* Category chips below the header. No magic absolute offsets. */}
-      <View style={styles.categoryOverlay}>
+      {!rankedSource && !listId ? <View style={styles.categoryOverlay}>
         <CategoryChips value={categoryFilter} onChange={setCategoryFilter} />
-      </View>
+      </View> : null}
+      {moreError ? <Pressable onPress={() => void (cursor ? loadMore() : loadFeed())} style={{ padding: 12, minHeight: 44 }}>
+        <Text style={styles.errorText}>{moreError} Continue</Text>
+      </Pressable> : null}
+      <View style={{ flex: 1 }} onLayout={(event) => setAvailableHeight(event.nativeEvent.layout.height)}>
       {loading ? (
         <View style={styles.centerFill}>
           <ActivityIndicator color={colors.accent} />
@@ -338,7 +299,7 @@ export default function PreviewsScreen() {
       ) : error ? (
         <View style={styles.centerFill}>
           <Text style={styles.errorText}>{error}</Text>
-          <Pressable style={styles.retryBtn} onPress={() => void loadFeed()}>
+          <Pressable style={styles.retryBtn} onPress={() => void loadFeed(true)}>
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
         </View>
@@ -347,13 +308,14 @@ export default function PreviewsScreen() {
           <Ionicons name="film-outline" size={40} color={colors.accent} />
           <Text style={styles.emptyTitle}>No previews yet</Text>
           <Text style={styles.emptyBody}>
-            Save a few titles or swipe through some picks so we know what to line up here.
+            {loadingMore ? "Looking for more playable previews…" : hasMore ? "More titles are available to check." : "No more playable previews in this selection. Try another category."}
           </Text>
+          {hasMore && !loadingMore ? <Pressable style={styles.retryBtn} onPress={() => void loadMore()}><Text style={styles.retryText}>Continue</Text></Pressable> : null}
         </View>
       ) : (
         <FlatList
           ref={listRef}
-          data={items}
+          data={queueOwner === queueScope ? items : []}
           keyExtractor={(item) => item.feed_item_id}
           pagingEnabled
           snapToInterval={cardHeight}
@@ -363,7 +325,7 @@ export default function PreviewsScreen() {
           scrollEventThrottle={100}
           getItemLayout={(_, index) => ({ length: cardHeight, offset: cardHeight * index, index })}
           renderItem={({ item, index }) => {
-            const isActive = index === activeIndex;
+            const isActive = focused && !showDetails && !showSaveSheet && !actionTarget && index === activeIndex;
             const backdrop = resolveMediaUrl(item.backdrop_url) ?? resolveMediaUrl(item.poster_url);
             return (
               <View style={[styles.card, { height: cardHeight }]}>
@@ -396,6 +358,7 @@ export default function PreviewsScreen() {
                       {item.video.official ? "  ·  OFFICIAL" : ""}
                     </Text>
                     <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
+                    {isActive ? <SceneDnaBadge titleId={item.title_id} /> : null}
                     <Text style={styles.subMeta}>
                       {[
                         item.media_type === "movie" ? "FILM" : "SERIES",
@@ -421,11 +384,11 @@ export default function PreviewsScreen() {
                       }}
                       onSend={() => {
                         trackEvent("preview_send_clicked", { title_id: item.title_id });
-                        void openDetails(item.title_id);
+                        setActionTarget({ action: "send", id: item.title_id, title: item.title, poster: item.poster_url });
                       }}
                       onTeam={() => {
                         trackEvent("preview_team_clicked", { title_id: item.title_id });
-                        void openDetails(item.title_id);
+                        setActionTarget({ action: "team", id: item.title_id, title: item.title, poster: item.poster_url });
                       }}
                       ratingSnapshot={null}
                     />
@@ -460,6 +423,7 @@ export default function PreviewsScreen() {
         />
       )}
 
+      </View>
       {/* Feed-position indicator + navigation controls — makes it
           obvious that the feed continues beyond the first card and
           gives keyboard / mouse users an explicit next/prev affordance.
@@ -468,7 +432,7 @@ export default function PreviewsScreen() {
         <>
           <View style={[styles.positionBadge, { top: insets.top + 56 + 48 + 8 }]}>
             <Text style={styles.positionBadgeText}>
-              {activeIndex + 1} / {items.length}
+              {activeIndex + 1}
             </Text>
           </View>
           {activeIndex > 0 ? (
@@ -508,12 +472,12 @@ export default function PreviewsScreen() {
               ]}
               onPress={() => {
                 trackEvent("previews_refresh_clicked", { items_seen: items.length });
-                void loadFeed();
+                void (cursor && hasMore ? loadMore() : loadFeed());
               }}
-              accessibilityLabel="Load more previews"
+              accessibilityLabel={hasMore ? "Load more previews" : "Refresh previews"}
             >
               <Ionicons name="refresh" size={16} color={colors.background} />
-              <Text style={styles.loadMoreCtaLabel}>LOAD MORE</Text>
+              <Text style={styles.loadMoreCtaLabel}>{loadingMore ? "LOADING…" : hasMore ? "CONTINUE" : "REFRESH"}</Text>
             </Pressable>
           )}
           {activeIndex === 0 ? (
@@ -535,6 +499,7 @@ export default function PreviewsScreen() {
         </>
       ) : null}
 
+      <TitleActionSheets target={actionTarget} token={sessionToken} source="previews" onClose={() => setActionTarget(null)} />
       <SaveToListSheet
         visible={showSaveSheet}
         titleId={saveTitleId}
@@ -619,6 +584,7 @@ const styles = StyleSheet.create({
     textAlign: "center",
   },
   retryBtn: {
+    minHeight: 44,
     marginTop: spacing.sm,
     paddingHorizontal: spacing.md,
     paddingVertical: 8,
@@ -714,6 +680,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 4,
   },
   secondaryActionBtn: {
+    minHeight: 44,
     flexDirection: "row",
     alignItems: "center",
     gap: 6,

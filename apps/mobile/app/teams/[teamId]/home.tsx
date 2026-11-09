@@ -1,349 +1,608 @@
-/**
- * Oct-18 UI/UX rebuild: immersive Team Home.
- *
- * Full-screen hero + 4-poster continuation strip per section, vertical
- * paging between Top Picks → Recently Added → Both Want to Watch →
- * Watched. Right-side vertical action rail per spec image 5.
- *
- * Routed to from the Teams tab (team card tap).
- */
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
+  Modal,
   Pressable,
-  Share,
+  ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
-  useWindowDimensions,
 } from "react-native";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
-
+import { SafeAreaView } from "react-native-safe-area-context";
 import { AppHeader } from "@/components/headers/app-header";
-import { FullBleedPosterSection, type FullBleedTitle, type VerticalRailAction } from "@/components/full-bleed-poster-section";
+import {
+  FullBleedPosterSection,
+  type VerticalRailAction,
+} from "@/components/full-bleed-poster-section";
 import { SaveToListSheet } from "@/components/save-to-list-sheet";
-import { EmptyView, LoadingView } from "@/components/state-views";
+import { RatingEditor } from "@/components/rating-editor";
+import {
+  TitleActionSheets,
+  type TitleActionTarget,
+} from "@/components/title-action-sheets";
 import { UniversalTitleModal } from "@/components/universal-title-modal";
-import { colors, fonts, spacing } from "@/constants/theme";
-import { trackEvent } from "@/lib/analytics";
+import { colors, fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
-import { fetchTeamHome, type TeamHomeSections, type TeamHomeTitle } from "@/lib/team-home";
-import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
-
-
-type SectionKey = "top_picks" | "recently_added" | "both_want_to_watch" | "watched";
-
+import { apiRequest, ApiError } from "@/lib/api";
+import { patchTitleState } from "@/lib/title-state";
+import {
+  fetchTeamHome,
+  fetchTeamPage,
+  type SectionKey,
+  type TeamHomeSections,
+  type TeamHomeTitle,
+} from "@/lib/team-home";
+import {
+  fetchUniversalTitle,
+  type UniversalTitle,
+} from "@/lib/universal-title";
 const SECTIONS: { key: SectionKey; label: string }[] = [
   { key: "top_picks", label: "TOP PICKS" },
   { key: "recently_added", label: "RECENTLY ADDED" },
   { key: "both_want_to_watch", label: "BOTH WANT TO WATCH" },
   { key: "watched", label: "WATCHED" },
 ];
-
-
-function teamTitleToFullBleed(t: TeamHomeTitle): FullBleedTitle {
-  return {
-    id: t.id,
-    title: t.title,
-    poster_url: t.poster_url,
-    backdrop_url: t.backdrop_url,
-    year: t.year,
-    rank_label: t.rank_label,
-    context_label: t.context_label,
-  };
-}
-
-
 export default function TeamHomeScreen() {
   const { sessionToken } = useAuth();
   const router = useRouter();
-  const insets = useSafeAreaInsets();
-  const { height } = useWindowDimensions();
-  const params = useLocalSearchParams<{ teamId: string }>();
-  const teamId = typeof params.teamId === "string" ? params.teamId : undefined;
-
-  const [data, setData] = useState<TeamHomeSections | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [titleModalId, setTitleModalId] = useState<string | null>(null);
-  const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
-  const [titleLoading, setTitleLoading] = useState(false);
-  const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
-  const [showSaveSheet, setShowSaveSheet] = useState(false);
-
+  const { teamId } = useLocalSearchParams<{ teamId: string }>();
+  const [data, setData] = useState<TeamHomeSections | null>(null),
+    [loading, setLoading] = useState(true),
+    [error, setError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Partial<Record<SectionKey, string>>>(
+    {},
+  );
+  const [viewport, setViewport] = useState(600),
+    [reload, setReload] = useState(0);
+  const [detail, setDetail] = useState<UniversalTitle | null>(null),
+    [detailId, setDetailId] = useState<string | null>(null),
+    [detailBusy, setDetailBusy] = useState(false);
+  const [save, setSave] = useState<TeamHomeTitle | null>(null),
+    [rate, setRate] = useState<TeamHomeTitle | null>(null),
+    [action, setAction] = useState<TitleActionTarget | null>(null);
+  const [statusTitle, setStatusTitle] = useState<TeamHomeTitle | null>(null),
+    [position, setPosition] = useState("1"),
+    [busy, setBusy] = useState(false);
+  const generation = useRef(0),
+    detailGeneration = useRef(0),
+    mutating = useRef(false),
+    loadingPages = useRef(new Set<SectionKey>()),
+    dataRef = useRef(data);
+  dataRef.current = data;
+  useEffect(() => {
+    setData(null);
+    setSelected({});
+    setStatusTitle(null);
+    setDetailId(null);
+    setRate(null);
+    setSave(null);
+    setAction(null);
+    detailGeneration.current++;
+  }, [teamId, sessionToken]);
   useFocusEffect(
     useCallback(() => {
-      let cancelled = false;
-      if (!sessionToken || !teamId) return;
+      const version = ++generation.current;
+      loadingPages.current.clear();
+      setError(null);
       setLoading(true);
-      fetchTeamHome(sessionToken, teamId)
-        .then((res) => { if (!cancelled) setData(res); })
-        .catch(() => { if (!cancelled) setData(null); })
-        .finally(() => { if (!cancelled) setLoading(false); });
-      return () => { cancelled = true; };
-    }, [sessionToken, teamId]),
+      if (!sessionToken || !teamId) return;
+      (async () => {
+        try {
+          const next = await fetchTeamHome(sessionToken, teamId);
+          // Preserve access to a selected title beyond page one after returning.
+          const previous = dataRef.current;
+          if (previous?.team_id === teamId)
+            for (const { key } of SECTIONS) {
+              while (
+                next.next_offsets[key] !== null &&
+                next[key].length < (previous[key]?.length ?? 0)
+              ) {
+                const page = await fetchTeamPage(
+                  sessionToken,
+                  teamId,
+                  key,
+                  next.next_offsets[key]!,
+                );
+                if (version !== generation.current) return;
+                next[key].push(...page.items);
+                next.next_offsets[key] = page.next_offset;
+                next.totals[key] = page.total;
+              }
+            }
+          if (version === generation.current) setData(next);
+        } catch (e) {
+          if (version === generation.current) {
+            if (e instanceof ApiError && [403, 404].includes(e.status))
+              setData(null);
+            setError(
+              "Could not load this team. Check your connection and membership, then retry.",
+            );
+          }
+        } finally {
+          if (version === generation.current) setLoading(false);
+        }
+      })();
+      return () => {
+        generation.current++;
+        detailGeneration.current++;
+      };
+    }, [teamId, sessionToken, reload]),
   );
-
-  // Reserve bottom padding so the pill nav doesn't cover the posters.
-  // Tab bar is hidden on this route via the parent screen options.
-  const reservedBottom = insets.bottom + 56;
-  const sectionHeight = height - insets.top - reservedBottom;
-
-  // Flatten all sections into a sectioned list. Each section renders
-  // a FullBleedPosterSection using the first 5 items in that section.
-  const pages: { key: string; sectionLabel: string; hero: TeamHomeTitle; four: TeamHomeTitle[] }[] = useMemo(() => {
-    if (!data) return [];
-    const result: { key: string; sectionLabel: string; hero: TeamHomeTitle; four: TeamHomeTitle[] }[] = [];
-    for (const section of SECTIONS) {
-      const items = data[section.key] ?? [];
-      if (items.length === 0) continue;
-      // Oct-27 spec TEAM-03: browse titles horizontally with complete
-      // pagination. Pass the full remainder (not just the first 4) so
-      // the continuation strip reaches every eligible title in the
-      // section. True server-side cursor pagination can land later.
-      result.push({
-        key: `${section.key}-${items[0].id}`,
-        sectionLabel: section.label,
-        hero: items[0],
-        four: items.slice(1),
-      });
-    }
-    return result;
-  }, [data]);
-
-  async function openTitle(titleId: string) {
-    if (!sessionToken) return;
-    setTitleModalId(titleId);
-    setTitleLoading(true);
+  async function more(key: SectionKey) {
+    const offset = data?.next_offsets[key];
+    if (!sessionToken || offset == null || loadingPages.current.has(key))
+      return;
+    const version = generation.current;
+    loadingPages.current.add(key);
     try {
-      const detail = await fetchUniversalTitle(sessionToken, titleId);
-      setUniversalTitle(detail);
+      const page = await fetchTeamPage(sessionToken, teamId, key, offset);
+      if (version !== generation.current) return;
+      setData((old) =>
+        old
+          ? {
+              ...old,
+              [key]: [
+                ...new Map(
+                  [...old[key], ...page.items].map((t) => [t.id, t]),
+                ).values(),
+              ],
+              totals: { ...old.totals, [key]: page.total },
+              next_offsets: { ...old.next_offsets, [key]: page.next_offset },
+            }
+          : old,
+      );
     } catch {
-      setUniversalTitle(null);
+      if (version === generation.current)
+        setError("Could not load more titles. Scroll again to retry.");
     } finally {
-      setTitleLoading(false);
+      if (version === generation.current) loadingPages.current.delete(key);
     }
   }
-
-  function buildRail(title: TeamHomeTitle): VerticalRailAction[] {
-    // Team variant: Like · Comment · Save · Send · Rate.
-    // No "add to team" button — you ARE in the team.
+  async function openTitle(id: string) {
+    if (!sessionToken) return;
+    const version = ++detailGeneration.current;
+    setDetailId(id);
+    setDetail(null);
+    setDetailBusy(true);
+    try {
+      const result = await fetchUniversalTitle(sessionToken, id);
+      if (version === detailGeneration.current) setDetail(result);
+    } catch {
+      if (version === detailGeneration.current) {
+        setDetailId(null);
+        setError("Could not load title details. Please try again.");
+      }
+    } finally {
+      if (version === detailGeneration.current) setDetailBusy(false);
+    }
+  }
+  async function mutate(path: string, body: object, done?: () => void) {
+    if (!sessionToken || mutating.current) return;
+    mutating.current = true;
+    setBusy(true);
+    setError(null);
+    const version = generation.current;
+    try {
+      await apiRequest(`/teams/${teamId}/${path}`, {
+        token: sessionToken,
+        method: path.startsWith("rankings/") ? "PATCH" : "PUT",
+        body: JSON.stringify(body),
+      });
+      if (version === generation.current) {
+        done?.();
+        setReload((n) => n + 1);
+      }
+    } catch (e) {
+      if (version === generation.current) {
+        setError(
+          e instanceof ApiError
+            ? e.message
+            : "Could not save. Please try again.",
+        );
+        if (e instanceof ApiError && e.status === 409) {
+          setStatusTitle(null);
+          setReload((n) => n + 1);
+        }
+      }
+    } finally {
+      mutating.current = false;
+      setBusy(false);
+    }
+  }
+  function rail(title: TeamHomeTitle): VerticalRailAction[] {
     return [
-      { key: "like", icon: "heart-outline", label: "Like" },
-      { key: "comment", icon: "chatbubble-outline", label: "Comment" },
+      {
+        key: "heart",
+        icon: title.liked_by_me ? "heart" : "heart-outline",
+        label: "Like in this team",
+        active: title.liked_by_me,
+        count: title.like_count,
+        onPress: () =>
+          void mutate(`titles/${title.id}/like`, { liked: !title.liked_by_me }),
+      },
+      {
+        key: "comment",
+        icon: "chatbubble-outline",
+        label: "Team discussion",
+        onPress: () =>
+          router.push({
+            pathname: "/teams/[teamId]/discussion",
+            params: { teamId, titleId: title.id, title: title.title },
+          }),
+      },
       {
         key: "save",
         icon: "bookmark-outline",
         label: "Save",
-        onPress: () => {
-          setSaveTitleId(title.id);
-          setShowSaveSheet(true);
-          trackEvent("team_home_save", { team_id: teamId ?? null, title_id: title.id });
-        },
+        onPress: () => setSave(title),
       },
       {
         key: "send",
         icon: "paper-plane-outline",
-        label: "Send",
-        onPress: () => {
-          trackEvent("team_home_send", { team_id: teamId ?? null, title_id: title.id });
-          void Share.share({ message: `${title.title} — on SeenSnap` }).catch(() => {});
-        },
+        label: "Send title",
+        onPress: () =>
+          setAction({
+            action: "send",
+            id: title.id,
+            title: title.title,
+            poster: title.poster_url,
+          }),
       },
       {
         key: "rate",
         icon: "star-outline",
         label: "Rate",
-        onPress: () => void openTitle(title.id),
+        onPress: () => setRate(title),
       },
     ];
   }
-
-  if (!teamId) {
-    return (
-      <SafeAreaView style={styles.root}>
-        <Text style={styles.emptyBody}>Missing team.</Text>
-      </SafeAreaView>
+  function shareState(state: TeamHomeTitle["my_state"], shareRating = false) {
+    if (!statusTitle) return;
+    const id = statusTitle.id;
+    void mutate(
+      `titles/${id}/my-state`,
+      {
+        state,
+        share_rating: shareRating,
+        expected_version: statusTitle.my_state_version,
+      },
+      () => {
+        if (state === "watched") patchTitleState(id, { watched: true });
+        setStatusTitle(null);
+      },
     );
   }
-
   return (
     <SafeAreaView style={styles.root} edges={[]}>
-      {/* Oct-19 Header Standardization — detail variant: Back + team
-          name + Team settings right-slot. Member summary moves into
-          the content below. */}
       <AppHeader
         variant="detail"
         leftKind="back"
-        title={data?.team_name ?? "Team"}
+        title={data?.team_name ?? "Watch Team"}
         rightSlot={
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+          <View style={styles.row}>
             <Pressable
-              onPress={() => {
-                if (!teamId) return;
-                router.push({ pathname: "/teams/[teamId]/add-title", params: { teamId } });
-              }}
-              hitSlop={10}
-              accessibilityRole="button"
-              accessibilityLabel="Add a title to this team"
+              style={styles.icon}
+              accessibilityLabel="Add title"
+              onPress={() =>
+                router.push({
+                  pathname: "/teams/[teamId]/add-title",
+                  params: { teamId },
+                })
+              }
             >
-              <Ionicons name="add" size={22} color={colors.ink} />
+              <Ionicons name="add" size={24} color={colors.ink} />
             </Pressable>
             <Pressable
-              onPress={() => {
-                if (!teamId) return;
-                router.push({ pathname: "/(tabs)/teams" });
-              }}
-              hitSlop={10}
-              accessibilityRole="button"
+              style={styles.icon}
               accessibilityLabel="Team settings"
+              onPress={() =>
+                router.push({
+                  pathname: "/teams/[teamId]/settings",
+                  params: { teamId },
+                })
+              }
             >
-              <Ionicons name="settings-outline" size={22} color={colors.muted} />
+              <Ionicons name="settings-outline" size={22} color={colors.ink} />
             </Pressable>
           </View>
         }
       />
-      {data ? (
-        <Text style={styles.memberSummary}>
-          {data.member_count} member{data.member_count === 1 ? "" : "s"}
-        </Text>
+      <Text style={styles.summary}>
+        {data ? `${data.member_count} members · Private team` : "Private team"}
+      </Text>
+      {error ? (
+        <View style={styles.notice}>
+          <Text accessibilityRole="alert" style={styles.body}>
+            {error}
+          </Text>
+          <Pressable
+            style={styles.button}
+            onPress={() => setReload((n) => n + 1)}
+          >
+            <Text style={styles.accent}>Retry</Text>
+          </Pressable>
+        </View>
       ) : null}
-
-      {loading && !data ? (
-        <LoadingView height={sectionHeight} />
-      ) : pages.length === 0 ? (
-        <EmptyView
-          height={sectionHeight}
-          icon="people-outline"
-          title="Nothing here yet."
-          body="Add titles to this team to see them show up as Top Picks, Recently Added, and more."
-          actionLabel="Add a title"
-          onAction={() => {
-            if (!teamId) return;
-            router.push({ pathname: "/teams/[teamId]/add-title", params: { teamId } });
-          }}
-        />
-      ) : (
-        <FlatList
-          data={pages}
-          keyExtractor={(p) => p.key}
-          snapToInterval={sectionHeight}
-          decelerationRate="fast"
-          showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <View style={{ height: sectionHeight }}>
-              <FullBleedPosterSection
-                heroHeight={sectionHeight}
-                sectionKicker={item.sectionLabel}
-                hero={teamTitleToFullBleed(item.hero)}
-                four={item.four.map(teamTitleToFullBleed)}
-                onPressHero={() => void openTitle(item.hero.id)}
-                onPressContinuation={(t) => void openTitle(t.id)}
-                railActions={buildRail(item.hero)}
-              />
-            </View>
-          )}
-        />
-      )}
-
+      <View
+        style={{ flex: 1 }}
+        onLayout={(e) => setViewport(e.nativeEvent.layout.height)}
+      >
+        {loading && !data ? (
+          <ActivityIndicator color={colors.accent} />
+        ) : data ? (
+          <FlatList
+            data={SECTIONS}
+            keyExtractor={(s) => s.key}
+            snapToInterval={viewport}
+            decelerationRate="fast"
+            showsVerticalScrollIndicator={false}
+            renderItem={({ item: section }) => {
+              const titles = data[section.key],
+                hero =
+                  titles.find((t) => t.id === selected[section.key]) ??
+                  titles[0];
+              return (
+                <View style={{ height: viewport }}>
+                  {hero ? (
+                    <>
+                      <FullBleedPosterSection
+                        heroHeight={Math.max(220, viewport - 56)}
+                        sectionKicker={`${section.key === "both_want_to_watch" && data.member_count > 2 ? "MEMBERS WANT TO WATCH" : section.label} · ${data.totals[section.key]}`}
+                        hero={hero}
+                        four={titles}
+                        railActions={rail(hero)}
+                        onPressHero={() => void openTitle(hero.id)}
+                        onPressContinuation={(t) =>
+                          setSelected((prev) => ({
+                            ...prev,
+                            [section.key]: t.id,
+                          }))
+                        }
+                        onEndReached={() => void more(section.key)}
+                      />
+                      <Pressable
+                        style={styles.statusButton}
+                        onPress={() => {
+                          setStatusTitle(hero);
+                          setPosition((hero.rank_label ?? "#1").slice(1));
+                        }}
+                      >
+                        <Text style={styles.accent}>
+                          Members’ status &amp; ratings · Share yours
+                        </Text>
+                      </Pressable>
+                    </>
+                  ) : (
+                    <View style={styles.empty}>
+                      <Text style={styles.title}>{section.label}</Text>
+                      <Text style={styles.body}>
+                        {section.key === "both_want_to_watch"
+                          ? "Titles appear here when at least two members explicitly share Want to Watch."
+                          : section.key === "watched"
+                            ? "Titles appear here when a member shares Watched with this team."
+                            : "Add a title to start this section."}
+                      </Text>
+                      <Pressable
+                        style={styles.button}
+                        onPress={() =>
+                          router.push({
+                            pathname: "/teams/[teamId]/add-title",
+                            params: { teamId },
+                          })
+                        }
+                      >
+                        <Text style={styles.accent}>Add a title</Text>
+                      </Pressable>
+                    </View>
+                  )}
+                </View>
+              );
+            }}
+          />
+        ) : null}
+      </View>
       <UniversalTitleModal
-        visible={titleModalId !== null}
-        title={universalTitle}
-        loading={titleLoading}
+        visible={detailId !== null}
+        title={detail}
+        loading={detailBusy}
         onClose={() => {
-          setTitleModalId(null);
-          setUniversalTitle(null);
+          detailGeneration.current++;
+          setDetailId(null);
+          setDetail(null);
         }}
       />
-
       <SaveToListSheet
-        visible={showSaveSheet}
+        visible={!!save}
         token={sessionToken}
-        titleId={saveTitleId}
+        titleId={save?.id ?? null}
         source="team_home"
-        onClose={() => {
-          setShowSaveSheet(false);
-          setSaveTitleId(null);
-        }}
-        onSaved={() => {
-          setShowSaveSheet(false);
-          setSaveTitleId(null);
-        }}
+        onClose={() => setSave(null)}
+        onSaved={() => setSave(null)}
       />
+      <RatingEditor
+        visible={!!rate}
+        token={sessionToken}
+        titleId={rate?.id ?? null}
+        titleName={rate?.title}
+        initial={null}
+        onClose={() => setRate(null)}
+      />
+      <TitleActionSheets
+        target={action}
+        token={sessionToken}
+        source="team_home"
+        onClose={() => setAction(null)}
+      />
+      <Modal
+        visible={!!statusTitle}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          if (!busy) setStatusTitle(null);
+        }}
+      >
+        <View style={styles.scrim}>
+          <View style={styles.sheet}>
+            <ScrollView contentContainerStyle={{ gap: 14 }}>
+              <Text style={styles.title}>{statusTitle?.title}</Text>
+              <Text style={styles.body}>
+                Only what members explicitly share with this team appears here.
+                Personal ratings stay private until shared.
+              </Text>
+              {statusTitle?.members.map((m) => (
+                <Text key={m.user_id} style={styles.body}>
+                  {m.name} ·{" "}
+                  {m.state === "watched" ? "Watched" : "Wants to watch"}
+                  {m.rating != null ? ` · ${m.rating}/10` : ""}
+                </Text>
+              ))}
+              {statusTitle?.member_average != null ? (
+                <Text style={styles.accent}>
+                  Member average {statusTitle.member_average}/10 ·{" "}
+                  {statusTitle.rating_count} shared ratings
+                </Text>
+              ) : (
+                <Text style={styles.body}>No shared ratings yet.</Text>
+              )}
+              <Text style={styles.body}>
+                You shared: {statusTitle?.my_state.replaceAll("_", " ")}
+              </Text>
+              {(
+                [
+                  ["want_to_watch", "Share Want to Watch"],
+                  ["watched", "Mark Watched & share with team"],
+                  ["unknown", "Remove my shared status"],
+                ] as const
+              ).map(([state, label]) => (
+                <Pressable
+                  key={state}
+                  disabled={busy}
+                  style={styles.button}
+                  onPress={() => shareState(state)}
+                >
+                  <Text style={styles.accent}>{label}</Text>
+                </Pressable>
+              ))}
+              <Pressable
+                disabled={busy}
+                style={styles.button}
+                onPress={() => shareState("watched", true)}
+              >
+                <Text style={styles.accent}>
+                  Share my current rating with this team
+                </Text>
+              </Pressable>
+              {data?.can_manage ? (
+                <View style={{ gap: 8 }}>
+                  <Text style={styles.body}>
+                    Team ranking is set by the owner and admins. It is separate
+                    from TMDB and personal ratings.
+                  </Text>
+                  <TextInput
+                    accessibilityLabel="Team rank position"
+                    keyboardType="number-pad"
+                    value={position}
+                    onChangeText={setPosition}
+                    style={styles.input}
+                  />
+                  <Pressable
+                    disabled={
+                      busy || !/^\d+$/.test(position) || Number(position) < 1
+                    }
+                    style={styles.button}
+                    onPress={() =>
+                      void mutate(
+                        `rankings/${statusTitle?.id}`,
+                        { position: Number(position) },
+                        () => setStatusTitle(null),
+                      )
+                    }
+                  >
+                    <Text style={styles.accent}>
+                      Move to position {position}
+                    </Text>
+                  </Pressable>
+                </View>
+              ) : null}
+              {error ? (
+                <Text accessibilityRole="alert" style={styles.body}>
+                  {error}
+                </Text>
+              ) : null}
+              {busy ? (
+                <ActivityIndicator color={colors.accent} />
+              ) : (
+                <Pressable
+                  style={styles.button}
+                  onPress={() => setStatusTitle(null)}
+                >
+                  <Text style={styles.body}>Close</Text>
+                </Pressable>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
   );
 }
-
-
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: "#000",
-  },
-  memberSummary: {
-    fontFamily: fonts.mono,
-    color: colors.muted2,
-    fontSize: 11,
-    letterSpacing: 0.4,
-    textAlign: "center",
-    paddingBottom: 4,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: spacing.md,
-    paddingTop: 4,
-    paddingBottom: 8,
-    zIndex: 10,
-  },
-  backBtn: {
-    width: 36,
-    height: 36,
+  root: { flex: 1, backgroundColor: colors.background },
+  row: { flexDirection: "row" },
+  icon: {
+    width: 44,
+    height: 44,
     alignItems: "center",
     justifyContent: "center",
   },
-  headerCenter: {
-    flex: 1,
-    alignItems: "center",
-  },
-  headerTitle: {
-    fontFamily: fonts.sansSemiBold,
-    color: colors.ink,
-    fontSize: 15,
-    letterSpacing: 0.1,
-  },
-  headerSub: {
-    fontFamily: fonts.mono,
-    color: colors.muted2,
-    fontSize: 10,
-    marginTop: 2,
-    letterSpacing: 0.4,
-  },
-  settingsBtn: {
-    width: 36,
-    height: 36,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  center: {
-    alignItems: "center",
-    justifyContent: "center",
-    paddingHorizontal: spacing.lg,
-    gap: 8,
-  },
-  emptyTitle: {
-    fontFamily: fonts.sansBold,
-    color: colors.ink,
-    fontSize: 18,
-    marginTop: 8,
-  },
-  emptyBody: {
-    fontFamily: fonts.sans,
+  summary: {
     color: colors.muted,
-    fontSize: 13,
-    textAlign: "center",
-    maxWidth: 280,
+    fontSize: 12,
+    paddingHorizontal: 20,
+    paddingBottom: 6,
+  },
+  notice: { paddingHorizontal: 20, gap: 6 },
+  body: { fontSize: 16, color: colors.ink },
+  title: { fontSize: 25, fontFamily: fonts.serifBold, color: colors.ink },
+  accent: { fontSize: 15, color: colors.accent },
+  button: { minHeight: 44, paddingVertical: 12 },
+  statusButton: {
+    minHeight: 56,
+    paddingHorizontal: 20,
+    justifyContent: "center",
+  },
+  empty: {
+    flex: 1,
+    justifyContent: "center",
+    alignItems: "center",
+    padding: 28,
+    gap: 18,
+  },
+  scrim: {
+    flex: 1,
+    backgroundColor: "rgba(0,0,0,.75)",
+    padding: 16,
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  sheet: {
+    backgroundColor: colors.background,
+    padding: 20,
+    width: "100%",
+    maxWidth: 560,
+    maxHeight: "85%",
+    borderRadius: 16,
+  },
+  input: {
+    fontSize: 16,
+    minHeight: 44,
+    color: colors.ink,
+    borderWidth: 1,
+    borderColor: colors.muted,
+    padding: 10,
   },
 });

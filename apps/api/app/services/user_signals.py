@@ -7,17 +7,10 @@ Every taste signal is a first-class UserSignal row with:
   - trend ('rising' | 'stable' | 'fading')
   - positive_evidence[] / negative_evidence[] (content_title_ids)
 
-Signal strength formula (deterministic, per §16):
-    +5  10/10 rated title carrying this signal
-    +4  9/10 rated
-    +3  saved title carrying this signal
-    +2  swipe right
-    +1  detail-page engagement (not tracked yet — will use interaction events)
-    -3  swipe left
-    -5  explicit "less like this" / "not for me"
-
-Then normalize against interaction volume + recency + repeated evidence
-so a single 10-rated title doesn't define the user's identity.
+Current title evidence is consolidated by title_compatibility: numeric ratings
+supersede weaker saves/ranks/swipes; neutral watched/pass gestures add no taste.
+This legacy vocabulary projection applies recency for identity labels. It is
+not the ten-dimension title compatibility score or a match probability.
 
 Signal vocabularies come from `_signal_genre_set` in taste.py — LABEL_RULES,
 THEME_KEYWORDS, plus raw genre names — so what we compute here stays in sync
@@ -37,35 +30,6 @@ from app.models.content import ContentTitle
 from app.models.social import Rating, Watchlist, WatchlistItem
 from app.models.taste import RecommendationFeedback, SwipeRecord, UserSignal
 
-
-# Signal weight schedule per brief §16. Kept in a single dict so tuning is
-# one-line, not scattered across the codebase.
-SIGNAL_WEIGHTS: dict[str, float] = {
-    "rating_10": 5.0,
-    "rating_9": 4.0,
-    "rating_8": 3.0,
-    "rating_7": 1.5,
-    "saved": 3.0,
-    "swipe_right": 2.0,
-    # Oct-27 personalization brief TASTE01: v2 Up means Watched. On
-    # its own that is a VIEWING FACT, not a positive preference —
-    # the explicit rating editor carries the real preference signal.
-    # Weight stays near zero so a dismissed rating prompt doesn't
-    # masquerade as "more like this." v1 Up (legacy Watch Now) still
-    # exists in the DB but the computation path below gates on
-    # action_version so historical rows keep their original meaning.
-    "swipe_up_v2": 0.5,
-    "swipe_up_v1": 3.0,  # legacy "more like this"
-    # TASTE02: v2 Down is an explicit qualitative dislike — carries
-    # a real negative preference. No automatic numeric rating.
-    "swipe_down_v2": -3.5,
-    "detail_opened": 1.0,
-    "swipe_left": -3.0,
-    "rating_low": -3.0,  # <=4
-    "removed_from_picks": -2.0,
-    "signal_less_like": -5.0,
-    "signal_not_me": -5.0,
-}
 
 # Recency multipliers per Discover brief §6. Applied on top of raw weights so
 # recent behavior lands harder without erasing older preferences.
@@ -164,94 +128,23 @@ def _signal_names_for_title(title: ContentTitle) -> dict[str, set[str]]:
 def _collect_interactions(
     db: Session, user_id: UUID
 ) -> list[tuple[ContentTitle, float, datetime]]:
-    """Every interaction the user has with a title becomes a (title, weight,
-    timestamp) triple. Weights come from SIGNAL_WEIGHTS; sign encodes
-    positive vs negative signal contribution."""
-    interactions: list[tuple[ContentTitle, float, datetime]] = []
-
-    # Ratings — weight by score bucket per §5 hierarchy.
-    ratings = db.execute(
-        select(Rating, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        .where(Rating.user_id == user_id)
-    ).all()
-    for rating, title in ratings:
-        if title is None:
-            continue
-        score = float(rating.score) if rating.score is not None else 0.0
-        weight = 0.0
-        if score >= 10:
-            weight = SIGNAL_WEIGHTS["rating_10"]
-        elif score >= 9:
-            weight = SIGNAL_WEIGHTS["rating_9"]
-        elif score >= 8:
-            weight = SIGNAL_WEIGHTS["rating_8"]
-        elif score >= 7:
-            weight = SIGNAL_WEIGHTS["rating_7"]
-        elif score <= 4:
-            weight = SIGNAL_WEIGHTS["rating_low"]
-        if weight != 0:
-            interactions.append((title, weight, rating.created_at))
-
-    # Watchlist saves — flat weight; created_at for recency.
-    saves = db.execute(
-        select(WatchlistItem, ContentTitle)
-        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id)
-    ).all()
-    for item, title in saves:
-        if title is None:
-            continue
-        interactions.append((title, SIGNAL_WEIGHTS["saved"], item.created_at))
-
-    # Swipes — direction picks the weight. Sep-22 brief §8: skip
-    # signals the user explicitly excluded from their SceneDNA via
-    # the correction UI.
-    swipes = db.execute(
-        select(SwipeRecord, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == SwipeRecord.content_title_id)
-        .where(
-            SwipeRecord.user_id == user_id,
-            SwipeRecord.influence_disabled_at.is_(None),
-        )
-        .order_by(SwipeRecord.created_at.desc())
-        .limit(500)
-    ).all()
-    for swipe, title in swipes:
-        if title is None:
-            continue
-        # TASTE05: branch on action_version so historical v1 Up
-        # (meant "more like this") keeps its old positive weight,
-        # while v2 Up (just means Watched) carries near-zero
-        # preference. Down is v2-only; v1 had no Down direction.
-        version = getattr(swipe, "action_version", 1) or 1
-        if swipe.direction == "right":
-            interactions.append((title, SIGNAL_WEIGHTS["swipe_right"], swipe.created_at))
-        elif swipe.direction == "up":
-            key = "swipe_up_v2" if version >= 2 else "swipe_up_v1"
-            interactions.append((title, SIGNAL_WEIGHTS[key], swipe.created_at))
-        elif swipe.direction == "down":
-            # Only v2 can be "down"; v1 had no down direction.
-            interactions.append((title, SIGNAL_WEIGHTS["swipe_down_v2"], swipe.created_at))
-        elif swipe.direction == "left":
-            interactions.append((title, SIGNAL_WEIGHTS["swipe_left"], swipe.created_at))
-
-    # Recommendation feedback — signal-level actions (less_like / not_me).
-    feedback = db.execute(
-        select(RecommendationFeedback, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == RecommendationFeedback.content_title_id)
-        .where(RecommendationFeedback.user_id == user_id)
-        .limit(500)
-    ).all()
-    for fb, title in feedback:
-        if title is None:
-            continue
-        w = SIGNAL_WEIGHTS.get(fb.action)
-        if w:
-            interactions.append((title, w, fb.created_at))
-
-    return interactions
+    """One signed current-state contribution per canonical title."""
+    from app.services.title_compatibility import load_effective_evidence
+    from app.models.social import RankedFavorite
+    from app.models.discovery import DiscoveryDecision
+    (evidence, _), _ranks = load_effective_evidence(db, user_id)
+    titles = {t.id:t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(list(evidence)))).all()}
+    times = {}
+    for model, field in ((Rating, 'updated_at'), (RankedFavorite, 'updated_at'), (DiscoveryDecision, 'created_at'), (SwipeRecord, 'created_at')):
+        for row in db.scalars(select(model).where(model.user_id == user_id)).all():
+            at = getattr(row, field, None)
+            if at is None: continue
+            at = at.replace(tzinfo=timezone.utc) if at.tzinfo is None else at
+            if row.content_title_id not in times or at > times[row.content_title_id]: times[row.content_title_id] = at
+    for row in db.scalars(select(WatchlistItem).join(Watchlist).where(Watchlist.owner_user_id == user_id)).all():
+        at = row.created_at.replace(tzinfo=timezone.utc) if row.created_at.tzinfo is None else row.created_at
+        if row.content_title_id not in times or at > times[row.content_title_id]: times[row.content_title_id] = at
+    return [(titles[key], signal.utility * signal.boost * 5, times.get(key)) for key,signal in evidence.items() if key in titles]
 
 
 def compute_user_signals(db: Session, user_id: UUID) -> list[UserSignal]:

@@ -1,3 +1,4 @@
+import { AppHeader } from "@/components/headers/app-header";
 import { Ionicons } from "@expo/vector-icons";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -463,16 +464,8 @@ export default function WhatNextScreen() {
         <View style={styles.backdropGlowBottom} />
       </View>
 
-      <View style={styles.header}>
-        <Pressable onPress={() => router.back()} style={styles.iconButton}>
-          <Ionicons name="chevron-back" size={22} color={colors.ink} />
-        </Pressable>
-        <View style={styles.headerCopy}>
-          <Text style={styles.headerKicker}>What&apos;s Next?</Text>
-          <Text style={styles.headerTitle}>Pick something for tonight.</Text>
-        </View>
-        <Text style={styles.progressCount}>{progress}/{SESSION_LENGTH}</Text>
-      </View>
+      <AppHeader variant="detail" leftKind="back" title="What's Next?" ownsSafeArea={false} transparent
+        rightSlot={<Text style={styles.progressCount}>{progress}/{SESSION_LENGTH}</Text>} />
       <View style={styles.progressBarTrack}>
         <Animated.View
           style={[

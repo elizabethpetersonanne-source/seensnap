@@ -188,7 +188,7 @@ def global_search(
                     artwork=None,
                     year=None,
                     media_type=None,
-                    route=f"/lists/{wl.id}",
+                    route=f"/list/{wl.id}",
                     source="local",
                 ))
 
