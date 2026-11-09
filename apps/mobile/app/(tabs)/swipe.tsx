@@ -1,3 +1,6 @@
+import { swipeDirection } from "@/lib/swipe-gesture";
+import { discoveryFilterKey } from "@/lib/discovery-recovery";
+import { restoreDiscovery, saveDiscoverySnapshot } from "@/lib/discovery-storage";
 import { SceneDnaBadge } from "@/components/scene-dna-badge";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
@@ -59,10 +62,10 @@ type RecommendationItem = {
 };
 
 // Oct-27 Swipe semantics:
-//   left  — Pass (not interested)
-//   right — Save to My Next Watch
-//   up    — Already watched + liked → force a rating
-//   down  — Already watched + didn't like → mark watched, score 2/10
+//   left  — Pass for now (temporary cooldown)
+//   right — Interested; does not save to a list
+//   up    — Watched; offer an optional rating
+//   down  — Watched and disliked; never invent a numeric rating
 type SwipeDirection = "left" | "right" | "up" | "down";
 
 type SwipeEvent = {
@@ -79,7 +82,7 @@ const SWIPE_X_THRESHOLD = 75;
 const SWIPE_UP_THRESHOLD = 80;
 
 export default function SwipeTab() {
-  const { sessionToken } = useAuth();
+  const { sessionToken, user } = useAuth();
   const [deck, setDeck] = useState<RecommendationItem[]>([]);
   const [detailCache, setDetailCache] = useState<Record<string, UniversalTitle>>({});
   const [preferredServices, setPreferredServices] = useState<string[]>([]);
@@ -107,6 +110,9 @@ export default function SwipeTab() {
     setUndoToast(message);
     setTimeout(() => setUndoToast(null), 3000);
   }
+  const [flipped, setFlipped] = useState(false);
+  const flippedRef = useRef(flipped); flippedRef.current = flipped;
+  const detailRequestRef = useRef(0);
   const [showDetails, setShowDetails] = useState(false);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
@@ -119,6 +125,11 @@ export default function SwipeTab() {
   // the discovery-filter store.
   const [actionTarget, setActionTarget] = useState<TitleActionTarget | null>(null);
   const [categoryFilter, setCategoryFilter, filterReady] = useDiscoveryFilter();
+  const mode = categoryFilter.availability_mode ?? "streaming";
+  const filterKey = discoveryFilterKey(categoryFilter.media_type, categoryFilter.genre, mode);
+  const queueScope = `${user?.user_id}|${filterKey}`;
+  const [queueOwner, setQueueOwner] = useState<string | null>(null);
+  const [resumeCursor, setResumeCursor] = useState<string | null>(null);
   const [feedCursor, setFeedCursor] = useState<string | null>(null);
   const [hasMore, setHasMore] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -136,7 +147,6 @@ export default function SwipeTab() {
   const currentIndexRef = useRef(0);
   const nextWatchListIdRef = useRef<string | null>(null);
   const animateSwipeRef = useRef<(direction: SwipeDirection) => Promise<void>>(async () => {});
-  const openDetailsForActiveRef = useRef<() => void>(() => {});
   const [toastVisible, setToastVisible] = useState(false);
   const [toastMessage, setToastMessage] = useState("");
   const toastOpacity = useRef(new Animated.Value(0)).current;
@@ -206,37 +216,43 @@ export default function SwipeTab() {
     Animated.timing(nextCardEntry, { toValue: 1, duration: 200, useNativeDriver: false }).start();
   }, [currentIndex, pan, nextCardEntry]);
 
-  type FeedPage = { items: RecommendationItem[]; next_cursor: string | null; has_more: boolean };
-  const loadDeck = useCallback(async () => {
+  type FeedPage = { session_id: string; resume_cursor?: string; items: RecommendationItem[]; next_cursor: string | null; has_more: boolean };
+  const loadDeck = useCallback(async (resume = false) => {
     if (!sessionToken || !filterReady) return;
     const generation = ++generationRef.current;
     pageRequestRef.current = null;
+    setQueueOwner(null); setResumeCursor(null);
     setDeck([]); setCurrentIndex(0); setSwipes([]); setLastSwipe(null);
     setLoading(true); setLoadingMore(false); setError(null); setFeedCursor(null);
     emptyPagesRef.current = 0;
-    const params = new URLSearchParams({ limit: "20" });
+    const params = new URLSearchParams({ limit: "20", mode });
     if (categoryFilter.media_type) params.set("preferred_type", categoryFilter.media_type);
     if (categoryFilter.genre) params.set("genre", categoryFilter.genre);
     try {
+      const restored = resume && user?.user_id ? await restoreDiscovery<FeedPage>(user.user_id, sessionToken, "swipe", filterKey,
+        { preferred_type: categoryFilter.media_type, genre: categoryFilter.genre, mode }) : null;
+      if (generation !== generationRef.current) return;
       const [page, preferences] = await Promise.all([
-        apiRequest<FeedPage>(`/titles/recommendations/feed?${params}`, { token: sessionToken, timeoutMs: 90000 }),
+        restored ? Promise.resolve(restored.response) : apiRequest<FeedPage>(`/titles/recommendations/feed?${params}`, { token: sessionToken, timeoutMs: 90000 }),
         apiRequest<PreferencesResponse>("/me/preferences", { token: sessionToken }).catch(() => ({ connected_streaming_services: [] })),
       ]);
       if (generation !== generationRef.current) return;
       setDeck(dedupeRecommendations(page.items));
-      setFeedCursor(page.next_cursor); setHasMore(page.has_more);
+      setResumeCursor(page.resume_cursor ?? null); setQueueOwner(queueScope);
+      setShowFilters(!restored?.filtersHidden);
+      setFeedCursor(page.next_cursor); setHasMore(page.has_more); setResumeCursor(page.resume_cursor ?? null);
       setPreferredServices(preferences.connected_streaming_services ?? []);
-      setSessionId(page.next_cursor?.split(":")[0] ?? `swipe-${Date.now()}`);
+      setSessionId(page.session_id ?? `swipe-${Date.now()}`);
       setDetailCache({}); pan.setValue({ x: 0, y: 0 });
     } catch (e) {
       if (generation === generationRef.current) setError(e instanceof Error ? e.message : "Couldn't load picks. Try again.");
     } finally {
       if (generation === generationRef.current) { setLoading(false); hasLoadedRef.current = true; }
     }
-  }, [sessionToken, filterReady, categoryFilter.media_type, categoryFilter.genre, pan]);
+  }, [sessionToken, filterReady, categoryFilter.media_type, categoryFilter.genre, mode, user?.user_id, filterKey, queueScope, pan]);
 
   useEffect(() => {
-    void loadDeck();
+    void loadDeck(true);
     return () => { generationRef.current++; };
   }, [loadDeck]);
 
@@ -244,14 +260,14 @@ export default function SwipeTab() {
     if (!sessionToken || !feedCursor || !hasMore || pageRequestRef.current !== null) return;
     const generation = generationRef.current;
     pageRequestRef.current = generation; setLoadingMore(true); setError(null);
-    const params = new URLSearchParams({ limit: "20", cursor: feedCursor });
+    const params = new URLSearchParams({ limit: "20", cursor: feedCursor, mode });
     if (categoryFilter.media_type) params.set("preferred_type", categoryFilter.media_type);
     if (categoryFilter.genre) params.set("genre", categoryFilter.genre);
     try {
       const page = await apiRequest<FeedPage>(`/titles/recommendations/feed?${params}`, { token: sessionToken, timeoutMs: 90000 });
       if (generation !== generationRef.current) return;
       setDeck((previous) => dedupeRecommendations([...previous, ...page.items]));
-      setFeedCursor(page.next_cursor); setHasMore(page.has_more);
+      setFeedCursor(page.next_cursor); setHasMore(page.has_more); setResumeCursor(page.resume_cursor ?? null);
       emptyPagesRef.current = page.items.length ? 0 : emptyPagesRef.current + 1;
       if (emptyPagesRef.current >= 3 && page.has_more) setError("Still looking for eligible picks in this category. Tap Continue to search further.");
     } catch (e) {
@@ -262,7 +278,7 @@ export default function SwipeTab() {
     } finally {
       if (pageRequestRef.current === generation) { pageRequestRef.current = null; setLoadingMore(false); }
     }
-  }, [sessionToken, feedCursor, hasMore, categoryFilter.media_type, categoryFilter.genre]);
+  }, [sessionToken, feedCursor, hasMore, categoryFilter.media_type, categoryFilter.genre, mode]);
 
   useEffect(() => {
     if (!loading && !loadingMore && !error && hasMore && deck.length - currentIndex <= 8) void loadMore();
@@ -278,7 +294,14 @@ export default function SwipeTab() {
     return () => { stopState(); stopRating(); };
   }, [deck]);
 
-  const activeCard = deck[currentIndex] ?? null;
+  useEffect(() => {
+    const ids = deck.slice(currentIndex).map(item => item.title.id);
+    if (!user?.user_id || loading || queueOwner !== queueScope || !resumeCursor || ids.length > 100) return;
+    saveDiscoverySnapshot(user.user_id, "swipe", { version: 1, filter: filterKey, cursor: resumeCursor, title_ids: ids, saved_at: Date.now(), filters_hidden: !showFilters });
+  }, [deck, currentIndex, loading, queueOwner, queueScope, resumeCursor, filterKey, user?.user_id, showFilters]);
+
+  const activeCard = queueOwner === queueScope ? deck[currentIndex] ?? null : null;
+  useEffect(() => { setFlipped(false); }, [activeCard?.title.id]);
   const deckExhausted = !activeCard;
   const nextCards = useMemo(() => deck.slice(currentIndex + 1, currentIndex + 3), [deck, currentIndex]);
   const currentDetail = activeCard ? detailCache[activeCard.title.id] ?? null : null;
@@ -360,46 +383,20 @@ export default function SwipeTab() {
 
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      // Claim the touch aggressively so the parent ScrollView doesn't
-      // steal horizontal drags. The old `() => true` returned true only
-      // on the FIRST move sample; some browsers / RN-Web then handed the
-      // gesture to the scroll container. Capture-phase variants and the
-      // termination guard below keep the card in charge for the whole
-      // gesture. Fixes "can't swipe easily with your finger" on mobile.
-      onStartShouldSetPanResponderCapture: () => true,
-      onMoveShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => false,
+      // Let taps and child controls respond. Claim deliberate drags only.
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_, gesture) => !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8,
       onMoveShouldSetPanResponderCapture: (_, gesture) => {
-        // Only "capture" (steal from scroll) when the movement is
-        // clearly horizontal-ish — a modest 4px threshold. Pure
-        // vertical scrolls still work if the user isn't touching the
-        // card intending to swipe.
-        return Math.abs(gesture.dx) > 4 && Math.abs(gesture.dx) > Math.abs(gesture.dy);
+        // The detail face can scroll without triggering a Watched gesture.
+        return !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8;
       },
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
       onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], { useNativeDriver: false }),
       onPanResponderRelease: (_, gesture) => {
-        if (gesture.dx > SWIPE_X_THRESHOLD) {
-          void animateSwipeRef.current("right");
-          return;
-        }
-        if (gesture.dx < -SWIPE_X_THRESHOLD) {
-          void animateSwipeRef.current("left");
-          return;
-        }
-        if (gesture.dy < -SWIPE_UP_THRESHOLD) {
-          void animateSwipeRef.current("up");
-          return;
-        }
-        if (gesture.dy > SWIPE_UP_THRESHOLD) {
-          void animateSwipeRef.current("down");
-          return;
-        }
-        if (Math.abs(gesture.dx) < 8 && Math.abs(gesture.dy) < 8) {
-          openDetailsForActiveRef.current();
-          return;
-        }
+        const direction = swipeDirection(gesture.dx, gesture.dy, SWIPE_X_THRESHOLD, SWIPE_UP_THRESHOLD);
+        if (direction) { void animateSwipeRef.current(direction); return; }
         Animated.spring(pan, {
           toValue: { x: 0, y: 0 },
           friction: 8,
@@ -476,7 +473,8 @@ export default function SwipeTab() {
 
   async function openDetails(item: RecommendationItem | null) {
     if (!sessionToken || !item) return;
-    setShowDetails(true);
+    const request = ++detailRequestRef.current, generation = generationRef.current;
+    setShowDetails(true); setDetailTitle(null);
     setDetailLoading(true);
     try {
       const detail =
@@ -489,13 +487,15 @@ export default function SwipeTab() {
           backdrop_url: item.title.backdrop_url,
           overview: item.title.overview,
         }));
+      if (request !== detailRequestRef.current || generation !== generationRef.current) return;
       setDetailCache((current) => ({ ...current, [item.title.id]: detail }));
       setDetailTitle(detail);
     } catch (detailError) {
+      if (request !== detailRequestRef.current || generation !== generationRef.current) return;
       setError(detailError instanceof Error ? detailError.message : "Could not load title details");
       setDetailTitle(null);
     } finally {
-      setDetailLoading(false);
+      if (request === detailRequestRef.current && generation === generationRef.current) setDetailLoading(false);
     }
   }
 
@@ -622,15 +622,26 @@ export default function SwipeTab() {
   const posterColumnWidth = isNarrow ? posterMaxWidth : posterMaxWidth;
 
   animateSwipeRef.current = animateSwipe;
-  openDetailsForActiveRef.current = () => {
-    void openDetails(activeCard);
-  };
 
   // Presentational block for the current title's identity, metadata, reason,
   // decision controls, and Watch Now. Same JSX under both compositions so
   // narrow (below the deck) and wide (in the right rail) stay visually
   // identical. Handlers are the SAME references used by the gesture layer —
   // no domain behavior lives in this block per spec §9 action mapping contract.
+  const flippedCard = activeCard ? <View style={{ width: "100%", height: isNarrow ? Math.min(600, Math.max(280, viewportHeight * .6)) : posterColumnWidth * 1.5, backgroundColor: colors.surface }}>
+    <Pressable accessibilityRole="button" accessibilityLabel="Back to poster" onPress={() => setFlipped(false)} style={{ minHeight: 44, padding: 12, alignItems: "center" }}><Text style={{ color: colors.accent }}>Back to poster</Text></Pressable>
+    <ScrollView nestedScrollEnabled contentContainerStyle={{ padding: 16, gap: 14 }}>
+      <Text style={{ color: colors.ink, fontFamily: fonts.serifBold, fontSize: 24 }}>{activeCard.title.title}</Text>
+      <Text style={{ color: colors.muted, fontSize: 14 }}>{buildCardMeta(activeCard, currentDetail)}</Text>
+      <SceneDnaBadge titleId={activeCard.title.id} />
+      <Text style={{ color: colors.ink, fontSize: 16, lineHeight: 24 }}>{activeSynopsis || "Synopsis unavailable right now."}</Text>
+      {currentDetail?.credits.cast.length ? <Text style={{ color: colors.muted, fontSize: 14, lineHeight: 21 }}>Cast: {currentDetail.credits.cast.slice(0, 8).join(", ")}</Text> : null}
+      <Text style={{ color: colors.ink, fontFamily: fonts.sansSemiBold }}>Where to watch</Text>
+      {activeStreaming.length ? activeStreaming.map(option => <Pressable key={option.service} disabled={!option.appUrl && !option.webUrl} onPress={() => void openProvider(option)} accessibilityRole="button" style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>{option.serviceName || option.service}</Text></Pressable>) : <Text style={{ color: colors.muted }}>Availability isn't confirmed. Open full details to check.</Text>}
+      <Pressable accessibilityRole="button" onPress={(event) => { event.stopPropagation(); void openDetails(activeCard); }} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>Full title details and trailers</Text></Pressable>
+    </ScrollView>
+  </View> : null;
+
   const directActions = activeCard ? (
 <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 12 }}>
         <Pressable onPress={() => void animateSwipe("up")} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>Watched + Rate</Text></Pressable>
@@ -822,7 +833,7 @@ export default function SwipeTab() {
             <Pressable onPress={() => setShowFilters((v) => !v)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>Filters{categoryFilter.genre ? ` · ${categoryFilter.genre}` : ""}</Text></Pressable>
             <Pressable onPress={() => setShowHelp((v) => !v)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>How to swipe</Text></Pressable>
           </View>
-          {showHelp ? <Text style={{ color: colors.muted, fontSize: 14, lineHeight: 21, marginBottom: 12 }}>Right — More like this. Left — Pass for now. Up — Watched; add a rating. Down — Watched and didn't like it. Tap the poster for details. Save adds a title to your lists.</Text> : null}
+          {showHelp ? <Text style={{ color: colors.muted, fontSize: 14, lineHeight: 21, marginBottom: 12 }}>Right — More like this. Left — Pass for now. Up — Watched; add a rating. Down — Watched and didn't like it. Tap the poster to flip to details; tap Back to poster to return. Save adds a title to your lists.</Text> : null}
           {showFilters ? <CategoryChips
             value={categoryFilter}
             onChange={(next) => {
@@ -938,7 +949,7 @@ export default function SwipeTab() {
       {!loading && error ? (
         <View style={styles.errorBanner}>
           <Text style={styles.errorText}>{error}</Text>
-          <Pressable onPress={() => void (feedCursor ? loadMore() : loadDeck())} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>Continue</Text></Pressable>
+          <Pressable onPress={() => void (feedCursor ? loadMore() : loadDeck(true))} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>Continue</Text></Pressable>
         </View>
       ) : null}
 
@@ -976,8 +987,9 @@ export default function SwipeTab() {
             ]}
             {...panResponder.panHandlers}
           >
-            {/* Hero area with backdrop + title artwork + Play Trailer */}
-            <View style={styles.unifiedHero}>
+            {flipped ? flippedCard : <>
+            {/* Poster tap reveals details without leaving this queue. */}
+            <Pressable accessibilityRole="button" accessibilityLabel={`Flip ${activeCard.title.title} to details`} onPress={() => setFlipped(true)} style={styles.unifiedHero}>
               {(() => {
                 const heroSource = resolveMediaUrl(
                   activeCard.title.backdrop_url || activeCard.title.poster_url || null,
@@ -995,22 +1007,23 @@ export default function SwipeTab() {
                 </Text>
               </View>
               <Pressable
-                onPress={() => void openDetails(activeCard)}
+                onPress={(event) => { event.stopPropagation(); void openDetails(activeCard); }}
                 hitSlop={8}
                 style={styles.unifiedPlayTrailer}
-                accessibilityLabel="Play trailer"
+                accessibilityLabel="Open full title details"
               >
                 <View style={styles.unifiedPlayCircle}>
                   <Ionicons name="play" size={16} color={colors.ink} />
                 </View>
-                <Text style={styles.unifiedPlayLabel}>Play{"\n"}Trailer</Text>
+                <Text style={styles.unifiedPlayLabel}>Full{"\n"}Details</Text>
               </Pressable>
-            </View>
+            </Pressable>
 
             {/* Content body */}
             <View style={styles.unifiedBody}>
               <Text style={styles.unifiedTitle} numberOfLines={2}>{activeCard.title.title}</Text>
               <Text style={styles.unifiedMeta}>{buildCardMeta(activeCard, currentDetail)}</Text>
+              <SceneDnaBadge titleId={activeCard.title.id} />
 
               {activeGenres ? (
                 <View style={styles.unifiedGenreRow}>
@@ -1078,6 +1091,7 @@ export default function SwipeTab() {
               ) : null}
             </View>
 
+            </>}
             {/* Directional feedback edges — same as before. */}
             <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipLeft, { opacity: leftLabelOpacity }]}>
               <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
@@ -1211,6 +1225,7 @@ export default function SwipeTab() {
                   ]}
                   {...panResponder.panHandlers}
                 >
+                  {flipped ? flippedCard : <Pressable accessibilityRole="button" accessibilityLabel={`Flip ${activeCard.title.title} to details`} onPress={() => setFlipped(true)} style={{ flex: 1, width: "100%" }}>
                   {activePoster ? (
                     <Image
                       source={{ uri: activePoster }}
@@ -1228,6 +1243,8 @@ export default function SwipeTab() {
                       </Text>
                     </View>
                   )}
+
+                  </Pressable>}
 
                   {/* Directional feedback — W02 commit labels. */}
                   <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipLeft, { opacity: leftLabelOpacity }]}>
@@ -1265,7 +1282,7 @@ export default function SwipeTab() {
         visible={showDetails}
         loading={detailLoading}
         title={detailTitle}
-        onClose={() => setShowDetails(false)}
+        onClose={() => { detailRequestRef.current++; setShowDetails(false); }}
         onSaveTitle={(detail) => {
           setSaveTitleId(detail.id);
           setShowSaveSheet(true);

@@ -22,6 +22,9 @@ SERVICE = "seensnap-api-staging"
 REGION = "us-central1"
 JOB = SERVICE + "-migrate"
 REQUIRED_ROUTES = {
+    "/api/v1/me/stories": "get",
+    "/api/v1/me/stories/{story_id}": "get",
+    "/api/v1/me/discovery-resume": "post",
     "/api/v1/me/onboarding-draft": "put",
     "/api/v1/me/title-compatibility": "post",
     "/api/v1/discover/collection/{key}": "get",

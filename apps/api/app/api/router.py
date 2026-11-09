@@ -91,3 +91,6 @@ api_router.include_router(onboarding_draft.router, prefix="/me/onboarding-draft"
 
 from app.api.routes import title_compatibility
 api_router.include_router(title_compatibility.router, prefix="/me/title-compatibility", tags=["scenedna"])
+
+from app.api.routes import discovery_resume
+api_router.include_router(discovery_resume.router, prefix="/me/discovery-resume", tags=["discovery"])

@@ -20,7 +20,7 @@ import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 export type MediaType = "movie" | "show" | null;
 export type Genre = string | null; // lowercase — matches ContentTitle.genres
 
-export type CategoryFilter = { media_type: MediaType; genre: Genre };
+export type CategoryFilter = { media_type: MediaType; genre: Genre; availability_mode?: "streaming" | "all" };
 
 const PRIMARY_GENRES = [
   { label: "Comedy", value: "comedy" },
@@ -83,6 +83,10 @@ export function CategoryChips({
 
   return (
     <View>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 12 }}>
+        <Chip label="Streaming" active={(value.availability_mode ?? "streaming") === "streaming"} onPress={() => onChange({ ...value, availability_mode: "streaming" })} />
+        <Chip label="Include rent / buy" active={value.availability_mode === "all"} onPress={() => onChange({ ...value, availability_mode: "all" })} />
+      </View>
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}

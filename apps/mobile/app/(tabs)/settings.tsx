@@ -23,6 +23,7 @@ type Row = {
 };
 
 const ROWS: Row[] = [
+  { key: "stories", icon: "albums-outline", title: "Your stories", body: "View and delete active or archived stories", path: "/my-stories" },
   { key: "edit", icon: "person-circle-outline", title: "Edit Profile", body: "Photo, name, bio and more", path: "/settings/edit-profile" },
   { key: "scenedna", icon: "sparkles-outline", title: "Your SceneDNA", body: "Signals, evidence and corrections", path: "/scene-dna" },
   { key: "notifications", icon: "notifications-outline", title: "Notifications", body: "Control what you want to receive", path: "/settings/notifications" },

@@ -1,3 +1,5 @@
+import { discoveryFilterKey } from "@/lib/discovery-recovery";
+import { restoreDiscovery, saveDiscoverySnapshot } from "@/lib/discovery-storage";
 import { SceneDnaBadge } from "@/components/scene-dna-badge";
 /** Continuous previews with shared filters, stable list order and direct title actions. */
 import { usePlaybackMute } from "@/lib/playback-preference";
@@ -62,6 +64,7 @@ type PreviewFeedItem = {
 };
 
 type PreviewFeedResponse = {
+  resume_cursor?: string;
   session_id: string;
   items: PreviewFeedItem[];
   next_cursor: string | null;
@@ -108,6 +111,11 @@ export default function PreviewsScreen() {
   // W09: shared Swipe/Preview filter session. Picking Comedy on
   // Swipe propagates here and vice versa.
   const [categoryFilter, setCategoryFilter, filterReady] = useDiscoveryFilter();
+  const mode = categoryFilter.availability_mode ?? "streaming";
+  const filterKey = discoveryFilterKey(categoryFilter.media_type, categoryFilter.genre, mode);
+  const queueScope = `${user?.user_id}|${filterKey}|${rankedSource}|${listId}|${listOwnerId}`;
+  const [queueOwner, setQueueOwner] = useState<string | null>(null);
+  const [resumeCursor, setResumeCursor] = useState<string | null>(null);
   const generationRef = useRef(0);
   const pageRequestRef = useRef<number | null>(null);
   const emptyPagesRef = useRef(0);
@@ -145,32 +153,37 @@ export default function PreviewsScreen() {
         next_cursor: more ? `list:${nextOffset}` : null, has_more: more,
         status: resolved.items.length ? "ready" : more ? "pending" : "exhausted" };
     }
-    const query = new URLSearchParams({ limit: "20" });
+    const query = new URLSearchParams({ limit: "20", mode });
     if (categoryFilter.media_type) query.set("preferred_type", categoryFilter.media_type);
     if (categoryFilter.genre) query.set("genre", categoryFilter.genre);
     if (nextCursor) query.set("cursor", nextCursor);
     return apiRequest<PreviewFeedResponse>(`/previews/feed?${query}`, { token: sessionToken, timeoutMs: 90000 });
-  }, [sessionToken, user?.user_id, listId, listOwnerId, rankedSource, categoryFilter.media_type, categoryFilter.genre]);
+  }, [sessionToken, user?.user_id, listId, listOwnerId, rankedSource, categoryFilter.media_type, categoryFilter.genre, mode]);
 
-  const loadFeed = useCallback(async () => {
+  const loadFeed = useCallback(async (resume = false) => {
     if (!sessionToken || !filterReady) return;
     const generation = ++generationRef.current;
     pageRequestRef.current = null; emptyPagesRef.current = 0;
+    setQueueOwner(null); setResumeCursor(null);
     setItems([]); setActiveIndex(0); setCursor(null); setLoadingMore(false);
     setLoading(true); setError(null); setMoreError(null);
     seenImpressionsRef.current.clear();
     try {
-      const response = await fetchPage(null);
+      const restored = resume && !rankedSource && !listId && user?.user_id ? await restoreDiscovery<PreviewFeedResponse>(user.user_id, sessionToken, "preview", filterKey,
+        { preferred_type: categoryFilter.media_type, genre: categoryFilter.genre, mode }) : null;
+      if (generation !== generationRef.current) return;
+      const response = restored?.response ?? await fetchPage(null);
       if (generation !== generationRef.current) return;
       setItems(response.items); setCursor(response.next_cursor);
+      setResumeCursor(response.resume_cursor ?? null); setQueueOwner(queueScope);
       setHasMore(response.has_more); setFeedStatus(response.status);
       listRef.current?.scrollToOffset({ offset: 0, animated: false });
     } catch (e) {
       if (generation === generationRef.current) setError(e instanceof Error ? e.message : "Couldn't load previews.");
     } finally { if (generation === generationRef.current) setLoading(false); }
-  }, [sessionToken, filterReady, fetchPage]);
+  }, [sessionToken, filterReady, fetchPage, rankedSource, listId, user?.user_id, filterKey, categoryFilter.media_type, categoryFilter.genre, mode, queueScope]);
 
-  useEffect(() => { void loadFeed(); return () => { generationRef.current++; }; }, [loadFeed]);
+  useEffect(() => { void loadFeed(true); return () => { generationRef.current++; }; }, [loadFeed]);
 
   const loadMore = useCallback(async () => {
     if (!sessionToken || !cursor || !hasMore || pageRequestRef.current !== null) return;
@@ -186,7 +199,7 @@ export default function PreviewsScreen() {
           seen.add(item.title_id); return true;
         })];
       });
-      setCursor(response.next_cursor); setHasMore(response.has_more); setFeedStatus(response.status);
+      setCursor(response.next_cursor); setResumeCursor(response.resume_cursor ?? null); setHasMore(response.has_more); setFeedStatus(response.status);
       emptyPagesRef.current = response.items.length ? 0 : emptyPagesRef.current + 1;
       if (emptyPagesRef.current >= 3 && response.has_more) setMoreError("Still looking for playable previews. Tap Continue to search further.");
     } catch (e) {
@@ -210,6 +223,12 @@ export default function PreviewsScreen() {
     const stopRating = subscribeRatingChanges((id, state) => { if (state.watched_state === "watched") remove(id); });
     return () => { stopState(); stopRating(); };
   }, [activeIndex, rankedSource, listId]);
+
+  useEffect(() => {
+    const ids = items.slice(activeIndex).map(item => item.title_id);
+    if (!user?.user_id || rankedSource || listId || loading || queueOwner !== queueScope || !resumeCursor || ids.length > 100) return;
+    saveDiscoverySnapshot(user.user_id, "preview", { version: 1, filter: filterKey, cursor: resumeCursor, title_ids: ids, saved_at: Date.now(), filters_hidden: false });
+  }, [items, activeIndex, loading, queueOwner, queueScope, resumeCursor, filterKey, user?.user_id, rankedSource, listId]);
 
   // Impression event when a card becomes active — spec §12 events.
   useEffect(() => {
@@ -280,7 +299,7 @@ export default function PreviewsScreen() {
       ) : error ? (
         <View style={styles.centerFill}>
           <Text style={styles.errorText}>{error}</Text>
-          <Pressable style={styles.retryBtn} onPress={() => void loadFeed()}>
+          <Pressable style={styles.retryBtn} onPress={() => void loadFeed(true)}>
             <Text style={styles.retryText}>Retry</Text>
           </Pressable>
         </View>
@@ -296,7 +315,7 @@ export default function PreviewsScreen() {
       ) : (
         <FlatList
           ref={listRef}
-          data={items}
+          data={queueOwner === queueScope ? items : []}
           keyExtractor={(item) => item.feed_item_id}
           pagingEnabled
           snapToInterval={cardHeight}

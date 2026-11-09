@@ -1,14 +1,7 @@
-/**
- * Oct-19 Social Stories strip (mock reference).
- *
- * Horizontal row of story avatars at the top of Social. Each actor's
- * avatar has a gold ring when they have an active story. The viewer's
- * own slot has a "+" affordance to add a title to their story.
- *
- * Stories expire 72 hours after creation server-side.
- */
+/** Active Social stories and a permanent entry point to the owner's private history. */
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useRef, useState } from "react";
 import {
   Image,
   Modal,
@@ -16,48 +9,84 @@ import {
   ScrollView,
   StyleSheet,
   Text,
-  TextInput,
   View,
+  useWindowDimensions,
 } from "react-native";
-
 import { Avatar } from "@/components/avatar";
-import { colors, fonts, spacing } from "@/constants/theme";
+import { colors, fonts } from "@/constants/theme";
 import { useAuth } from "@/lib/auth";
-import { deleteStory, editStory, fetchStoriesFeed, type StoriesFeedResponse, type StoryActorGroup, type StoryTitleCard } from "@/lib/stories";
-
+import {
+  fetchStoriesFeed,
+  subscribeStoryChanges,
+  type StoriesFeedResponse,
+  type StoryActorGroup,
+} from "@/lib/stories";
 
 export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
   const { sessionToken, user } = useAuth();
-  const [feed, setFeed] = useState<StoriesFeedResponse | null>(null);
+  const { width, height } = useWindowDimensions();
+  const [feed, setFeed] = useState<{
+    token: string;
+    data: StoriesFeedResponse;
+  } | null>(null);
   const [viewing, setViewing] = useState<StoryActorGroup | null>(null);
-  // STORY01: owner-only in-place caption editor. Preserves expiry
-  // and the original title identity.
-  const [editing, setEditing] = useState<StoryTitleCard | null>(null);
-  const [editDraft, setEditDraft] = useState("");
-  const [editBusy, setEditBusy] = useState(false);
-  const [deleting, setDeleting] = useState<StoryTitleCard | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  async function load() {
-    if (!sessionToken) return;
-    try {
-      const res = await fetchStoriesFeed(sessionToken);
-      setFeed(res);
-      setViewing((current) => current
-        ? [res.me, ...res.others].find((group) => group?.user_id === current.user_id && group.stories.length > 0) ?? null
-        : null);
-    } catch {
-      // non-fatal — strip renders empty
-    }
-  }
-
-  useEffect(() => {
-    void load();
-  }, [sessionToken]);
-
-  const mine = feed?.me ?? null;
-  const others = feed?.others ?? [];
-
+  const [retry, setRetry] = useState(0);
+  const tokenRef = useRef(sessionToken);
+  tokenRef.current = sessionToken;
+  const generation = useRef(0);
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      setViewing(null);
+      setError(null);
+      async function load() {
+        if (!sessionToken) return;
+        const request = ++generation.current;
+        try {
+          const result = await fetchStoriesFeed(sessionToken);
+          if (
+            !active ||
+            tokenRef.current !== sessionToken ||
+            request !== generation.current
+          )
+            return;
+          setFeed({ token: sessionToken, data: result });
+          setError(null);
+          setViewing((current) =>
+            current
+              ? (result.others.find(
+                  (group) => group.user_id === current.user_id,
+                ) ?? null)
+              : null,
+          );
+        } catch {
+          if (active && tokenRef.current === sessionToken) {
+            setError("Stories couldn't refresh.");
+            setViewing(null);
+          }
+        }
+      }
+      void load();
+      const unsubscribe = subscribeStoryChanges((token) => {
+        if (token === sessionToken) void load();
+      });
+      const timer = setInterval(() => void load(), 60000);
+      return () => {
+        active = false;
+        generation.current++;
+        clearInterval(timer);
+        unsubscribe();
+      };
+    }, [sessionToken, retry]),
+  );
+  const visibleFeed = feed?.token === sessionToken ? feed.data : null;
+  const mine = visibleFeed?.me;
+  const posterWidth = Math.min(
+    260,
+    Math.max(140, width - 100),
+    Math.max(140, height * 0.38),
+  );
   return (
     <View>
       <ScrollView
@@ -65,347 +94,177 @@ export function StoriesStrip({ onAddPress }: { onAddPress: () => void }) {
         showsHorizontalScrollIndicator={false}
         contentContainerStyle={styles.row}
       >
-        {/* Your Story — add if none, otherwise view mine */}
         <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="View your active and previous stories"
           style={styles.cell}
-          onPress={() => {
-            if (mine && mine.stories.length > 0) {
-              setViewing(mine);
-            } else {
-              onAddPress();
-            }
-          }}
+          onPress={() => router.push("/my-stories")}
         >
-          <View style={styles.avatarWrap}>
-            <Avatar uri={user?.avatar_url ?? null} label={user?.display_name ?? ""} size={54} />
-            <View style={styles.plusDot}>
-              <Ionicons name="add" size={13} color={colors.background} />
-            </View>
-            {mine && mine.stories.length > 0 ? <View style={styles.ring} /> : null}
+          <View style={[styles.avatar, !!mine?.stories.length && styles.ring]}>
+            <Avatar
+              uri={user?.avatar_url ?? null}
+              label={user?.display_name ?? ""}
+              size={54}
+            />
           </View>
-          <Text style={styles.label} numberOfLines={1}>Your Story</Text>
+          <Text style={styles.label}>Your stories</Text>
         </Pressable>
-
-        {others.map((group) => (
-          <Pressable key={group.user_id} style={styles.cell} onPress={() => setViewing(group)}>
-            <View style={styles.avatarWrap}>
-              <Avatar uri={group.avatar_url} label={group.display_name ?? group.username ?? ""} size={54} />
-              <View style={styles.ring} />
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Add a story"
+          style={styles.cell}
+          onPress={onAddPress}
+        >
+          <View style={[styles.avatar, styles.add]}>
+            <Ionicons name="add" size={26} color={colors.accent} />
+          </View>
+          <Text style={styles.label}>Add story</Text>
+        </Pressable>
+        {(visibleFeed?.others ?? []).map((group) => (
+          <Pressable
+            accessibilityRole="button"
+            key={group.user_id}
+            style={styles.cell}
+            onPress={() => setViewing(group)}
+          >
+            <View style={[styles.avatar, styles.ring]}>
+              <Avatar
+                uri={group.avatar_url}
+                label={group.display_name ?? group.username ?? ""}
+                size={54}
+              />
             </View>
             <Text style={styles.label} numberOfLines={1}>
-              {group.display_name ?? group.username ?? "User"}
+              {group.display_name ?? group.username ?? "Viewer"}
             </Text>
           </Pressable>
         ))}
       </ScrollView>
-
-      <Modal visible={viewing !== null || editing !== null} transparent animationType="fade"
-        onRequestClose={() => { if (!editBusy) { setDeleting(null); setEditing(null); setViewing(null); } }}>
-        {deleting ? (
-          <View style={styles.modalBackdrop}>
-            <View style={styles.editSheet} accessibilityViewIsModal>
-              <Text style={styles.modalName}>Delete this story?</Text>
-              <Text style={styles.editExpiryHint}>This removes your story and cannot be undone.</Text>
-              {error ? <Text accessibilityRole="alert" style={{ color: colors.danger }}>{error}</Text> : null}
-              <Pressable style={styles.editSaveBtn} disabled={editBusy} onPress={async () => {
-                if (!sessionToken || editBusy) return;
-                setEditBusy(true); setError(null);
-                try { await deleteStory(sessionToken, deleting.story_id); setDeleting(null); await load(); }
-                catch { setError("Could not delete this story. Please try again."); }
-                finally { setEditBusy(false); }
-              }}><Text style={styles.editSaveLabel}>{editBusy ? "Deleting…" : "Delete story"}</Text></Pressable>
-              <Pressable disabled={editBusy} style={{ minHeight: 48, justifyContent: "center" }} onPress={() => setDeleting(null)}><Text style={styles.modalName}>Cancel</Text></Pressable>
-            </View>
-          </View>
-        ) : editing ? (<>
-
-        <Pressable style={styles.modalBackdrop} onPress={() => { if (!editBusy) setEditing(null); }}>
-          <Pressable style={styles.editSheet} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.editHandle} />
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalName}>Edit story caption</Text>
-              <Pressable onPress={() => { if (!editBusy) setEditing(null); }} hitSlop={10} style={{ marginLeft: "auto" }}>
-                <Ionicons name="close" size={20} color={colors.ink} />
+      {error ? (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => setRetry((n) => n + 1)}
+          style={{
+            minHeight: 44,
+            paddingHorizontal: 20,
+            justifyContent: "center",
+          }}
+        >
+          <Text style={styles.copy}>{error} Tap to retry.</Text>
+        </Pressable>
+      ) : null}
+      <Modal
+        visible={!!viewing && !!visibleFeed}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setViewing(null)}
+      >
+        <View style={styles.backdrop}>
+          <View style={styles.panel} accessibilityViewIsModal>
+            <View style={styles.heading}>
+              <Text style={styles.title}>
+                {viewing?.display_name ?? viewing?.username ?? "Stories"}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Close stories"
+                onPress={() => setViewing(null)}
+                style={styles.close}
+              >
+                <Ionicons name="close" size={22} color={colors.ink} />
               </Pressable>
             </View>
-            {error ? <Text accessibilityRole="alert" style={{ color: colors.danger }}>{error}</Text> : null}
-            <TextInput
-              value={editDraft}
-              onChangeText={(t) => setEditDraft(t.slice(0, 280))}
-              multiline
-              style={styles.editInput}
-              placeholder="Add a caption…"
-              placeholderTextColor={colors.muted2}
-              textAlignVertical="top"
-            />
-            <Text style={styles.editExpiryHint}>
-              Editing won't extend the 72-hour expiry.
-            </Text>
-            <Pressable
-              onPress={async () => {
-                if (!editing || !sessionToken || editBusy) return;
-                setEditBusy(true);
-                try {
-                  await editStory(sessionToken, editing.story_id, { caption: editDraft.trim() || null });
-                  setEditing(null);
-                  await load();
-                } catch (e) {
-                  setError("Could not save your story. It may have expired. Please try again.");
-                } finally {
-                  setEditBusy(false);
-                }
-              }}
-              disabled={editBusy}
-              style={[styles.editSaveBtn, editBusy && { opacity: 0.6 }]}
-            >
-              <Text style={styles.editSaveLabel}>{editBusy ? "Saving…" : "Save changes"}</Text>
-            </Pressable>
-          </Pressable>
-        </Pressable>
-              </>) : (<>
-
-        <Pressable style={styles.modalBackdrop} onPress={() => setViewing(null)}>
-          <Pressable style={styles.modalCard} onPress={(e) => e.stopPropagation()}>
-            {viewing && viewing.stories.length > 0 ? (
-              <>
-                <View style={styles.modalHeader}>
-                  <Avatar uri={viewing.avatar_url} label={viewing.display_name ?? ""} size={28} />
-                  <Text style={styles.modalName}>{viewing.display_name ?? viewing.username ?? "User"}</Text>
-                  <Pressable onPress={() => setViewing(null)} hitSlop={10} style={{ marginLeft: "auto" }}>
-                    <Ionicons name="close" size={20} color={colors.ink} />
-                  </Pressable>
-                </View>
-                <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 10 }}>
-                  {viewing.stories.map((s) => {
-                    const isMine = viewing.user_id === user?.user_id;
-                    return (
-                      <View key={s.story_id} style={styles.storyCard}>
-                        {s.poster_url ? (
-                          <Image source={{ uri: s.poster_url }} style={styles.storyPoster} resizeMode="cover" />
-                        ) : (
-                          <View style={[styles.storyPoster, { alignItems: "center", justifyContent: "center" }]}>
-                            <Ionicons name="film-outline" size={28} color={colors.muted2} />
-                          </View>
-                        )}
-                        <Text style={styles.storyTitle} numberOfLines={2}>{s.title}</Text>
-                        {s.caption ? (
-                          <Text style={styles.storyCaption} numberOfLines={3}>"{s.caption}"</Text>
-                        ) : null}
-                        {isMine ? (
-                          <View style={styles.myStoryActions}>
-                            <Pressable
-                              onPress={() => {
-                                setError(null);
-                                setEditing(s);
-                                setEditDraft(s.caption ?? "");
-                              }}
-                              hitSlop={6}
-                              style={styles.editStoryBtn}
-                              accessibilityRole="button"
-                              accessibilityLabel="Edit this story's caption"
-                            >
-                              <Ionicons name="create-outline" size={13} color={colors.accent} />
-                              <Text style={styles.editStoryLabel}>Edit</Text>
-                            </Pressable>
-                            <Pressable
-                              onPress={() => { setError(null); setDeleting(s); }}
-                              hitSlop={6}
-                              style={styles.deleteStoryBtn}
-                              accessibilityRole="button"
-                              accessibilityLabel="Delete this story"
-                            >
-                              <Ionicons name="trash-outline" size={13} color={colors.danger} />
-                              <Text style={styles.deleteStoryLabel}>Delete</Text>
-                            </Pressable>
-                          </View>
-                        ) : null}
-                      </View>
-                    );
-                  })}
-                </ScrollView>
-              </>
-            ) : null}
-          </Pressable>
-        </Pressable>
-              </>)}
+            <ScrollView>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={{ gap: 16 }}
+              >
+                {(viewing?.stories ?? [])
+                  .filter((s) => new Date(s.expires_at).getTime() > Date.now())
+                  .map((story) => (
+                    <View
+                      key={story.story_id}
+                      style={{ width: posterWidth, gap: 10, paddingBottom: 16 }}
+                    >
+                      {story.poster_url ? (
+                        <Image
+                          source={{ uri: story.poster_url }}
+                          style={{
+                            width: posterWidth,
+                            height: posterWidth * 1.5,
+                            borderRadius: 10,
+                          }}
+                          resizeMode="cover"
+                        />
+                      ) : null}
+                      <Text style={styles.title}>{story.title}</Text>
+                      {story.caption ? (
+                        <Text style={styles.copy}>{story.caption}</Text>
+                      ) : null}
+                    </View>
+                  ))}
+              </ScrollView>
+            </ScrollView>
+          </View>
+        </View>
       </Modal>
     </View>
   );
 }
-
-
 const styles = StyleSheet.create({
-  row: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: 10,
-    paddingBottom: 12,
-    gap: 14,
-  },
-  cell: {
-    alignItems: "center",
-    width: 66,
-    gap: 6,
-  },
-  avatarWrap: {
+  row: { paddingHorizontal: 20, paddingVertical: 12, gap: 16 },
+  cell: { width: 76, alignItems: "center", gap: 7, minHeight: 80 },
+  avatar: {
     width: 62,
     height: 62,
     alignItems: "center",
     justifyContent: "center",
-    position: "relative",
-  },
-  ring: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    borderWidth: 2,
-    borderColor: colors.accent,
     borderRadius: 31,
-  },
-  plusDot: {
-    position: "absolute",
-    bottom: -2,
-    right: -2,
-    width: 20,
-    height: 20,
-    borderRadius: 10,
-    backgroundColor: colors.accent,
-    alignItems: "center",
-    justifyContent: "center",
     borderWidth: 2,
-    borderColor: colors.background,
+    borderColor: "transparent",
   },
+  ring: { borderColor: colors.accent },
+  add: { backgroundColor: colors.surface },
   label: {
-    fontFamily: fonts.sans,
     color: colors.ink,
-    fontSize: 11,
+    fontFamily: fonts.sansMedium,
+    fontSize: 12,
     textAlign: "center",
   },
-
-  modalBackdrop: {
+  copy: { color: colors.muted, fontSize: 15, lineHeight: 22 },
+  title: {
+    color: colors.ink,
+    fontFamily: fonts.sansSemiBold,
+    fontSize: 18,
+    flexShrink: 1,
+  },
+  backdrop: {
     flex: 1,
-    backgroundColor: "rgba(0,0,0,0.78)",
+    backgroundColor: "rgba(0,0,0,.8)",
+    padding: 20,
     alignItems: "center",
     justifyContent: "center",
-    paddingHorizontal: spacing.lg,
   },
-  modalCard: {
+  panel: {
     width: "100%",
-    maxWidth: 420,
-    backgroundColor: colors.surface,
-    borderRadius: 14,
-    padding: spacing.md,
-    gap: spacing.sm,
-  },
-  modalHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-  },
-  modalName: {
-    fontFamily: fonts.sansSemiBold,
-    color: colors.ink,
-    fontSize: 14,
-  },
-  storyCard: {
-    width: 160,
-    gap: 6,
-  },
-  storyPoster: {
-    width: 160,
-    height: 240,
-    borderRadius: 8,
-    backgroundColor: colors.surfaceMuted,
-  },
-  storyTitle: {
-    fontFamily: fonts.sansSemiBold,
-    color: colors.ink,
-    fontSize: 13,
-  },
-  storyCaption: {
-    fontFamily: fonts.serif,
-    color: colors.muted,
-    fontSize: 12,
-    lineHeight: 16,
-    fontStyle: "italic",
-  },
-  deleteStoryBtn: {
-    minHeight: 44,
-    marginTop: 6,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingVertical: 4,
-    alignSelf: "flex-start",
-  },
-  deleteStoryLabel: {
-    fontFamily: fonts.monoSemiBold,
-    color: colors.danger,
-    fontSize: 10,
-    letterSpacing: 0.5,
-  },
-  myStoryActions: {
-    flexDirection: "row",
-    gap: 10,
-    marginTop: 6,
-  },
-  editStoryBtn: {
-    minHeight: 44,
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingVertical: 4,
-    alignSelf: "flex-start",
-  },
-  editStoryLabel: {
-    fontFamily: fonts.monoSemiBold,
-    color: colors.accent,
-    fontSize: 10,
-    letterSpacing: 0.5,
-  },
-  editSheet: {
+    maxWidth: 720,
+    maxHeight: "90%",
+    padding: 16,
+    borderRadius: 16,
     backgroundColor: colors.background,
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xl,
-    gap: 10,
   },
-  editHandle: {
-    alignSelf: "center",
-    width: 36,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: "rgba(255,255,255,0.2)",
-    marginBottom: 4,
+  heading: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: 12,
+    marginBottom: 12,
   },
-  editInput: {
-    minHeight: 100,
-    padding: 12,
-    borderRadius: 10,
-    backgroundColor: colors.surface,
-    color: colors.ink,
-    fontFamily: fonts.sans,
-    fontSize: 14,
-    lineHeight: 20,
-  },
-  editExpiryHint: {
-    fontFamily: fonts.sans,
-    color: colors.muted,
-    fontSize: 11,
-  },
-  editSaveBtn: {
+  close: {
+    minWidth: 44,
+    minHeight: 44,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 12,
-    borderRadius: 10,
-    backgroundColor: colors.accent,
-  },
-  editSaveLabel: {
-    fontFamily: fonts.sansSemiBold,
-    color: colors.background,
-    fontSize: 13,
   },
 });

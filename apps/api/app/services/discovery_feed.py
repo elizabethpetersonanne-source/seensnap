@@ -276,6 +276,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     cap = any(source["cap"] for source in state["sources"].values())
     response = {"session_id": str(session.id), "items": items,
         "next_cursor": f"{session.id}:{session.version}" if more else None,
+        "resume_cursor": f"{session.id}:{session.version}",
         "has_more": more, "status": "ready" if items else "pending" if more else "exhausted",
         "exhausted_reason": None if more else "retrieval_limit" if cap else "available_catalog_exhausted",
         "filter_fingerprint": fp, "algorithm_version": ALGORITHM,
@@ -284,6 +285,10 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
         "supply_shortfall_bands": [i for i in range(4) if not bands[i] and not any(
             not source["done"] for key, source in state["sources"].items() if key.endswith(f":{i}"))],
     }
+    if surface == "preview":
+        known = state.get("resume_videos", {})
+        known.update({str(key):value for key,value in video_cache.items() if value})
+        state["resume_videos"] = dict(list(known.items())[-200:])
     state.update(pending=list(pending), served=sorted(served), counts=counts)
     session.state, session.last_response = state, response
     db.commit()
