@@ -7,6 +7,7 @@ import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  ActivityIndicator,
   Animated,
   Image,
   Linking,
@@ -84,6 +85,7 @@ const SWIPE_UP_THRESHOLD = 80;
 export default function SwipeTab() {
   const { sessionToken, user } = useAuth();
   const [deck, setDeck] = useState<RecommendationItem[]>([]);
+  const deckRef = useRef(deck); deckRef.current = deck;
   const [detailCache, setDetailCache] = useState<Record<string, UniversalTitle>>({});
   const [preferredServices, setPreferredServices] = useState<string[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
@@ -138,6 +140,14 @@ export default function SwipeTab() {
   const generationRef = useRef(0);
   const pageRequestRef = useRef<number | null>(null);
   const swipingRef = useRef(false);
+  const [swipeBusy, setSwipeBusy] = useState(false);
+  const [swipeError, setSwipeError] = useState<string | null>(null);
+  const swipeOperationRef = useRef<AbortController | null>(null);
+  const swipeAttemptRef = useRef<{
+    item: RecommendationItem; direction: SwipeDirection; pauseMs: number;
+    decisionKey: string; sessionId: string;
+  } | null>(null);
+  const canSwipeRef = useRef(false);
   const emptyPagesRef = useRef(0);
   const pan = useRef(new Animated.ValueXY()).current;
 
@@ -220,6 +230,11 @@ export default function SwipeTab() {
   const loadDeck = useCallback(async (resume = false) => {
     if (!sessionToken || !filterReady) return;
     const generation = ++generationRef.current;
+    swipeOperationRef.current?.abort(); swipeOperationRef.current = null;
+    swipingRef.current = false; swipeAttemptRef.current = null;
+    setSwipeBusy(false); setSwipeError(null);
+    pan.stopAnimation(); pan.setValue({ x: 0, y: 0 });
+    currentIndexRef.current = 0;
     pageRequestRef.current = null;
     setQueueOwner(null); setResumeCursor(null);
     setDeck([]); setCurrentIndex(0); setSwipes([]); setLastSwipe(null);
@@ -253,7 +268,12 @@ export default function SwipeTab() {
 
   useEffect(() => {
     void loadDeck(true);
-    return () => { generationRef.current++; };
+    return () => {
+      generationRef.current++;
+      swipeOperationRef.current?.abort(); swipeOperationRef.current = null;
+      swipingRef.current = false;
+      pan.stopAnimation();
+    };
   }, [loadDeck]);
 
   const loadMore = useCallback(async () => {
@@ -266,10 +286,13 @@ export default function SwipeTab() {
     try {
       const page = await apiRequest<FeedPage>(`/titles/recommendations/feed?${params}`, { token: sessionToken, timeoutMs: 90000 });
       if (generation !== generationRef.current) return;
+      const known = new Set(deckRef.current.map(item => item.title.id));
+      const added = page.items.some(item => !known.has(item.title.id));
       setDeck((previous) => dedupeRecommendations([...previous, ...page.items]));
       setFeedCursor(page.next_cursor); setHasMore(page.has_more); setResumeCursor(page.resume_cursor ?? null);
-      emptyPagesRef.current = page.items.length ? 0 : emptyPagesRef.current + 1;
-      if (emptyPagesRef.current >= 3 && page.has_more) setError("Still looking for eligible picks in this category. Tap Continue to search further.");
+      emptyPagesRef.current = added ? 0 : emptyPagesRef.current + 1;
+      if (!added && page.next_cursor === feedCursor && page.has_more) setError("The queue couldn't advance. Tap Continue to retry with your current filters.");
+      else if (emptyPagesRef.current >= 3 && page.has_more) setError("Still looking for eligible picks in this category. Tap Continue to search further.");
     } catch (e) {
       if (generation === generationRef.current) {
         if (e instanceof ApiError && e.status === 409) { setFeedCursor(null); setHasMore(false); }
@@ -301,7 +324,13 @@ export default function SwipeTab() {
   }, [deck, currentIndex, loading, queueOwner, queueScope, resumeCursor, filterKey, user?.user_id, showFilters]);
 
   const activeCard = queueOwner === queueScope ? deck[currentIndex] ?? null : null;
-  useEffect(() => { setFlipped(false); }, [activeCard?.title.id]);
+  canSwipeRef.current = !!activeCard && !loading && !swipeBusy && !swipeError;
+  useEffect(() => {
+    setFlipped(false);
+    if (!swipingRef.current && swipeAttemptRef.current?.item.title.id !== activeCard?.title.id) {
+      swipeAttemptRef.current = null; setSwipeError(null);
+    }
+  }, [activeCard?.title.id]);
   const deckExhausted = !activeCard;
   const nextCards = useMemo(() => deck.slice(currentIndex + 1, currentIndex + 3), [deck, currentIndex]);
   const currentDetail = activeCard ? detailCache[activeCard.title.id] ?? null : null;
@@ -386,15 +415,23 @@ export default function SwipeTab() {
       onStartShouldSetPanResponder: () => false,
       // Let taps and child controls respond. Claim deliberate drags only.
       onStartShouldSetPanResponderCapture: () => false,
-      onMoveShouldSetPanResponder: (_, gesture) => !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8,
+      onMoveShouldSetPanResponder: (_, gesture) => canSwipeRef.current && !swipingRef.current && !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8,
       onMoveShouldSetPanResponderCapture: (_, gesture) => {
         // The detail face can scroll without triggering a Watched gesture.
-        return !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8;
+        return canSwipeRef.current && !swipingRef.current && !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8;
       },
+      onPanResponderGrant: () => { if (!swipingRef.current) pan.stopAnimation(); },
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
-      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], { useNativeDriver: false }),
+      onPanResponderMove: (_, gesture) => {
+        if (!swipingRef.current && canSwipeRef.current) pan.setValue({ x: gesture.dx, y: gesture.dy });
+      },
+      onPanResponderTerminate: () => {
+        // Safari/OS interruptions do not always deliver a release event.
+        if (!swipingRef.current) { pan.stopAnimation(); pan.setValue({ x: 0, y: 0 }); }
+      },
       onPanResponderRelease: (_, gesture) => {
+        if (swipingRef.current) return;
         const direction = swipeDirection(gesture.dx, gesture.dy, SWIPE_X_THRESHOLD, SWIPE_UP_THRESHOLD);
         if (direction) { void animateSwipeRef.current(direction); return; }
         Animated.spring(pan, {
@@ -408,27 +445,49 @@ export default function SwipeTab() {
   ).current;
 
   async function animateSwipe(direction: SwipeDirection) {
-    if (swipingRef.current || !sessionToken || !deck[currentIndexRef.current]) return;
+    if (swipingRef.current || !sessionToken || queueOwner !== queueScope || !deck[currentIndexRef.current]) return;
+    const item = deck[currentIndexRef.current];
+    const pending = swipeAttemptRef.current;
+    // An uncertain response must be retried with the same decision and key.
+    if (pending && pending.item.title.id === item.title.id && pending.direction !== direction) return;
+    const attempt = pending?.item.title.id === item.title.id ? pending : {
+      item, direction,
+      pauseMs: Math.min(120000, Math.max(Date.now() - cardStartRef.current, 0)),
+      decisionKey: `${sessionId}:${item.title.id}:${direction}:${cardStartRef.current}`,
+      sessionId,
+    };
+    swipeAttemptRef.current = attempt;
+    const operation = new AbortController();
+    swipeOperationRef.current = operation;
     swipingRef.current = true;
+    setSwipeBusy(true); setSwipeError(null);
+    // Return the dragged poster to its slot while confirmation is in flight.
+    // The visible saving state replaces an apparently frozen, half-dragged card.
+    pan.stopAnimation(); pan.setValue({ x: 0, y: 0 });
     playSwipeSound(direction);
     const generation = generationRef.current;
-    const item = deck[currentIndexRef.current];
-    const pauseMs = Math.min(120000, Math.max(Date.now() - cardStartRef.current, 0));
-    const decisionKey = `${sessionId.slice(0, 8)}:${item.title.id}:${direction}:${cardStartRef.current}`;
+    const { pauseMs, decisionKey } = attempt;
     try {
       const res = await apiRequest<{ swipe_id: string }>("/titles/swipes", {
-        method: "POST", token: sessionToken,
+        method: "POST", token: sessionToken, signal: operation.signal,
         body: JSON.stringify({ title_id: item.title.id, direction, pause_ms: pauseMs,
-          session_id: sessionId, reason: item.reason, source_surface: "swipe", idempotency_key: decisionKey }),
+          session_id: attempt.sessionId, reason: item.reason, source_surface: "swipe", idempotency_key: decisionKey }),
       });
       if (generation !== generationRef.current) return;
-      await new Promise<void>((resolve) => Animated.timing(pan, {
-        toValue: direction === "left" ? { x: -420, y: 30 } : direction === "right" ? { x: 420, y: 30 } : { x: 0, y: direction === "up" ? -420 : 420 },
-        duration: 180, useNativeDriver: false,
-      }).start(() => resolve()));
+      await new Promise<void>((resolve) => {
+        const animation = Animated.timing(pan, {
+          toValue: direction === "left" ? { x: -420, y: 30 } : direction === "right" ? { x: 420, y: 30 } : { x: 0, y: direction === "up" ? -420 : 420 },
+          duration: 180, useNativeDriver: false,
+        });
+        // A backgrounded/interrupted animation must not retain the input lock.
+        const timer = setTimeout(() => { if (generation === generationRef.current) animation.stop(); resolve(); }, 500);
+        animation.start(() => { clearTimeout(timer); resolve(); });
+      });
       if (generation !== generationRef.current) return;
+      swipeAttemptRef.current = null;
       setSwipes((previous) => [...previous, { item, direction, pauseMs }]);
-      setCurrentIndex((index) => index + 1); setShowFilters(false);
+      currentIndexRef.current += 1;
+      setCurrentIndex(currentIndexRef.current); setShowFilters(false);
       setLastSwipe({ swipeId: res.swipe_id, item, direction, at: Date.now() });
       if (direction === "up" || direction === "down") patchTitleState(item.title.id, { watched: true });
       if (direction === "up") setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
@@ -436,23 +495,33 @@ export default function SwipeTab() {
     } catch (e) {
       if (generation !== generationRef.current) return;
       if (e instanceof ApiError && e.status === 409) {
+        swipeAttemptRef.current = null;
         setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
         showUndoToast("This title has a positive rating. Change it or keep your current rating.");
-      } else setError("Your swipe could not be confirmed. Please retry; the card has been kept.");
-    } finally { pan.setValue({ x: 0, y: 0 }); swipingRef.current = false; }
+      } else setSwipeError("Your swipe could not be confirmed. Retry this swipe to continue; your place is saved.");
+    } finally {
+      // An old response must never unlock or recenter a new filter's gesture.
+      if (swipeOperationRef.current === operation) {
+        pan.setValue({ x: 0, y: 0 }); swipingRef.current = false;
+        swipeOperationRef.current = null; setSwipeBusy(false);
+      }
+    }
   }
 
   // Oct-27 W06: Undo the most recent eligible swipe. Reverses the
   // server-side effect (watched/saved), restores the card to the
   // deck, and clears the last-swipe memo.
   async function undoLastSwipe() {
-    if (!sessionToken || !lastSwipe || swipingRef.current) return;
+    if (!sessionToken || !lastSwipe || swipingRef.current || swipeAttemptRef.current) return;
+    const operation = new AbortController();
+    swipeOperationRef.current = operation;
     swipingRef.current = true;
+    setSwipeBusy(true);
     const previous = lastSwipe;
     const generation = generationRef.current;
     try {
       const result = await apiRequest<{ reversed: string[]; partial_reason: string | null; watched: boolean | null }>(
-        `/titles/swipes/${previous.swipeId}`, { method: "DELETE", token: sessionToken },
+        `/titles/swipes/${previous.swipeId}`, { method: "DELETE", token: sessionToken, signal: operation.signal },
       );
       if (generation !== generationRef.current) return;
       setLastSwipe(null);
@@ -468,7 +537,11 @@ export default function SwipeTab() {
       trackEvent("swipe_undo", { direction: previous.direction, reversed: result.reversed.join(",") });
     } catch {
       if (generation === generationRef.current) showUndoToast("Couldn't undo. Tap Undo to retry.");
-    } finally { swipingRef.current = false; }
+    } finally {
+      if (swipeOperationRef.current === operation) {
+        swipeOperationRef.current = null; swipingRef.current = false; setSwipeBusy(false);
+      }
+    }
   }
 
   async function openDetails(item: RecommendationItem | null) {
@@ -644,8 +717,10 @@ export default function SwipeTab() {
 
   const directActions = activeCard ? (
 <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 12 }}>
-        <Pressable onPress={() => void animateSwipe("up")} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>Watched + Rate</Text></Pressable>
-        <Pressable onPress={() => void animateSwipe("down")} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>Didn't like it</Text></Pressable>
+        <Pressable disabled={swipeBusy || !!swipeError}
+            onPress={() => void animateSwipe("up")} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>Watched + Rate</Text></Pressable>
+        <Pressable disabled={swipeBusy || !!swipeError}
+            onPress={() => void animateSwipe("down")} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>Didn't like it</Text></Pressable>
         <Pressable onPress={() => setActionTarget({ action: "send", id: activeCard.title.id, title: activeCard.title.title, poster: activeCard.title.poster_url })} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>Send</Text></Pressable>
         <Pressable onPress={() => setActionTarget({ action: "team", id: activeCard.title.id, title: activeCard.title.title })} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>Watch Team</Text></Pressable>
       </View>
@@ -738,6 +813,7 @@ export default function SwipeTab() {
       <View style={styles.decisionDock}>
         <View style={styles.decisionCell}>
           <Pressable
+            disabled={swipeBusy || !!swipeError}
             onPress={() => void animateSwipe("left")}
             accessibilityRole="button"
             accessibilityLabel={`Pass on ${activeCard.title.title}`}
@@ -749,6 +825,7 @@ export default function SwipeTab() {
         </View>
         <View style={styles.decisionCell}>
           <Pressable
+            disabled={swipeBusy || !!swipeError}
             onPress={() => void animateSwipe("right")}
             accessibilityRole="button"
             accessibilityLabel={`More like ${activeCard.title.title}`}
@@ -869,7 +946,7 @@ export default function SwipeTab() {
           <View style={styles.swipeLegendRow}>
             <Pressable
               onPress={() => activeCard && void animateSwipeRef.current("left")}
-              disabled={!activeCard}
+              disabled={!activeCard || swipeBusy || !!swipeError}
               hitSlop={4}
               style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
               accessibilityRole="button"
@@ -880,7 +957,7 @@ export default function SwipeTab() {
             </Pressable>
             <Pressable
               onPress={() => activeCard && void animateSwipeRef.current("right")}
-              disabled={!activeCard}
+              disabled={!activeCard || swipeBusy || !!swipeError}
               hitSlop={4}
               style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
               accessibilityRole="button"
@@ -891,7 +968,7 @@ export default function SwipeTab() {
             </Pressable>
             <Pressable
               onPress={() => activeCard && void animateSwipeRef.current("up")}
-              disabled={!activeCard}
+              disabled={!activeCard || swipeBusy || !!swipeError}
               hitSlop={4}
               style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
               accessibilityRole="button"
@@ -902,7 +979,7 @@ export default function SwipeTab() {
             </Pressable>
             <Pressable
               onPress={() => activeCard && void animateSwipeRef.current("down")}
-              disabled={!activeCard}
+              disabled={!activeCard || swipeBusy || !!swipeError}
               hitSlop={4}
               style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
               accessibilityRole="button"
@@ -913,6 +990,7 @@ export default function SwipeTab() {
             </Pressable>
             {lastSwipe ? (
               <Pressable
+                disabled={swipeBusy || !!swipeError}
                 onPress={() => void undoLastSwipe()}
                 hitSlop={4}
                 style={({ pressed }) => [styles.swipeUndoPill, pressed && { opacity: 0.7 }]}
@@ -943,6 +1021,23 @@ export default function SwipeTab() {
               {"\n"}session: {sessionToken ? "yes" : "NO"}
             </Text>
           ) : null}
+        </View>
+      ) : null}
+
+      {swipeBusy ? (
+        <View accessibilityRole="progressbar" accessibilityLabel="Saving swipe" style={{ flexDirection: "row", gap: 10, alignItems: "center", justifyContent: "center", padding: 12 }}>
+          <ActivityIndicator color={colors.accent} />
+          <Text style={{ color: colors.ink }}>Saving your choice…</Text>
+        </View>
+      ) : null}
+      {swipeError ? (
+        <View accessibilityRole="alert" style={styles.errorBanner}>
+          <Text style={styles.errorText}>{swipeError}</Text>
+          <Pressable accessibilityRole="button" accessibilityLabel="Retry this swipe" disabled={swipeBusy}
+            onPress={() => { const attempt = swipeAttemptRef.current; if (attempt) void animateSwipe(attempt.direction); }}
+            style={{ minHeight: 44, justifyContent: "center" }}>
+            <Text style={{ color: colors.accent }}>Retry swipe</Text>
+          </Pressable>
         </View>
       ) : null}
 
@@ -977,6 +1072,8 @@ export default function SwipeTab() {
           <Animated.View
             style={[
               styles.unifiedCard,
+              Platform.OS === "web" && { touchAction: flipped ? "pan-y" : "none" },
+              { opacity: swipeBusy ? 0.65 : 1 },
               {
                 transform: [
                   ...pan.getTranslateTransform(),
@@ -989,7 +1086,7 @@ export default function SwipeTab() {
           >
             {flipped ? flippedCard : <>
             {/* Poster tap reveals details without leaving this queue. */}
-            <Pressable accessibilityRole="button" accessibilityLabel={`Flip ${activeCard.title.title} to details`} onPress={() => setFlipped(true)} style={styles.unifiedHero}>
+            <Pressable accessibilityRole="button" accessibilityLabel={`Flip ${activeCard.title.title} to details`} disabled={swipeBusy || !!swipeError} onPress={() => setFlipped(true)} style={styles.unifiedHero}>
               {(() => {
                 const heroSource = resolveMediaUrl(
                   activeCard.title.backdrop_url || activeCard.title.poster_url || null,
@@ -1111,7 +1208,8 @@ export default function SwipeTab() {
           <View style={styles.decisionDock}>
             <View style={styles.decisionCell}>
               <Pressable
-                onPress={() => void animateSwipe("left")}
+                disabled={swipeBusy || !!swipeError}
+            onPress={() => void animateSwipe("left")}
                 accessibilityRole="button"
                 accessibilityLabel={`Pass on ${activeCard.title.title}`}
                 style={({ pressed }) => [styles.decisionCircle, styles.decisionCircleNeutral, pressed && { opacity: 0.72 }]}
@@ -1122,7 +1220,8 @@ export default function SwipeTab() {
             </View>
             <View style={styles.decisionCell}>
               <Pressable
-                onPress={() => void animateSwipe("right")}
+                disabled={swipeBusy || !!swipeError}
+            onPress={() => void animateSwipe("right")}
                 accessibilityRole="button"
                 accessibilityLabel={`More like ${activeCard.title.title}`}
                 style={({ pressed }) => [styles.decisionCircle, styles.decisionCirclePrimary, pressed && { opacity: 0.88 }]}
@@ -1215,6 +1314,8 @@ export default function SwipeTab() {
                 <Animated.View
                   style={[
                     styles.deckActiveCard,
+                    Platform.OS === "web" && { touchAction: flipped ? "pan-y" : "none" },
+                    { opacity: swipeBusy ? 0.65 : 1 },
                     {
                       transform: [
                         ...pan.getTranslateTransform(),
@@ -1225,7 +1326,7 @@ export default function SwipeTab() {
                   ]}
                   {...panResponder.panHandlers}
                 >
-                  {flipped ? flippedCard : <Pressable accessibilityRole="button" accessibilityLabel={`Flip ${activeCard.title.title} to details`} onPress={() => setFlipped(true)} style={{ flex: 1, width: "100%" }}>
+                  {flipped ? flippedCard : <Pressable accessibilityRole="button" accessibilityLabel={`Flip ${activeCard.title.title} to details`} disabled={swipeBusy || !!swipeError} onPress={() => setFlipped(true)} style={{ flex: 1, width: "100%" }}>
                   {activePoster ? (
                     <Image
                       source={{ uri: activePoster }}
