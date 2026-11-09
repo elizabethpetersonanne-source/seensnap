@@ -453,7 +453,8 @@ export default function SwipeTab() {
     const attempt = pending?.item.title.id === item.title.id ? pending : {
       item, direction,
       pauseMs: Math.min(120000, Math.max(Date.now() - cardStartRef.current, 0)),
-      decisionKey: `${sessionId}:${item.title.id}:${direction}:${cardStartRef.current}`,
+      // The existing API and database cap idempotency keys at 80 characters.
+      decisionKey: `${sessionId.slice(0, 8)}:${item.title.id}:${direction}:${cardStartRef.current}`,
       sessionId,
     };
     swipeAttemptRef.current = attempt;

@@ -3,11 +3,16 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs'), path = require('node:path'), vm = require('node:vm');
 const ts = require('typescript'), React = require('react');
 const renderer = require('react-test-renderer');
+const { createHash } = require('node:crypto');
 global.IS_REACT_ACT_ENVIRONMENT = true;
 const { act } = React;
 const root = path.join(__dirname, '..');
 const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
-const items = (prefix = 'title') => Array.from({ length: 20 }, (_, i) => ({ title: { id: `${prefix}-${i}`, title: `${prefix} ${i}`, content_type: 'movie', genres: [] }, reason: 'Your taste' }));
+const items = (prefix = 'title') => Array.from({ length: 20 }, (_, i) => {
+  const hex = createHash('md5').update(`${prefix}-${i}`).digest('hex');
+  const id = `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  return { title: { id, title: `${prefix} ${i}`, content_type: 'movie', genres: [] }, reason: 'Your taste' };
+});
 
 // Render the actual Swipe screen with controllable transport and animation.
 // No live account, title state or remote service is changed by these tests.
@@ -42,7 +47,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
       requests.push({ url, options });
       if (url.startsWith('/titles/recommendations/feed')) {
         const continuation = url.includes('cursor=');
-        return Promise.resolve({ session_id: 'session', items: items(continuation && !repeatPage ? 'next-page' : filter.genre || 'title'), next_cursor: continuation && !repeatPage ? 'session:2' : 'session:1', has_more: true });
+        return Promise.resolve({ session_id: '01234567-89ab-cdef-0123-456789abcdef', items: items(continuation && !repeatPage ? 'next-page' : filter.genre || 'title'), next_cursor: continuation && !repeatPage ? 'session:2' : 'session:1', has_more: true });
       }
       if (url === '/me/preferences') return Promise.resolve({ connected_streaming_services: [] });
       if (url === '/titles/swipes') return send(options);
@@ -110,6 +115,18 @@ test('a slow swipe shows progress, blocks duplicate gestures, and advances exact
     await act(async () => request.resolve({ swipe_id: 'receipt' }));
     assert.ok(h.button('Flip title 1 to details'));
     assert.equal(h.button('Pass this title').props.disabled, false);
+  } finally { await h.close(); }
+});
+
+test('real UUID title and session IDs produce a key within the deployed API limit', async () => {
+  const h = await mount();
+  try {
+    await h.click('More like this');
+    const payload = JSON.parse(h.swipes()[0].options.body);
+    assert.equal(payload.title_id.length, 36);
+    assert.equal(payload.session_id.length, 36);
+    assert.ok(payload.idempotency_key.length <= 80, 'SwipeRecordCreate and DiscoveryDecision allow at most 80 characters');
+    assert.ok(h.button('Flip title 1 to details'));
   } finally { await h.close(); }
 });
 
