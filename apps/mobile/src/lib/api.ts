@@ -71,6 +71,9 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
   }
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), options.timeoutMs ?? 12000);
+  const abortFromCaller = () => controller.abort();
+  if (options.signal?.aborted) controller.abort();
+  else options.signal?.addEventListener("abort", abortFromCaller, { once: true });
   const headers = new Headers(options.headers);
   const isFormData = typeof FormData !== "undefined" && options.body instanceof FormData;
   if (!headers.has("Content-Type") && !isFormData) {
@@ -84,48 +87,47 @@ export async function apiRequest<T>(path: string, options: ApiRequestOptions = {
     headers.set("bypass-tunnel-reminder", "true");
   }
 
-  let response: Response;
   try {
-    response = await fetch(`${apiBaseUrl}${path}`, {
+    const response = await fetch(`${apiBaseUrl}${path}`, {
       ...options,
       headers,
-      signal: options.signal ?? controller.signal,
+      signal: controller.signal,
     });
+
+    if (!response.ok) {
+      const body = await response.text();
+      // Thrown error carries the HTTP status + parsed FastAPI `detail`
+      // body so callers can distinguish 409 conflict from 500 error
+      // without a second parse. Legacy string callers still work:
+      // `err.message` holds the raw body text.
+      let detail: unknown = null;
+      try {
+        detail = body ? JSON.parse(body) : null;
+        if (detail && typeof detail === "object" && "detail" in detail) {
+          detail = (detail as { detail: unknown }).detail;
+        }
+      } catch {
+        // Not JSON — leave detail as null.
+      }
+      const err = new ApiError(body || `Request failed: ${response.status}`, response.status, detail);
+      throw err;
+    }
+
+    // Keep the deadline active until the body has been consumed too. Fetch
+    // resolves at headers; clearing it there could leave a swipe locked forever.
+    const result = response.status === 204 ? undefined : await response.json();
+    if (options.token && affectsTaste(path, options.method)) publishTasteChange(options.token);
+    return result as T;
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
+    if (error instanceof Error && error.name === "AbortError" && !options.signal?.aborted) {
       throw new Error(`Request timed out (${apiBaseUrl})`);
     }
     throw error;
   } finally {
     clearTimeout(timeout);
+    options.signal?.removeEventListener("abort", abortFromCaller);
   }
 
-  if (!response.ok) {
-    const body = await response.text();
-    // Thrown error carries the HTTP status + parsed FastAPI `detail`
-    // body so callers can distinguish 409 conflict from 500 error
-    // without a second parse. Legacy string callers still work:
-    // `err.message` holds the raw body text.
-    let detail: unknown = null;
-    try {
-      detail = body ? JSON.parse(body) : null;
-      if (detail && typeof detail === "object" && "detail" in detail) {
-        detail = (detail as { detail: unknown }).detail;
-      }
-    } catch {
-      // Not JSON — leave detail as null.
-    }
-    const err = new ApiError(body || `Request failed: ${response.status}`, response.status, detail);
-    throw err;
-  }
-
-  if (options.token && affectsTaste(path, options.method)) publishTasteChange(options.token);
-
-  if (response.status === 204) {
-    return undefined as T;
-  }
-
-  return (await response.json()) as T;
 }
 
 
