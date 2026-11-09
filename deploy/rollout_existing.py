@@ -81,7 +81,8 @@ def traffic(service):
 def validate(service, job, project):
     template = service["spec"]["template"]
     containers = template["spec"]["containers"]
-    job_spec = job["spec"]["template"]["spec"]
+    execution_template = job["spec"]["template"]
+    job_spec = execution_template["spec"]
     job_template = job_spec["template"]
     job_containers = job_template["spec"]["containers"]
     require(len(containers) == len(job_containers) == 1,
@@ -109,7 +110,10 @@ def validate(service, job, project):
     else:
         require(configured("CONCIERGE_AI_API_KEY"), "The selected Concierge provider needs its API key configured.")
     connections = template.get("metadata", {}).get("annotations", {}).get("run.googleapis.com/cloudsql-instances", "")
-    job_connections = job_template.get("metadata", {}).get("annotations", {}).get("run.googleapis.com/cloudsql-instances", "")
+    # Cloud Run v1 stores job Cloud SQL annotations on the execution
+    # template, not the nested task template containing the containers.
+    # https://docs.cloud.google.com/run/docs/reference/yaml/v1#job
+    job_connections = execution_template.get("metadata", {}).get("annotations", {}).get("run.googleapis.com/cloudsql-instances", "")
     require(connections and connections == job_connections and "," not in connections,
             "API and migration job must have the same single Cloud SQL attachment.")
     parts = connections.split(":")

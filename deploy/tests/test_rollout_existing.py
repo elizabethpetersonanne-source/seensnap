@@ -28,13 +28,40 @@ def fixtures():
     service = {"spec": {"template": template}, "status": {
         "url": "https://beta.run.app", "traffic": [{"revisionName": "old-revision", "percent": 100}],
     }}
-    job_template = copy.deepcopy(template)
+    # Cloud Run v1 Job: execution metadata is separate from the task
+    # template. Match the documented API shape, not the Service shape.
+    job_template = {"spec": copy.deepcopy(template["spec"])}
     job_template["spec"]["containers"][0].update(command=["alembic"], args=["upgrade", "head"])
-    job = {"spec": {"template": {"spec": {"taskCount": 1, "parallelism": 1, "template": job_template}}}}
+    job = {"spec": {"template": {
+        "metadata": copy.deepcopy(template["metadata"]),
+        "spec": {"taskCount": 1, "parallelism": 1, "template": job_template},
+    }}}
     return service, job
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_preflight_accepts_documented_job_execution_attachment(self):
+        service, job = fixtures()
+        self.assertNotIn("metadata", job["spec"]["template"]["spec"]["template"])
+        self.assertEqual(rollout.validate(service, job, PROJECT), (IMAGE, "beta-db"))
+
+    def test_preflight_does_not_accept_attachment_at_wrong_task_level(self):
+        service, job = fixtures()
+        execution = job["spec"]["template"]
+        execution["spec"]["template"]["metadata"] = execution.pop("metadata")
+        with self.assertRaisesRegex(RuntimeError, "same single Cloud SQL attachment"):
+            rollout.validate(service, job, PROJECT)
+
+    def test_preflight_rejects_missing_or_multiple_actual_attachments(self):
+        key = "run.googleapis.com/cloudsql-instances"
+        for connection in ("", SQL + "," + PROJECT + ":us-central1:other-db"):
+            with self.subTest(connection=connection):
+                service, job = fixtures()
+                service["spec"]["template"]["metadata"]["annotations"][key] = connection
+                job["spec"]["template"]["metadata"]["annotations"][key] = connection
+                with self.assertRaisesRegex(RuntimeError, "same single Cloud SQL attachment"):
+                    rollout.validate(service, job, PROJECT)
+
     def test_preflight_rejects_wrong_database_job_or_disabled_concierge(self):
         for change in ("database", "command", "provider", "sql", "parallelism"):
             with self.subTest(change=change):
@@ -48,7 +75,7 @@ class RolloutSafetyTests(unittest.TestCase):
                 elif change == "provider":
                     service["spec"]["template"]["spec"]["containers"][0]["env"][2]["value"] = ""
                 elif change == "sql":
-                    task["template"]["metadata"]["annotations"]["run.googleapis.com/cloudsql-instances"] = "other:region:db"
+                    job["spec"]["template"]["metadata"]["annotations"]["run.googleapis.com/cloudsql-instances"] = "other:region:db"
                 else:
                     task["parallelism"] = 2
                 with self.assertRaises(RuntimeError):

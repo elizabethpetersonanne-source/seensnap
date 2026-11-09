@@ -26,6 +26,8 @@ python3 deploy/rollout_existing.py
 
 The default is read-only. It resolves project number `451179869201` to the real project ID, inspects `seensnap-api-staging` in `us-central1`, and verifies the existing `seensnap-api-staging-migrate` job points to the same database and runs `alembic upgrade head`. It also requires a configured TMDB key and Concierge provider. Presence checks do not prove credentials, model access or quota work.
 
+If you checked out `3ebc5df` and the preflight reported "API and migration job must have the same single Cloud SQL attachment," fetch the updated PR before changing cloud configuration. That revision incorrectly read the job annotation from the task template. Cloud Run v1 stores it at `spec.template.metadata.annotations`, on the execution template. The corrected checker still rejects missing, different or multiple attachments and requires matching database references. Rerun the read-only check on the new commit; an actual configuration mismatch must still be investigated. This correction changes deployment tooling only, not the application or migrations.
+
 If preflight passes and this is the reviewed commit:
 
 ```sh
