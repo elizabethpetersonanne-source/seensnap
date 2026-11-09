@@ -48,11 +48,23 @@ def require(condition, message):
 
 def command(*args):
     # Captured descriptions can contain environment values; never log them.
-    result = subprocess.run(args, cwd=ROOT, text=True, capture_output=True)
-    require(result.returncode == 0,
-            f"Command failed: {' '.join(args[:4])}. Check this operation in Cloud Console; "
+    # A heartbeat reports only the command family, never its captured output.
+    label = " ".join(args[:3]) if args[0] == "gcloud" else Path(args[0]).name
+    started = time.monotonic()
+    with subprocess.Popen(args, cwd=ROOT, text=True,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE) as process:
+        while True:
+            try:
+                stdout, _stderr = process.communicate(timeout=20)
+                break
+            except subprocess.TimeoutExpired:
+                elapsed = int(time.monotonic() - started)
+                print(f"Waiting for {label} ({elapsed}s elapsed). Leave this command running.", flush=True)
+        returncode = process.returncode
+    require(returncode == 0,
+            f"Command failed: {label}. Check this operation in Cloud Console; "
             "raw output is withheld because it can include runtime configuration.")
-    return result.stdout.strip()
+    return stdout.strip()
 
 
 def cloud(project, *args):
@@ -157,7 +169,44 @@ def probe(url):
                         f"New API route is missing: {method.upper()} {route}")
 
 
-def rollout(project, before, job, commit, image_repo, instance):
+def build_image(build, image_repo, image_tag):
+    require(build.get("status") == "SUCCESS", "Cloud Build did not succeed.")
+    images = [i for i in build.get("results", {}).get("images", []) if i.get("name") == image_tag]
+    require(len(images) == 1, "Cloud Build did not return exactly one expected image result.")
+    digest = images[0].get("digest", "")
+    require(re.fullmatch(r"sha256:[a-f0-9]{64}", digest), "Cloud Build did not return the expected immutable image digest.")
+    return f"{image_repo}@{digest}"
+
+
+def reusable_build(project, commit, image_repo, build_id, build_commit):
+    """Read an operator-identified build from an earlier rollout attempt.
+
+    The operator supplies the build ID from that attempt's Cloud Build history.
+    The recorded image tag identifies its source commit; identical Git API
+    trees permit deployment-tool-only fixes without another application build.
+    Never resolve a mutable registry tag or pick an arbitrary latest build.
+    """
+    require(re.fullmatch(r"[a-f0-9-]{36}", build_id), "Expected an exact Cloud Build ID.")
+    require(re.fullmatch(r"[a-f0-9]{40}", build_commit), "--build-commit must be the full source commit SHA.")
+    command("git", "merge-base", "--is-ancestor", build_commit, commit)
+    source_tree = command("git", "rev-parse", f"{build_commit}:apps/api")
+    reviewed_tree = command("git", "rev-parse", f"{commit}:apps/api")
+    require(source_tree == reviewed_tree,
+            "The earlier build's API source differs from the reviewed checkout. A fresh build is required.")
+    print(f"Checking completed Cloud Build {build_id} and its immutable image.", flush=True)
+    build = cloud(project, "builds", "describe", build_id)
+    require(build.get("id") == build_id and build.get("projectId") == project,
+            "The build response does not match the requested build/project.")
+    tags = build.get("images", [])
+    pattern = re.escape(f"{image_repo}:beta-{build_commit[:10]}-") + r"[0-9]+"
+    require(len(tags) == 1 and re.fullmatch(pattern, tags[0]),
+            "The build image does not match the earlier rollout's source commit and existing repository.")
+    image = build_image(build, image_repo, tags[0])
+    print("Earlier build succeeded; its API source matches this checkout. No new build is needed.", flush=True)
+    return {"id": build_id, "commit": build_commit, "api_tree": source_tree, "image": image}
+
+
+def rollout(project, before, job, commit, image_repo, instance, reuse=None):
     suffix = f"beta-{commit[:10]}-{int(time.time())}"
     revision = f"{SERVICE}-{suffix}"
     tag = suffix
@@ -166,23 +215,27 @@ def rollout(project, before, job, commit, image_repo, instance):
     print(f"Rollback traffic command: gcloud run services update-traffic {SERVICE} "
           f"--region={REGION} --project={project} --to-revisions={rollback}", flush=True)
 
-    # Upload only committed API files, excluding untracked local secrets/uploads.
-    with tempfile.TemporaryDirectory(prefix="seensnap-build-") as temporary:
-        archive = Path(temporary) / "api.tar.gz"
-        with archive.open("wb") as output:
-            subprocess.run(["git", "archive", "--format=tar.gz", f"{commit}:apps/api"],
-                           cwd=ROOT, stdout=output, check=True)
-        image_tag = f"{image_repo}:{suffix}"
-        print("Building the committed API with Cloud Build (may take several minutes).", flush=True)
-        # Build logs stream to stdout even when --format=json is requested.
-        # Suppress the log stream so stdout contains only the Build resource.
-        # https://docs.cloud.google.com/sdk/gcloud/reference/builds/submit
-        build = cloud(project, "builds", "submit", str(archive), f"--tag={image_tag}", "--suppress-logs")
-    require(build.get("status") == "SUCCESS", "Cloud Build did not succeed.")
-    images = build.get("results", {}).get("images", [])
-    digest = next((i.get("digest", "") for i in images if i.get("name") == image_tag), "")
-    require(re.fullmatch(r"sha256:[a-f0-9]{64}", digest), "Cloud Build did not return the expected immutable image digest.")
-    image = f"{image_repo}@{digest}"
+    if reuse:
+        image = reuse["image"]
+        backend_commit = reuse["commit"]
+        build_id = reuse["id"]
+        print(f"Reusing completed build {build_id}; proceeding to backup and migration.", flush=True)
+    else:
+        # Upload only committed API files, excluding untracked local secrets/uploads.
+        with tempfile.TemporaryDirectory(prefix="seensnap-build-") as temporary:
+            archive = Path(temporary) / "api.tar.gz"
+            with archive.open("wb") as output:
+                subprocess.run(["git", "archive", "--format=tar.gz", f"{commit}:apps/api"],
+                               cwd=ROOT, stdout=output, check=True)
+            image_tag = f"{image_repo}:{suffix}"
+            print("Building the committed API with Cloud Build (may take several minutes).", flush=True)
+            # Build logs stream to stdout even when --format=json is requested.
+            # Suppress the log stream so stdout contains only the Build resource.
+            # https://docs.cloud.google.com/sdk/gcloud/reference/builds/submit
+            build = cloud(project, "builds", "submit", str(archive), f"--tag={image_tag}", "--suppress-logs")
+        image = build_image(build, image_repo, image_tag)
+        backend_commit = commit
+        build_id = build.get("id")
     # Abort on concurrent changes rather than overwriting another deployment.
     require(describe_service(project)["spec"] == before["spec"], "Service changed during build. Rerun preflight.")
     require(describe_job(project)["spec"] == job["spec"], "Migration job changed during build. Rerun preflight.")
@@ -210,7 +263,8 @@ def rollout(project, before, job, commit, image_repo, instance):
     live = describe_service(project)
     require(traffic(live) == {revision: 100}, "Traffic promotion did not finish as expected.")
     probe(live["status"]["url"])
-    print(json.dumps({"backend_commit": commit, "revision": revision, "image": image,
+    print(json.dumps({"backend_commit": backend_commit, "rollout_commit": commit,
+                      "build_id": build_id, "revision": revision, "image": image,
                       "api_base_url": live["status"]["url"] + "/api/v1",
                       "migration": "completed", "structural_checks": "passed",
                       "live_concierge_and_device_acceptance": "still required",
@@ -221,20 +275,28 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--apply", action="store_true", help="Back up, migrate, deploy, check and promote the API")
     parser.add_argument("--expected-commit", help="Exact reviewed Git SHA; required with --apply")
+    parser.add_argument("--reuse-build", help="Exact successful Cloud Build ID from a previous rollout attempt")
+    parser.add_argument("--build-commit", help="Full source commit of --reuse-build; API files must match this checkout")
     args = parser.parse_args()
+    require(bool(args.reuse_build) == bool(args.build_commit), "Supply --reuse-build and --build-commit together.")
     commit = command("git", "rev-parse", "HEAD")
     require(not command("git", "status", "--porcelain", "--untracked-files=no"), "Tracked worktree must be clean.")
     if args.apply:
         require(args.expected_commit == commit, "--apply requires --expected-commit matching the reviewed checkout SHA.")
+    print("Checking the existing Google Cloud project.", flush=True)
     project_data = cloud(PROJECT_NUMBER, "projects", "describe", PROJECT_NUMBER)
     require(str(project_data["projectNumber"]) == PROJECT_NUMBER, "Unexpected Google Cloud project.")
     project = project_data["projectId"]
-    service, job = describe_service(project), describe_job(project)
+    print("Reading the existing API service.", flush=True)
+    service = describe_service(project)
+    print("Reading the existing migration job.", flush=True)
+    job = describe_job(project)
     image_repo, instance = validate(service, job, project)
     print(f"Preflight passed: project={project}, service={SERVICE}, commit={commit}", flush=True)
     print("Configuration presence checked only; provider credentials/model access still require a live account test.", flush=True)
+    reuse = reusable_build(project, commit, image_repo, args.reuse_build, args.build_commit) if args.reuse_build else None
     if args.apply:
-        rollout(project, service, job, commit, image_repo, instance)
+        rollout(project, service, job, commit, image_repo, instance, reuse=reuse)
     else:
         print("Read-only check complete. No cloud resources changed. Use --apply --expected-commit <reviewed SHA> to deploy.")
 
@@ -242,6 +304,10 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except KeyboardInterrupt:
+        print("\nINTERRUPTED: The local deployment command was stopped. Check Cloud Build/Cloud Run status before retrying; "
+              "a cloud operation may still exist. Keep the frontend unmerged.", file=sys.stderr)
+        sys.exit(130)
     except Exception as exc:
         # Avoid echoing environment-bearing subprocess outputs or URL contents.
         message = str(exc) if isinstance(exc, RuntimeError) else type(exc).__name__

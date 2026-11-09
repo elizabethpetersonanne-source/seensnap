@@ -42,6 +42,21 @@ If the preflight stops, inspect the named configuration in Cloud Console rather 
 
 If revision `2eb6f84` stopped with `JSONDecodeError` immediately after "Building the committed API," the build command may have succeeded, but its streamed logs contaminated the JSON response. That stop occurs before database backup, migration or deployment. Inspect recent builds with `gcloud builds list --project=seensnap-staging --limit=3 --sort-by=~createTime --format='table(id,status,createTime,images)'` (using the same Cloud Shell build-region setting as the failed attempt). Fetch the updated PR before retrying. Build submission now uses `--suppress-logs`; resource reads still require valid structured output and a successful build with an exact image digest. Synchronous mutations whose output is unused are checked for command success without trying to decode an empty response. A retry builds the reviewed source again; it does not adopt an unverified old image. Existing backup, migration and traffic gates remain in place.
 
+### Continue after a successful build and interrupted local rollout
+
+The operator's Cloud Build listing confirmed `cda1b727-58d4-4b8b-9c76-4f6590930471` succeeded for source commit `2eb6f84c42df56e494ff87ea090cd5716a5d100b`. The later attempt `3aba218a-8d56-48cb-945c-4d64ca336285` was cancelled during build. Neither reported attempt reached database backup, migration or deployment. The successful source commit and the later deployment-tool fixes have the identical `apps/api` tree, `edfce79202318dbe32b79c04b3f001c8035d7342`.
+
+An explicit `--reuse-build BUILD_ID --build-commit FULL_SOURCE_SHA` can reuse a build identified from this rollout history. The script checks that the source commit is an ancestor of the reviewed checkout, that every API/Docker/migration file matches, and that the exact project/build has status SUCCESS, the expected repository/source tag, and one valid immutable image digest. It never selects the latest build automatically or resolves a mutable registry tag. Supply these flags without `--apply` for a read-only check. Reuse with `--apply --expected-commit REVIEWED_SHA` skips only source upload/build; all configuration, backup, migration, candidate and traffic checks remain. The final report distinguishes the original backend source commit from the current deployment-tool commit. An arbitrary build ID or tag is not source attestation; use the operator-identified build from the earlier rollout, not an unrelated externally built image.
+
+For this confirmed successful build, append:
+
+```sh
+--reuse-build cda1b727-58d4-4b8b-9c76-4f6590930471 \
+--build-commit 2eb6f84c42df56e494ff87ea090cd5716a5d100b
+```
+
+Preflight now announces each read. Long-running commands print a safe waiting message every 20 seconds without exposing captured configuration. Leave the command running through backups and migrations. If interrupted, inspect cloud operation status before another attempt; the script does not automatically roll back a database or assume that stopping the local process stopped a remote operation.
+
 ## Verify and finish Netlify
 
 1. Sign into the deploy preview using a beta account. Verify actor requests, Comedy TV, a personal Next Watch request and a request with a streaming provider. Check every returned poster is relevant; no filler is allowed when fewer than five qualify. Check Different Options and Undo. A successful health probe alone does not prove Concierge works.

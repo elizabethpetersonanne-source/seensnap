@@ -3,6 +3,7 @@ import copy
 import importlib.util
 import json
 import subprocess
+import sys
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,8 @@ SPEC.loader.exec_module(rollout)
 PROJECT = "verified-project"
 IMAGE = f"us-central1-docker.pkg.dev/{PROJECT}/seensnap/api"
 COMMIT = "a" * 40
+SOURCE_COMMIT = "c" * 40
+BUILD_ID = "cda1b727-58d4-4b8b-9c76-4f6590930471"
 SQL = f"{PROJECT}:us-central1:beta-db"
 ENV = [
     {"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "db", "key": "latest"}}},
@@ -54,14 +57,85 @@ class RolloutSafetyTests(unittest.TestCase):
                 self.assertNotIn("sensitive-value", str(raised.exception))
 
     def test_mutations_accept_empty_success_but_reject_failed_commands(self):
-        success = subprocess.CompletedProcess([], 0, stdout="", stderr="")
-        with patch.object(rollout.subprocess, "run", return_value=success):
+        with patch.object(rollout.subprocess, "Popen") as popen:
+            process = popen.return_value.__enter__.return_value
+            process.returncode = 0
+            process.communicate.return_value = ("", "")
             rollout.cloud_action(PROJECT, "sql", "backups", "create")
-        failure = subprocess.CompletedProcess([], 1, stdout="sensitive-value", stderr="sensitive-value")
-        with patch.object(rollout.subprocess, "run", return_value=failure):
+            process.returncode = 1
+            process.communicate.return_value = ("sensitive-value", "sensitive-value")
             with self.assertRaises(RuntimeError) as raised:
                 rollout.cloud_action(PROJECT, "sql", "backups", "create")
             self.assertNotIn("sensitive-value", str(raised.exception))
+
+    def test_slow_command_shows_heartbeat_without_logging_captured_output(self):
+        with patch.object(rollout.subprocess, "Popen") as popen, \
+             patch.object(rollout.time, "monotonic", side_effect=[100, 120]), \
+             patch("builtins.print") as printer:
+            process = popen.return_value.__enter__.return_value
+            process.returncode = 0
+            process.communicate.side_effect = [
+                subprocess.TimeoutExpired("gcloud", 20, output="sensitive-value"),
+                ('{"status":"SUCCESS"}', "sensitive-value"),
+            ]
+            self.assertEqual(rollout.command("gcloud", "builds", "describe", BUILD_ID), '{"status":"SUCCESS"}')
+            self.assertIn("Waiting for gcloud builds describe (20s elapsed)", printer.call_args.args[0])
+            self.assertNotIn("sensitive-value", printer.call_args.args[0])
+
+    def test_command_drains_real_child_stdout_and_stderr(self):
+        # Exercise actual pipe handling, not only mocked resource responses.
+        result = rollout.command(sys.executable, "-c", "import sys; sys.stderr.write('sensitive-value'); print('ok')")
+        self.assertEqual(result, "ok")
+        with self.assertRaises(RuntimeError) as raised:
+            rollout.command(sys.executable, "-c", "import sys; sys.stderr.write('sensitive-value'); sys.exit(7)")
+        self.assertNotIn("sensitive-value", str(raised.exception))
+
+    def previous_build(self):
+        tag = f"{IMAGE}:beta-{SOURCE_COMMIT[:10]}-123"
+        return {"id": BUILD_ID, "projectId": PROJECT, "status": "SUCCESS", "images": [tag],
+                "results": {"images": [{"name": tag, "digest": "sha256:" + "b" * 64}]}}
+
+    def test_reuse_checks_source_ancestry_api_tree_build_project_tag_and_digest(self):
+        with patch.object(rollout, "command", side_effect=["", "same-api-tree", "same-api-tree"]) as git, \
+             patch.object(rollout, "cloud", return_value=self.previous_build()) as cloud, patch("builtins.print"):
+            reuse = rollout.reusable_build(PROJECT, COMMIT, IMAGE, BUILD_ID, SOURCE_COMMIT)
+        self.assertEqual(git.call_args_list[0].args, ("git", "merge-base", "--is-ancestor", SOURCE_COMMIT, COMMIT))
+        self.assertEqual(cloud.call_args.args, (PROJECT, "builds", "describe", BUILD_ID))
+        self.assertEqual(reuse, {"id": BUILD_ID, "commit": SOURCE_COMMIT, "api_tree": "same-api-tree",
+                                "image": IMAGE + "@sha256:" + "b" * 64})
+
+    def test_reuse_rejects_different_backend_or_unrelated_source_before_cloud_call(self):
+        for responses in (["", "older-api", "reviewed-api"], [RuntimeError("not an ancestor")]):
+            with self.subTest(responses=responses), patch.object(rollout, "command", side_effect=responses), \
+                 patch.object(rollout, "cloud") as cloud:
+                with self.assertRaises(RuntimeError):
+                    rollout.reusable_build(PROJECT, COMMIT, IMAGE, BUILD_ID, SOURCE_COMMIT)
+                cloud.assert_not_called()
+
+    def test_reuse_rejects_invalid_or_unrelated_build_receipts(self):
+        for change in ("id", "project", "cancelled", "running", "wrong-tag", "wrong-repo", "extra-image", "digest", "duplicate-result"):
+            with self.subTest(change=change):
+                build = self.previous_build()
+                if change == "id":
+                    build["id"] = "different-build"
+                elif change == "project":
+                    build["projectId"] = "other-project"
+                elif change in {"cancelled", "running"}:
+                    build["status"] = "CANCELLED" if change == "cancelled" else "WORKING"
+                elif change == "wrong-tag":
+                    build["images"] = [IMAGE + ":main"]
+                elif change == "wrong-repo":
+                    build["images"] = [build["images"][0].replace(IMAGE, IMAGE + "-other")]
+                elif change == "extra-image":
+                    build["images"].append(IMAGE + ":unreviewed")
+                elif change == "digest":
+                    build["results"]["images"][0]["digest"] = "not-a-digest"
+                else:
+                    build["results"]["images"].append(dict(build["results"]["images"][0]))
+                with patch.object(rollout, "command", side_effect=["", "same", "same"]), \
+                     patch.object(rollout, "cloud", return_value=build), patch("builtins.print"):
+                    with self.assertRaises(RuntimeError):
+                        rollout.reusable_build(PROJECT, COMMIT, IMAGE, BUILD_ID, SOURCE_COMMIT)
 
     def test_preflight_accepts_documented_job_execution_attachment(self):
         service, job = fixtures()
@@ -104,7 +178,7 @@ class RolloutSafetyTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     rollout.validate(service, job, PROJECT)
 
-    def execute(self, failure=None):
+    def execute(self, failure=None, reuse=False):
         service, job = fixtures()
         suffix = "beta-aaaaaaaaaa-123"
         revision = f"{rollout.SERVICE}-{suffix}"
@@ -137,19 +211,37 @@ class RolloutSafetyTests(unittest.TestCase):
             if failure == "probe":
                 raise RuntimeError("candidate probe failed")
 
+        reuse_receipt = {"id": BUILD_ID, "commit": SOURCE_COMMIT,
+                         "image": IMAGE + "@sha256:" + "b" * 64} if reuse else None
         with patch.object(rollout, "cloud", side_effect=cloud), \
              patch.object(rollout, "cloud_action", side_effect=cloud), \
              patch.object(rollout, "describe_service", side_effect=[service, service, candidate, candidate, live]), \
              patch.object(rollout, "describe_job", return_value=job), \
              patch.object(rollout, "probe", side_effect=probe), \
              patch.object(rollout.time, "time", return_value=123), \
-             patch.object(rollout.subprocess, "run"), patch("builtins.print"):
+             patch.object(rollout.subprocess, "run") as archive, patch("builtins.print"):
             if failure:
                 with self.assertRaises(RuntimeError):
-                    rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db")
+                    rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db", reuse=reuse_receipt)
             else:
-                rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db")
+                rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db", reuse=reuse_receipt)
+            if reuse:
+                archive.assert_not_called()
         return calls
+
+    def test_reuse_skips_build_but_retains_backup_migration_and_candidate_gates(self):
+        calls = self.execute(reuse=True)
+        self.assertFalse(any(a[:2] == ("builds", "submit") for a in calls))
+        backup = next(i for i, a in enumerate(calls) if a[:3] == ("sql", "backups", "create"))
+        migration = next(i for i, a in enumerate(calls) if a[:3] == ("run", "jobs", "execute"))
+        deployment = next(i for i, a in enumerate(calls) if a[:2] == ("run", "deploy"))
+        probe = next(i for i, a in enumerate(calls) if a[0] == "probe")
+        promote = next(i for i, a in enumerate(calls) if a[:3] == ("run", "services", "update-traffic"))
+        self.assertTrue(backup < migration < deployment < probe < promote)
+        for failure in ("backup", "migration", "probe"):
+            with self.subTest(failure=failure):
+                failed = self.execute(failure=failure, reuse=True)
+                self.assertFalse(any(a[:3] == ("run", "services", "update-traffic") for a in failed))
 
     def test_build_failure_bad_output_or_missing_digest_prevents_database_changes(self):
         for failure in ("build", "build-output", "digest"):
