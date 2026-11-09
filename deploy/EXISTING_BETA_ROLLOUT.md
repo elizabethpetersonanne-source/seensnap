@@ -40,6 +40,8 @@ The command prints a traffic rollback command before changes and a final report 
 
 If the preflight stops, inspect the named configuration in Cloud Console rather than skipping the check. In particular, verify the intended Concierge provider/model and its existing authentication. The rollout script does not select a new provider or change its configuration.
 
+If revision `2eb6f84` stopped with `JSONDecodeError` immediately after "Building the committed API," the build command may have succeeded, but its streamed logs contaminated the JSON response. That stop occurs before database backup, migration or deployment. Inspect recent builds with `gcloud builds list --project=seensnap-staging --limit=3 --sort-by=~createTime --format='table(id,status,createTime,images)'` (using the same Cloud Shell build-region setting as the failed attempt). Fetch the updated PR before retrying. Build submission now uses `--suppress-logs`; resource reads still require valid structured output and a successful build with an exact image digest. Synchronous mutations whose output is unused are checked for command success without trying to decode an empty response. A retry builds the reviewed source again; it does not adopt an unverified old image. Existing backup, migration and traffic gates remain in place.
+
 ## Verify and finish Netlify
 
 1. Sign into the deploy preview using a beta account. Verify actor requests, Comedy TV, a personal Next Watch request and a request with a streaming provider. Check every returned poster is relevant; no filler is allowed when fewer than five qualify. Check Different Options and Undo. A successful health probe alone does not prove Concierge works.

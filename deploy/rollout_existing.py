@@ -56,7 +56,23 @@ def command(*args):
 
 
 def cloud(project, *args):
-    return json.loads(command("gcloud", *args, f"--project={project}", "--format=json", "--quiet"))
+    raw = command("gcloud", *args, f"--project={project}", "--format=json", "--quiet")
+    try:
+        result = json.loads(raw)
+    except json.JSONDecodeError:
+        raise RuntimeError(
+            f"Could not read structured output from gcloud {' '.join(args[:2])}. "
+            "The operation may have completed; inspect its status in Cloud Console before retrying. "
+            "Raw output is withheld because it may include runtime configuration."
+        ) from None
+    require(isinstance(result, dict), f"Unexpected resource response from gcloud {' '.join(args[:2])}.")
+    return result
+
+
+def cloud_action(project, *args):
+    # These synchronous commands are checked for success, but their output
+    # is not a resource we consume. Empty output must not become a JSON error.
+    command("gcloud", *args, f"--project={project}", "--format=json", "--quiet")
 
 
 def describe_service(project):
@@ -158,7 +174,10 @@ def rollout(project, before, job, commit, image_repo, instance):
                            cwd=ROOT, stdout=output, check=True)
         image_tag = f"{image_repo}:{suffix}"
         print("Building the committed API with Cloud Build (may take several minutes).", flush=True)
-        build = cloud(project, "builds", "submit", str(archive), f"--tag={image_tag}")
+        # Build logs stream to stdout even when --format=json is requested.
+        # Suppress the log stream so stdout contains only the Build resource.
+        # https://docs.cloud.google.com/sdk/gcloud/reference/builds/submit
+        build = cloud(project, "builds", "submit", str(archive), f"--tag={image_tag}", "--suppress-logs")
     require(build.get("status") == "SUCCESS", "Cloud Build did not succeed.")
     images = build.get("results", {}).get("images", [])
     digest = next((i.get("digest", "") for i in images if i.get("name") == image_tag), "")
@@ -168,13 +187,13 @@ def rollout(project, before, job, commit, image_repo, instance):
     require(describe_service(project)["spec"] == before["spec"], "Service changed during build. Rerun preflight.")
     require(describe_job(project)["spec"] == job["spec"], "Migration job changed during build. Rerun preflight.")
     print("Backing up Cloud SQL before migration.", flush=True)
-    cloud(project, "sql", "backups", "create", f"--instance={instance}", f"--description=Before {suffix}")
+    cloud_action(project, "sql", "backups", "create", f"--instance={instance}", f"--description=Before {suffix}")
     print("Updating the existing migration job image and waiting for successful migration.", flush=True)
-    cloud(project, "run", "jobs", "update", JOB, f"--region={REGION}", f"--image={image}")
-    cloud(project, "run", "jobs", "execute", JOB, f"--region={REGION}", "--wait")
+    cloud_action(project, "run", "jobs", "update", JOB, f"--region={REGION}", f"--image={image}")
+    cloud_action(project, "run", "jobs", "execute", JOB, f"--region={REGION}", "--wait")
     require(describe_service(project)["spec"] == before["spec"], "Service changed during migration. Stop and inspect before deployment.")
     print("Deploying a revision with no production traffic; existing settings are retained.", flush=True)
-    cloud(project, "run", "deploy", SERVICE, f"--region={REGION}", f"--image={image}",
+    cloud_action(project, "run", "deploy", SERVICE, f"--region={REGION}", f"--image={image}",
           "--no-traffic", f"--tag={tag}", f"--revision-suffix={suffix}")
     candidate = describe_service(project)
     require(traffic(candidate) == old_traffic, "Traffic changed unexpectedly. Stop and inspect Cloud Run.")
@@ -186,7 +205,7 @@ def rollout(project, before, job, commit, image_repo, instance):
     probe(tagged_url)
     require(describe_service(project)["spec"] == candidate["spec"], "Service changed during checks. Stop before traffic promotion.")
     print("Structural API checks passed; switching traffic to the exact checked revision.", flush=True)
-    cloud(project, "run", "services", "update-traffic", SERVICE, f"--region={REGION}",
+    cloud_action(project, "run", "services", "update-traffic", SERVICE, f"--region={REGION}",
           f"--to-revisions={revision}=100")
     live = describe_service(project)
     require(traffic(live) == {revision: 100}, "Traffic promotion did not finish as expected.")
@@ -207,7 +226,7 @@ def main():
     require(not command("git", "status", "--porcelain", "--untracked-files=no"), "Tracked worktree must be clean.")
     if args.apply:
         require(args.expected_commit == commit, "--apply requires --expected-commit matching the reviewed checkout SHA.")
-    project_data = json.loads(command("gcloud", "projects", "describe", PROJECT_NUMBER, "--format=json"))
+    project_data = cloud(PROJECT_NUMBER, "projects", "describe", PROJECT_NUMBER)
     require(str(project_data["projectNumber"]) == PROJECT_NUMBER, "Unexpected Google Cloud project.")
     project = project_data["projectId"]
     service, job = describe_service(project), describe_job(project)

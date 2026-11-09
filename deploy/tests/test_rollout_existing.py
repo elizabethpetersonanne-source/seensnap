@@ -1,6 +1,8 @@
 """Regression checks for rollout failure boundaries; no cloud credentials used."""
 import copy
 import importlib.util
+import json
+import subprocess
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -40,6 +42,27 @@ def fixtures():
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_resource_reader_keeps_valid_json_and_rejects_noisy_output_safely(self):
+        build = {"status": "SUCCESS", "id": "test-build"}
+        with patch.object(rollout, "command", return_value=json.dumps(build)):
+            self.assertEqual(rollout.cloud(PROJECT, "builds", "submit", "archive.tar.gz"), build)
+        for raw in ("", "Build log: sensitive-value\n" + json.dumps(build), "null", "[]"):
+            with self.subTest(raw=raw), patch.object(rollout, "command", return_value=raw):
+                with self.assertRaises(RuntimeError) as raised:
+                    rollout.cloud(PROJECT, "builds", "submit", "archive.tar.gz")
+                self.assertIn("gcloud builds submit", str(raised.exception))
+                self.assertNotIn("sensitive-value", str(raised.exception))
+
+    def test_mutations_accept_empty_success_but_reject_failed_commands(self):
+        success = subprocess.CompletedProcess([], 0, stdout="", stderr="")
+        with patch.object(rollout.subprocess, "run", return_value=success):
+            rollout.cloud_action(PROJECT, "sql", "backups", "create")
+        failure = subprocess.CompletedProcess([], 1, stdout="sensitive-value", stderr="sensitive-value")
+        with patch.object(rollout.subprocess, "run", return_value=failure):
+            with self.assertRaises(RuntimeError) as raised:
+                rollout.cloud_action(PROJECT, "sql", "backups", "create")
+            self.assertNotIn("sensitive-value", str(raised.exception))
+
     def test_preflight_accepts_documented_job_execution_attachment(self):
         service, job = fixtures()
         self.assertNotIn("metadata", job["spec"]["template"]["spec"]["template"])
@@ -96,7 +119,13 @@ class RolloutSafetyTests(unittest.TestCase):
         def cloud(project, *args):
             calls.append(args)
             if args[:2] == ("builds", "submit"):
-                return {"status": "SUCCESS", "results": {"images": [{"name": IMAGE + ":" + suffix, "digest": "sha256:" + "b" * 64}]}}
+                self.assertIn("--suppress-logs", args)
+                if failure == "build-output":
+                    raise RuntimeError("Could not read structured output from gcloud builds submit.")
+                return {"status": "FAILURE" if failure == "build" else "SUCCESS", "results": {"images": [{
+                    "name": IMAGE + ":" + suffix,
+                    "digest": "" if failure == "digest" else "sha256:" + "b" * 64,
+                }]}}
             if failure == "backup" and args[:3] == ("sql", "backups", "create"):
                 raise RuntimeError("backup failed")
             if failure == "migration" and args[:3] == ("run", "jobs", "execute"):
@@ -109,6 +138,7 @@ class RolloutSafetyTests(unittest.TestCase):
                 raise RuntimeError("candidate probe failed")
 
         with patch.object(rollout, "cloud", side_effect=cloud), \
+             patch.object(rollout, "cloud_action", side_effect=cloud), \
              patch.object(rollout, "describe_service", side_effect=[service, service, candidate, candidate, live]), \
              patch.object(rollout, "describe_job", return_value=job), \
              patch.object(rollout, "probe", side_effect=probe), \
@@ -120,6 +150,12 @@ class RolloutSafetyTests(unittest.TestCase):
             else:
                 rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db")
         return calls
+
+    def test_build_failure_bad_output_or_missing_digest_prevents_database_changes(self):
+        for failure in ("build", "build-output", "digest"):
+            with self.subTest(failure=failure):
+                calls = self.execute(failure)
+                self.assertFalse(any(a[0] in {"run", "sql"} for a in calls))
 
     def test_success_backs_up_then_migrates_then_checks_before_traffic(self):
         calls = self.execute()
