@@ -7,12 +7,11 @@ relationship. The §5 matrix (abbreviated here):
     Remove Save        → remove from Next Watch only
     Mark Watched       → set watched; remove from Next Watch
     Rate 1-10          → set watched + remove Next Watch + update
-                         rating atomically. Taste signal updates
-                         downstream; initial algorithmic rank
-                         eligibility is implicit via watched state.
-    Change rating      → update rating. Reconsider automatic rank
-                         ONLY if the title has never been manually
-                         positioned (RankedFavorite row origin).
+                         rating + insert after the last equal-score
+                         ranked title, all atomically.
+    Change rating      → move only this title to the end of its new
+                         score group. Saving an unchanged score
+                         preserves its manually chosen position.
     Remove rating      → remove rating. Preserve watched + any
                          favorite/list state. Remove ranked entry if
                          its origin was 'rating' and no manual move
@@ -31,7 +30,8 @@ This service does NOT:
   - Publish anything to the public feed. Explicit publication is a
     separate /me/activity/publish call.
   - Mutate another user's data.
-  - Automatically re-rank. Manual rank is sacred per §5.
+  - Re-sort other ranked titles when a rating is submitted. Their
+    relative order is preserved, including manual tie ordering.
 """
 from __future__ import annotations
 
@@ -249,6 +249,67 @@ def mark_watched(db: Session, user_id: UUID, title_id: UUID, *, commit: bool = T
     return _snapshot(db, user_id, title_id)
 
 
+def _place_rating_in_ranked_favorites(
+    db: Session, user_id: UUID, title_id: UUID, score: int, previous_score: int | None,
+) -> None:
+    """Place only the rated title, while the caller holds the user row lock.
+
+    Existing equals win over numerical sorting of a customized list. If
+    there are no equals, insert after the last higher score (or first if
+    there are none). Unrated favorites retain their relative order.
+    No commit here: rating, watched state and ranking succeed together.
+    """
+    rows = db.execute(
+        select(RankedFavorite, Rating.score)
+        .outerjoin(Rating, (Rating.user_id == RankedFavorite.user_id)
+                   & (Rating.content_title_id == RankedFavorite.content_title_id))
+        .where(RankedFavorite.user_id == user_id)
+        .order_by(RankedFavorite.position)
+    ).all()
+    target = next((rank for rank, _ in rows if rank.content_title_id == title_id), None)
+    if target is not None and previous_score == score:
+        return
+
+    siblings = [(rank, int(round(float(value))) if value is not None else None)
+                for rank, value in rows if rank is not target]
+    equal_positions = [i for i, (_, value) in enumerate(siblings) if value == score]
+    higher_positions = [i for i, (_, value) in enumerate(siblings)
+                        if value is not None and value > score]
+    anchor = equal_positions or higher_positions
+    insert_at = anchor[-1] + 1 if anchor else 0
+    ordered = [rank for rank, _ in siblings]
+    if target is None:
+        target = RankedFavorite(
+            id=uuid4(), user_id=user_id, content_title_id=title_id,
+            position=insert_at + 1, version=1,
+        )
+    ordered.insert(insert_at, target)
+
+    existing_ids = {rank.id for rank, _ in rows}
+    changes = [(rank, position) for position, rank in enumerate(ordered, start=1)
+               if rank.id in existing_ids and rank.position != position]
+    # Vacate affected slots before assigning final positions. This also
+    # works with immediate uniqueness in local SQLite tests. Only changed
+    # rows move; there is no full-list delete/rebuild or loss of row IDs.
+    offset = max((rank.position for rank, _ in rows), default=0) + len(ordered) + 1
+    for rank, _ in changes:
+        rank.position += offset
+    db.flush()
+    now = datetime.now(timezone.utc)
+    for rank, position in changes:
+        rank.position = position
+        rank.version += 1
+        rank.updated_at = now
+    if target.id not in existing_ids:
+        db.add(target)
+    elif all(rank is not target for rank, _ in changes):
+        # Even if a score edit leaves the same position, reject manual
+        # moves submitted against the old score/order snapshot.
+        target.version += 1
+        target.updated_at = now
+    db.flush()
+
+
 def rate_title(
     db: Session,
     user_id: UUID,
@@ -257,8 +318,9 @@ def rate_title(
     *,
     expected_version: int | None = None,
 ) -> TitleStateSnapshot:
-    """Rate 1-10. Sets watched, removes from Next Watch, updates rating
-    atomically. Optimistic concurrency via expected_version."""
+    """Rate 1-10 and place last among equally scored ranked titles.
+    Watched, Next Watch removal and ranking commit with the rating.
+    Optimistic concurrency via expected_version."""
     db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     if not (1 <= score <= 10):
         raise TitleStateError("invalid_score", "score must be 1-10")
@@ -273,6 +335,7 @@ def rate_title(
     current=current_revision(db,user_id,title_id)
     if expected_version is not None and expected_version != current:
         raise TitleStateError('version_conflict','stale version')
+    previous_score = int(round(float(existing.score))) if existing is not None else None
     version=advance_revision(db,user_id,title_id)
     if existing is not None:
         existing.score=Decimal(str(score))
@@ -300,6 +363,7 @@ def rate_title(
                 WatchlistItem.content_title_id == title_id,
             )
         )
+    _place_rating_in_ranked_favorites(db, user_id, title_id, score, previous_score)
     db.commit()
     return _snapshot(db, user_id, title_id)
 
