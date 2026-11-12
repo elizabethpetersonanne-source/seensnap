@@ -298,6 +298,7 @@ def ensure_signals(db: Session, user_id: UUID, *, force: bool = False) -> list[U
             .order_by(UserSignal.last_updated.desc())
             .limit(1)
         )
-        if latest is not None and not _is_stale(latest, hours=6):
+        from app.services.swipe_refresh import newer_discovery
+        if latest is not None and not _is_stale(latest, hours=6) and not newer_discovery(db, user_id, latest):
             return list_user_signals(db, user_id, limit=50)
     return compute_user_signals(db, user_id)

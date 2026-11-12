@@ -83,4 +83,5 @@ def error_code(error):
         status = error.response.status_code
         if status in (401, 403): return "provider_authentication_failed"
         if status == 429: return "provider_rate_limited"
+        if status == 404: return "provider_model_unavailable"
     return "provider_request_failed"

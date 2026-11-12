@@ -52,7 +52,7 @@ def fingerprint(preferred_type, genre, region, mode, surface):
 
 
 def canonical_genre(kind, genre):
-    if kind == "tv":
+    if kind in {"tv", "series"}:
         return {"action": "action & adventure", "adventure": "action & adventure",
                 "science fiction": "sci-fi & fantasy", "fantasy": "sci-fi & fantasy",
                 "war": "war & politics"}.get(genre, genre)

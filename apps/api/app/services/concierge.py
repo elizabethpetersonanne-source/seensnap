@@ -54,6 +54,7 @@ class ConciergeConstraints:
     media_type: Literal["movie", "series", "any"] = "any"
     # Lowercase canonical genre names. Multiple = union (OR).
     genres: list[str] = field(default_factory=list)
+    original_language: str | None = None
     # Short mood/tone tags ("dark", "quiet", "character-driven", ...)
     # that the ranker uses as soft bonuses. Not a hard filter.
     moods: list[str] = field(default_factory=list)
@@ -280,6 +281,12 @@ def build_personal_context(db: Session, user_id: UUID) -> PersonalContext:
         regions = list(prefs.preferred_regions or [])
         if regions:
             ctx.region = regions[0]
+    # Country is set during onboarding/profile editing and is also used by
+    # Swipe. Older accounts may have only the preferences fallback.
+    from app.models.user import UserProfile
+    profile = db.get(UserProfile, user_id)
+    if profile and profile.country_code:
+        ctx.region = profile.country_code
 
     # SceneDNA — bounded to 6 signal names. C12: UserSignal uses
     # `score` and `signal_name` (not `weight` / `label`). Previously
@@ -657,9 +664,12 @@ def _passes_constraints(
         if runtime is None or runtime > constraints.runtime_max:
             return False
     if constraints.genres:
+        from app.services.discovery_feed import canonical_genre
         row_genres = [str(g).lower() for g in (row.genres or [])]
-        if not any(g in row_genres for g in constraints.genres):
+        if not any(canonical_genre(row.content_type, g).lower() in row_genres for g in constraints.genres):
             return False
+    if constraints.original_language and (row.metadata_raw or {}).get("original_language") != constraints.original_language:
+        return False
     if constraints.exclusions:
         excl = [e.lower() for e in constraints.exclusions]
         row_name = row.title.lower()
@@ -821,8 +831,11 @@ def _intent_matched_catalog_batch(
         # Convert canonical lowercase genre to Title Case variants
         # TMDB uses. We OR the lowercase set the model emits against
         # the row's genres array — case-insensitive via lower().
-        casefolded = [g.lower() for g in constraints.genres]
-        titlecased = [g.title() for g in constraints.genres]
+        from app.services.discovery_feed import canonical_genre
+        casefolded = list({canonical_genre(kind, g).lower() for g in constraints.genres for kind in (
+            ["movie", "series"] if constraints.media_type == "any" else [constraints.media_type]
+        )})
+        titlecased = [g.title() for g in casefolded]
         # Build a parameterized ANY-of filter against the JSONB array.
         # Postgres: genres ?| array[...]. Both case variants.
         stmt = stmt.where(
@@ -951,6 +964,7 @@ def _ground_suggestions(
     # unrelated first search hit merely because exact matching failed."
     if still_missing:
         from concurrent.futures import ThreadPoolExecutor
+        from contextvars import copy_context
         from app.services import tmdb
 
         def lookup(name):
@@ -965,7 +979,8 @@ def _ground_suggestions(
         # Workers perform HTTP only. SQLAlchemy sessions must stay on the
         # request thread. Parallel grounding removes ten sequential waits.
         with ThreadPoolExecutor(max_workers=5) as executor:
-            results = list(executor.map(lookup, still_missing[:10]))
+            futures = [executor.submit(copy_context().run, lookup, name) for name in still_missing[:10]]
+            results = [future.result() for future in futures]
         for name, items in results:
             target_norm = _normalize_title_for_match(name)
             for item in items:
@@ -1036,8 +1051,10 @@ Rules:
 - Keep rationale to 1-2 sentences — plain, grounded, no hype.
 - `media_type` is "movie" | "series" | "any".
 - `genres` is a short list of lowercase canonical genre names.
+- `original_language` is a lowercase ISO 639-1 code only for an explicit original-language request; null otherwise. Do not infer dubbing availability.
 - `moods` is a short list of lowercase mood/tone tags.
 - `person_constraints` contains explicit credited people: name and role (cast, director, writer). An actor request must use this field, not a title-name search.
+- Resolve an unambiguous creator reference to a full credited name (for example, Nolan movies means Christopher Nolan as director). Never use an unverified person ID.
 - `runtime_scope` is movie unless the user explicitly requests episode duration.
 - `requested_count` defaults to 5, including surprise me; use 1 only when explicitly asked for one.
 - `required_providers` only if the user explicitly asked (e.g. "only Netflix").
@@ -1058,7 +1075,7 @@ Context: {context_summary}
 
 {{
   "media_type": "movie|series|any",
-  "genres": [], "moods": [], "year_min": null, "year_max": null,
+  "genres": [], "original_language": null, "moods": [], "year_min": null, "year_max": null,
   "runtime_min": null, "runtime_max": null,
   "required_providers": [], "exclusions": [], "like_anchors": [],
   "rewatch_intent": false, "runtime_scope": "movie",
@@ -1081,8 +1098,8 @@ def _call_configured_model(intent: str, *, context_summary: str = "{}", prompt_o
     if provider == "vertex":
         return _call_vertex(intent,
             project=(settings.concierge_ai_project or settings.gcp_project_id or os.environ.get("GOOGLE_CLOUD_PROJECT", "")).strip(),
-            location=settings.concierge_ai_location or "us-central1",
-            model=settings.concierge_ai_model or "gemini-2.5-flash", **kwargs)
+            location=settings.concierge_ai_location or "us",
+            model=settings.concierge_ai_model or "gemini-3.5-flash-lite", **kwargs)
     if provider == "anthropic" and api_key:
         return _call_anthropic(intent, api_key, settings.concierge_ai_model or "claude-opus-4-7", **kwargs)
     if provider == "openai" and api_key:
@@ -1161,8 +1178,11 @@ def _call_vertex(
         )
     token = _vertex_access_token()
     prompt = prompt_override or _PROMPT_TEMPLATE.format(intent=intent[:2000], context_summary=context_summary[:4000])
+    host = ("aiplatform.googleapis.com" if location == "global" else
+            f"aiplatform.{location}.rep.googleapis.com" if location in {"us", "eu"} else
+            f"{location}-aiplatform.googleapis.com")
     url = (
-        f"https://{location}-aiplatform.googleapis.com/v1/projects/{project}"
+        f"https://{host}/v1/projects/{project}"
         f"/locations/{location}/publishers/google/models/{model}:generateContent"
     )
     body = {
@@ -1190,8 +1210,11 @@ def _call_vertex(
     for cand in payload.get("candidates", []) or []:
         content = cand.get("content") or {}
         for part in content.get("parts", []) or []:
-            if isinstance(part, dict) and isinstance(part.get("text"), str):
+            if isinstance(part, dict) and not part.get("thought") and isinstance(part.get("text"), str):
                 text += part["text"]
+        # A second candidate is an alternative answer, not more JSON text.
+        if text:
+            break
     return _extract_json(text)
 
 

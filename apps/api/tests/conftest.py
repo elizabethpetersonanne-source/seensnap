@@ -53,6 +53,7 @@ def db():
         "swipe_records",
         "watch_handoffs",
         "user_profiles",
+        "user_preferences",
         "concierge_decisions",
         "concierge_requests",
         "entitlement_grants",

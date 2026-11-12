@@ -15,6 +15,7 @@ class ConciergeIntent(BaseModel):
     model_config = ConfigDict(strict=True, extra="ignore")
     media_type: Literal["movie", "series", "any"]
     genres: list[str] = Field(default_factory=list, max_length=8)
+    original_language: str | None = Field(default=None, pattern=r"^[a-z]{2}$")
     moods: list[str] = Field(default_factory=list, max_length=8)
     year_min: int | None = Field(default=None, ge=1870, le=2200)
     year_max: int | None = Field(default=None, ge=1870, le=2200)

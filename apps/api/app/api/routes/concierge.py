@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from uuid import UUID, uuid4
 import hashlib
+import httpx
 import json
 
 from fastapi import APIRouter, HTTPException, status
@@ -23,7 +24,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from app.api.dependencies import CurrentUser, DbSession
-from app.models.content import ContentTitle
+from app.models.content import ContentTitle, ContentAvailability
 from app.services.concierge import decision_to_dict, resolve_concierge_decision
 from app.services.entitlements import (
     finalize_concierge_decision,
@@ -51,6 +52,13 @@ class ConciergeDecisionRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=96)
 
 
+class ConciergeWatchOption(BaseModel):
+    provider_code: str
+    provider_name: str
+    offer_type: str
+    web_url: str | None
+
+
 class ConciergeTitleCard(BaseModel):
     scenedna: TitleCompatibility | None = None
     title_id: UUID
@@ -61,6 +69,7 @@ class ConciergeTitleCard(BaseModel):
     year: int | None
     media_type: str
     overview: str | None
+    watch_options: list[ConciergeWatchOption] = Field(default_factory=list)
 
 
 class ConciergeDecisionResponse(BaseModel):
@@ -103,6 +112,16 @@ def _hydrate_decision_titles(db, title_ids: list[UUID], user_id) -> list[Concier
         select(ContentTitle).where(ContentTitle.id.in_(title_ids))
     ).all()}
     scorer = scorer_for_user(db, user_id, rows.values())
+    from app.models.user import UserProfile, UserPreferences
+    from datetime import datetime, timezone
+    profile = db.get(UserProfile, user_id)
+    prefs = db.get(UserPreferences, user_id)
+    region = ((profile.country_code if profile else None) or ((prefs.preferred_regions or ["US"])[0] if prefs else "US")).upper()
+    offers = list(db.scalars(select(ContentAvailability).where(
+        ContentAvailability.content_title_id.in_(title_ids),
+        ContentAvailability.region_code == region,
+        ContentAvailability.expires_at > datetime.now(timezone.utc),
+    ).order_by(ContentAvailability.provider_name, ContentAvailability.monetization_type)).all())
     out: list[ConciergeTitleCard] = []
     for tid in title_ids:
         t = rows.get(tid)
@@ -118,6 +137,8 @@ def _hydrate_decision_titles(db, title_ids: list[UUID], user_id) -> list[Concier
             year=t.release_date.year if t.release_date else None,
             media_type=t.content_type,
             overview=t.overview,
+            watch_options=[ConciergeWatchOption(provider_code=a.provider_code, provider_name=a.provider_name,
+                offer_type=a.monetization_type, web_url=a.web_url) for a in offers if a.content_title_id == tid],
         ))
     return out
 
@@ -337,7 +358,16 @@ def post_concierge_refinement(
     else:
         if payload.kind in ("shorter", "longer"):
             current_max = effective.runtime_max
-            effective.runtime_max = (90 if current_max is None else max(30, current_max - 30)) if payload.kind == "shorter" else (180 if current_max is None else min(1440, current_max + 30))
+            if current_max is None:
+                selected_id = str(payload.featured_title_id) if payload.featured_title_id else next(iter(record.latest_title_ids or []), None)
+                if selected_id and selected_id not in (record.latest_title_ids or []):
+                    raise HTTPException(400, detail="Select a title from the current results first.")
+                selected = db.get(ContentTitle, UUID(selected_id)) if selected_id else None
+                current_max = selected.runtime_minutes if selected else None
+                if selected and selected.content_type == "series":
+                    current_max = max((v for v in (selected.metadata_raw or {}).get("episode_run_time", []) if type(v) is int and v > 0), default=45)
+                    effective.runtime_scope = "episode"
+            effective.runtime_max = (90 if current_max is None else max(1, current_max - 30)) if payload.kind == "shorter" else (180 if current_max is None else min(1440, current_max + 30))
             if effective.runtime_min and effective.runtime_min > effective.runtime_max:
                 raise HTTPException(400, detail="The requested duration conflicts with your minimum runtime.")
             new_intent = f"{record.current_intent}\nUpdated maximum duration: {effective.runtime_max} minutes."
@@ -365,20 +395,29 @@ def post_concierge_refinement(
             if not payload.prompt:
                 raise HTTPException(400, detail="Enter your updated request.")
             new_intent = payload.prompt.strip() if payload.kind == "edit" else f"{record.current_intent}\nRefinement: {payload.prompt.strip()}"
-            effective = None
+            if payload.kind == "edit":
+                effective = None
         from app.services.concierge_runtime import request_runtime, report, ConciergeDeadlineExceeded
-        from app.services.concierge import ConciergeDecision
+        from app.services.concierge import ConciergeDecision, VertexConfigError
         # Only unchanged constraints can resume candidate/relevance work.
         continuation = turns[-1].get("retrieval_state") if payload.kind in ("different_options", "continue_search") else None
         with request_runtime(uuid4()) as runtime:
             try:
+                if payload.kind == "custom":
+                    from app.services.concierge_refinement import refine_constraints
+                    from app.services.concierge_runtime import stage
+                    with stage("refinement"):
+                        effective = refine_constraints(db, effective, payload.prompt.strip(), record.latest_title_ids or [])
                 decision = resolve_concierge_decision(db, current_user.id, new_intent,
                     effective_constraints=effective, excluded_title_ids=excluded,
-                    collection_list_id=UUID(list_id) if list_id else None,
+                    collection_list_id=UUID(effective.collection_list_id) if effective and effective.collection_list_id else UUID(list_id) if effective is None and list_id else None,
                     retrieval_state=continuation)
             except ConciergeDeadlineExceeded:
                 decision = ConciergeDecision(None, effective or ConciergeConstraints(raw_intent=new_intent), "", [],
                     "error", status_detail="request_timed_out", retrieval_exhausted=False, partial_reason="retrieval_timeout")
+            except (ValueError, httpx.HTTPError, VertexConfigError):
+                decision = ConciergeDecision(None, effective or ConciergeConstraints(raw_intent=new_intent), "", [],
+                    "error", status_detail="refinement_unavailable", retrieval_exhausted=False, partial_reason="upstream_failure")
             report(runtime, status=decision.status, code=decision.status_detail, count=len(decision.title_ids), attempt=1)
         # Transient failures preserve the visible turn and can be retried with
         # the same key/version. An empty, resumable scan is a valid next turn.

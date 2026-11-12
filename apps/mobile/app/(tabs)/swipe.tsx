@@ -87,6 +87,7 @@ export default function SwipeTab() {
   const [deck, setDeck] = useState<RecommendationItem[]>([]);
   const deckRef = useRef(deck); deckRef.current = deck;
   const [detailCache, setDetailCache] = useState<Record<string, UniversalTitle>>({});
+  const detailFlights = useRef(new Map<string, number>());
   const [preferredServices, setPreferredServices] = useState<string[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [swipes, setSwipes] = useState<SwipeEvent[]>([]);
@@ -352,8 +353,11 @@ export default function SwipeTab() {
     }
     if (toHydrate.length === 0) return;
 
-    let cancelled = false;
+    const generation = generationRef.current;
     async function hydrateOne(item: RecommendationItem) {
+      const id = item.title.id;
+      if (detailFlights.current.get(id) === generation) return;
+      detailFlights.current.set(id, generation);
       try {
         const detail = await fetchUniversalTitle(token, item.title.id, {
           id: item.title.id,
@@ -362,19 +366,18 @@ export default function SwipeTab() {
           poster_url: item.title.poster_url,
           backdrop_url: item.title.backdrop_url,
           overview: item.title.overview,
-        });
-        if (cancelled) return;
+        }, { lightweight: true });
+        if (generation !== generationRef.current) return;
         setDetailCache((current) =>
           current[item.title.id] ? current : { ...current, [item.title.id]: detail }
         );
       } catch {
         // keep the swipe session moving even if enrichment fails
+      } finally {
+        if (detailFlights.current.get(id) === generation) detailFlights.current.delete(id);
       }
     }
     for (const item of toHydrate) void hydrateOne(item);
-    return () => {
-      cancelled = true;
-    };
   }, [activeCard, nextCards, detailCache, sessionToken]);
 
   const rotation = pan.x.interpolate({
@@ -552,7 +555,6 @@ export default function SwipeTab() {
     setDetailLoading(true);
     try {
       const detail =
-        detailCache[item.title.id] ??
         (await fetchUniversalTitle(sessionToken, item.title.id, {
           id: item.title.id,
           title: item.title.title,

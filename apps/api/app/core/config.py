@@ -44,7 +44,7 @@ class Settings(BaseSettings):
     concierge_ai_api_key: str = ""
     concierge_ai_model: str = ""
     concierge_ai_project: str = ""
-    concierge_ai_location: str = "us-central1"
+    concierge_ai_location: str = "us"
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

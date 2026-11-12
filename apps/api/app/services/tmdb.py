@@ -26,8 +26,12 @@ SUPPORTED_PROVIDER_ALIASES = {
     "max": ("hbo_max", "HBO Max"),
     "hbo max": ("hbo_max", "HBO Max"),
     "disney plus": ("disney_plus", "Disney+"),
+    "disney+": ("disney_plus", "Disney+"),
     "hulu": ("hulu", "Hulu"),
     "paramount plus": ("paramount_plus", "Paramount+"),
+    "paramount+": ("paramount_plus", "Paramount+"),
+    "amazon prime": ("prime_video", "Prime Video"),
+    "prime": ("prime_video", "Prime Video"),
     "peacock premium": ("peacock", "Peacock"),
     "peacock": ("peacock", "Peacock"),
 }

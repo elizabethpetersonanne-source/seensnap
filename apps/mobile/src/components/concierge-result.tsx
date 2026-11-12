@@ -28,6 +28,7 @@ export type ConciergeRefineKind =
   | "continue_search"
   | "more_like_selected"
   | "edit"
+  | "custom"
   | "undo"
   | "new_search";
 
@@ -50,6 +51,7 @@ export function ConciergeResult({
   onSend,
   onAddToTeam,
   onRate,
+  onWatch,
 }: {
   rationale: string;
   titles: ConciergeTitleCard[];
@@ -76,6 +78,7 @@ export function ConciergeResult({
   onSend?: (t: ConciergeTitleCard) => void;
   onAddToTeam?: (t: ConciergeTitleCard) => void;
   onRate?: (t: ConciergeTitleCard) => void;
+  onWatch?: (t: ConciergeTitleCard, offer: NonNullable<ConciergeTitleCard["watch_options"]>[number]) => void;
 }) {
   const [stripWidth, setStripWidth] = useState(320);
   const [featuredId, setFeaturedId] = useState<string | null>(null);
@@ -135,6 +138,18 @@ export function ConciergeResult({
           </Text>
         </View>
       </Pressable>
+
+      {featured.watch_options?.length ? (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow}>
+          {featured.watch_options.map((offer) => (
+            <Pressable key={`${offer.provider_code}:${offer.offer_type}`} disabled={!offer.web_url || busy}
+              accessibilityRole="link" accessibilityLabel={`Watch ${featured.title} on ${offer.provider_name}`}
+              onPress={() => onWatch?.(featured, offer)} style={[styles.chip, { minHeight: 44, justifyContent: "center" }]}>
+              <Text style={styles.chipLabel}>{offer.provider_name} · {offer.offer_type === "flatrate" ? "Included" : offer.offer_type === "ads" ? "With ads" : offer.offer_type === "free" ? "Free" : offer.offer_type === "rent" ? "Rent" : "Buy"}</Text>
+            </Pressable>
+          ))}
+        </ScrollView>
+      ) : null}
 
       {/* Action rail — operates on the FEATURED title. Save / Send /
           Watch Team / Rate per Oct-27 personalization brief. */}
@@ -234,8 +249,8 @@ export function ConciergeResult({
       {/* Follow-up chips preserve the current request. */}
       {onRefine && !busy ? (
         <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.chipRow} directionalLockEnabled>
-          {runtimeConstrained ? (
-            <RefineChip label="Shorter" onPress={() => onRefine("shorter")} />
+          {featured.media_type === "movie" || runtimeConstrained ? (
+            <RefineChip label="Shorter" onPress={() => onRefine("shorter", { featured_title_id: featured.title_id })} />
           ) : null}
           {runtimeConstrained ? (
             <RefineChip label="Longer" onPress={() => onRefine("longer")} />
