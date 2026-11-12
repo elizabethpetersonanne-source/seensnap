@@ -58,7 +58,7 @@ def create_decision(db, record, before, source_surface):
     db.add(decision)
 
 
-def undo_decision(db, user_id, swipe_id):
+def undo_decision(db, user_id, swipe_id, *, refresh_derived=True):
     db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     decision = db.scalar(select(DiscoveryDecision).where(DiscoveryDecision.id == swipe_id, DiscoveryDecision.user_id == user_id))
     if decision is None:
@@ -106,14 +106,15 @@ def undo_decision(db, user_id, swipe_id):
     if record:
         db.delete(record)
     db.commit()
-    try:
-        from app.services.taste import refresh_taste_profile
-        from app.services.user_signals import compute_user_signals
-        refresh_taste_profile(db, user_id)
-        compute_user_signals(db, user_id)
-        db.commit()
-    except Exception:
-        db.rollback()
+    if refresh_derived:
+        try:
+            from app.services.taste import refresh_taste_profile
+            from app.services.user_signals import compute_user_signals
+            refresh_taste_profile(db, user_id)
+            compute_user_signals(db, user_id)
+            db.commit()
+        except Exception:
+            db.rollback()
     return {"reversed": reversed_bits, "partial_reason": partial,
             "watched": _watched(db, user_id, decision.content_title_id)}
 

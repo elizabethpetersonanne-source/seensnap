@@ -8,6 +8,7 @@ import {
   Animated,
   FlatList,
   Image,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -28,6 +29,7 @@ import { ConciergeComposer, type ConciergeDecisionResponse, type ConciergeTitleC
 import { TitleActionSheets, type TitleActionTarget } from "@/components/title-action-sheets";
 import { RatingEditor } from "@/components/rating-editor";
 import { newConciergeKey, pendingConciergeSearch, runConciergeSearch } from "@/lib/concierge-requests";
+import { recordWatchHandoff } from "@/lib/watch-handoff";
 import { ConciergeEmptyState } from "@/components/concierge-empty-state";
 import { ConciergeListPicker } from "@/components/concierge-list-picker";
 import { ConciergeResult, type ConciergeRefineKind } from "@/components/concierge-result";
@@ -405,6 +407,7 @@ export default function DiscoverScreen() {
       const decision = await runConciergeSearch(user.user_id, sessionToken, prompt, listId);
       if (generation !== conciergeGeneration.current) return;
       setConciergeDecision(decision);
+      if (decision.status === "ready" || decision.status === "partial") setConciergeDraft("");
       trackEvent("concierge_decision", { status: decision.status, title_count: decision.titles.length });
       if (decision.status === "processing") setConciergeActionError(decision.can_retry
         ? "Your search was interrupted. Tap the arrow to resume."
@@ -450,6 +453,8 @@ export default function DiscoverScreen() {
       if (generation !== conciergeGeneration.current) return;
       refineRetry.current = null;
       setConciergeDecision({ ...res, _intent: extra?.prompt ?? conciergeDecision._intent, _turn_count: res.version });
+      setConciergeDraft("");
+      return res;
     } catch (error) {
       if (generation !== conciergeGeneration.current) return;
       if (error instanceof ApiError && error.status === 409) {
@@ -996,7 +1001,11 @@ export default function DiscoverScreen() {
               key={user?.user_id ?? "signed-out"}
               draft={conciergeDraft}
               disabled={conciergeBusy}
-              onSubmit={(prompt) => searchConcierge(prompt, recoveryScope.current?.intent === prompt.trim() ? recoveryScope.current.listId : undefined)}
+              continuing={!!conciergeDecision?.titles.length}
+              conversationVersion={`${conciergeDecision?.decision_id ?? "new"}:${conciergeDecision?.version ?? 0}`}
+              onSubmit={(prompt) => conciergeDecision?.titles.length && conciergeDecision.decision_id
+                ? refineConcierge("custom", { prompt })
+                : searchConcierge(prompt, recoveryScope.current?.intent === prompt.trim() ? recoveryScope.current.listId : undefined)}
             />
           ) : null}
 
@@ -1036,6 +1045,12 @@ export default function DiscoverScreen() {
                 setConciergeRating(t);
               }}
               onRefine={(kind, extra) => { void refineConcierge(kind, extra); }}
+              onWatch={(title, offer) => {
+                if (!offer.web_url || !/^https:\/\//i.test(offer.web_url)) return;
+                if (sessionToken) void recordWatchHandoff(sessionToken, { titleId: title.title_id,
+                  providerCode: offer.provider_code, outboundUrl: offer.web_url, originSurface: "concierge" });
+                void Linking.openURL(offer.web_url).catch(() => setConciergeActionError("Couldn't open this service. Try Where to Watch in title details."));
+              }}
             />
           ) : null}
 

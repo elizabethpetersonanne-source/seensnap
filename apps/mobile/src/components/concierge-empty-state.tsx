@@ -69,8 +69,8 @@ function diagnosisFor(
       };
     case "empty_watched_scope":
       return {
-        headline: "No watched + liked title fits that mood.",
-        body: "A comfort rewatch searches titles you've already watched and rated 7+. Loosen the ask or search the whole catalog.",
+        headline: "No watched title fits that mood.",
+        body: "This search checks your watched and ranked titles, including ones you haven't rated. Edit the request or search for something new.",
         adjustments: [
           { id: "broaden_catalog", label: "Try a new title instead", prompt: "A new movie I haven't seen that would feel comforting." },
           { id: "any_watched", label: "Any watched title", prompt: "A comforting rewatch from anything I've watched." },

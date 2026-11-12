@@ -17,7 +17,7 @@ const items = (prefix = 'title') => Array.from({ length: 20 }, (_, i) => {
 // Render the actual Swipe screen with controllable transport and animation.
 // No live account, title state or remote service is changed by these tests.
 async function mount({ width = 390, holdExitAnimation = false, repeatPage = false } = {}) {
-  const requests = [], stateListeners = new Set();
+  const requests = [], stateListeners = new Set(), hydration = [];
   let filter = { media_type: null, genre: null }, handlers, screen;
   let send = () => Promise.resolve({ swipe_id: 'receipt' });
   const pans = [];
@@ -74,7 +74,9 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
     if (name === '@/lib/discovery-recovery') return load('src/lib/discovery-recovery.ts');
     if (name === '@/lib/discovery-filter') return { useDiscoveryFilter: () => [filter, next => { filter = next; }, true] };
     if (name === '@/lib/discovery-storage') return { restoreDiscovery: async () => null, saveDiscoverySnapshot() {} };
-    if (name === '@/lib/universal-title') return { fetchUniversalTitle: () => new Promise(() => {}) };
+    if (name === '@/lib/universal-title') return { fetchUniversalTitle: (token, id, seed, options) => {
+      const call = { id, options, ...deferred() }; hydration.push(call); return call.promise;
+    } };
     if (name === '@/lib/backdrop-pool') return { useFallbackBackdrop: () => null };
     if (name === '@/lib/format') return { formatGenres: () => '' };
     if (name === '@/lib/analytics') return { trackEvent() {} };
@@ -94,7 +96,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
   await act(async () => { screen = renderer.create(React.createElement(Swipe)); });
   const button = label => screen.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label);
   return {
-    screen, requests, button, api, pan: pans[0], handlers: () => handlers,
+    screen, requests, hydration, button, api, pan: pans[0], handlers: () => handlers,
     sendWith(fn) { send = fn; },
     async click(label) { const b = button(label); assert.ok(b, `Missing button: ${label}`); assert.ok(!b.props.disabled, `Disabled button: ${label}`); await act(async () => { b.props.onPress(); }); },
     async genre(genre) { await act(async () => { screen.root.findByType('CategoryChips').props.onChange({ media_type: null, genre }); }); },
@@ -115,6 +117,22 @@ test('a slow swipe shows progress, blocks duplicate gestures, and advances exact
     await act(async () => request.resolve({ swipe_id: 'receipt' }));
     assert.ok(h.button('Flip title 1 to details'));
     assert.equal(h.button('Pass this title').props.disabled, false);
+  } finally { await h.close(); }
+});
+
+test('prefetch requests each upcoming title once as other details finish', async () => {
+  const h = await mount();
+  try {
+    assert.equal(h.hydration.length, 3);
+    assert.ok(h.hydration.every(call => call.options.lightweight));
+    const value = { credits: { cast: [] }, streamingAvailability: [], description: 'Cached details' };
+    await act(async () => h.hydration[0].resolve(value));
+    assert.equal(h.hydration.length, 3, 'Completing one request must not re-request the other two');
+    await act(async () => h.hydration[1].resolve(value));
+    assert.equal(h.hydration.length, 3);
+    await h.click('Pass this title');
+    assert.equal(h.hydration.length, 4, 'Only the newly entering card needs a request');
+    assert.equal(new Set(h.hydration.map(call => call.id)).size, 4);
   } finally { await h.close(); }
 });
 

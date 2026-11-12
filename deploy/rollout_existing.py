@@ -106,7 +106,7 @@ def traffic(service):
     return allocations
 
 
-def validate(service, job, project):
+def validate(service, job, project, concierge_override=None):
     template = service["spec"]["template"]
     containers = template["spec"]["containers"]
     execution_template = job["spec"]["template"]
@@ -135,7 +135,14 @@ def validate(service, job, project):
         require(any(configured(k) for k in (
             "CONCIERGE_AI_PROJECT", "GCP_PROJECT_ID", "GOOGLE_CLOUD_PROJECT")),
             "Vertex requires its existing project configuration; this script does not invent it.")
+        model = (concierge_override or {}).get("CONCIERGE_AI_MODEL") or env.get("CONCIERGE_AI_MODEL", {}).get("value") or "gemini-3.5-flash-lite"
+        location = (concierge_override or {}).get("CONCIERGE_AI_LOCATION") or env.get("CONCIERGE_AI_LOCATION", {}).get("value") or "us"
+        require(not model.startswith(("gemini-2.5-flash", "gemini-2.5-pro")),
+                "The configured Gemini 2.5 text model is retired. Supply --concierge-model gemini-3.5-flash-lite --concierge-location us to update it on the new revision.")
+        if model in {"gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-3.8-flash"}:
+            require(location in {"us", "eu", "global"}, "This Gemini model needs a supported multi-region/global endpoint. Supply --concierge-location with --concierge-model.")
     else:
+        require(not concierge_override, "Concierge model/location overrides here are only for the existing Vertex provider.")
         require(configured("CONCIERGE_AI_API_KEY"), "The selected Concierge provider needs its API key configured.")
     connections = template.get("metadata", {}).get("annotations", {}).get("run.googleapis.com/cloudsql-instances", "")
     # Cloud Run v1 stores job Cloud SQL annotations on the execution
@@ -206,7 +213,7 @@ def reusable_build(project, commit, image_repo, build_id, build_commit):
     return {"id": build_id, "commit": build_commit, "api_tree": source_tree, "image": image}
 
 
-def rollout(project, before, job, commit, image_repo, instance, reuse=None):
+def rollout(project, before, job, commit, image_repo, instance, reuse=None, concierge_override=None):
     suffix = f"beta-{commit[:10]}-{int(time.time())}"
     revision = f"{SERVICE}-{suffix}"
     tag = suffix
@@ -246,9 +253,13 @@ def rollout(project, before, job, commit, image_repo, instance, reuse=None):
     cloud_action(project, "run", "jobs", "execute", JOB, f"--region={REGION}", "--wait")
     require(describe_service(project)["spec"] == before["spec"], "Service changed during migration. Stop and inspect before deployment.")
     print("Deploying a revision with no production traffic; existing settings are retained.", flush=True)
+    overrides = ["--update-env-vars=" + ",".join(f"{key}={value}" for key, value in sorted(concierge_override.items()))] if concierge_override else []
     cloud_action(project, "run", "deploy", SERVICE, f"--region={REGION}", f"--image={image}",
-          "--no-traffic", f"--tag={tag}", f"--revision-suffix={suffix}")
+          "--no-traffic", f"--tag={tag}", f"--revision-suffix={suffix}", *overrides)
     candidate = describe_service(project)
+    if concierge_override:
+        configured = {e["name"]: e.get("value") for e in candidate["spec"]["template"]["spec"]["containers"][0].get("env", [])}
+        require(all(configured.get(k) == v for k, v in concierge_override.items()), "Candidate Concierge configuration did not match the requested update.")
     require(traffic(candidate) == old_traffic, "Traffic changed unexpectedly. Stop and inspect Cloud Run.")
     require(candidate["status"].get("latestReadyRevisionName") == revision,
             "The expected new revision is not ready.")
@@ -277,7 +288,14 @@ def main():
     parser.add_argument("--expected-commit", help="Exact reviewed Git SHA; required with --apply")
     parser.add_argument("--reuse-build", help="Exact successful Cloud Build ID from a previous rollout attempt")
     parser.add_argument("--build-commit", help="Full source commit of --reuse-build; API files must match this checkout")
+    parser.add_argument("--concierge-model", help="Explicit Vertex model update on the new revision only")
+    parser.add_argument("--concierge-location", help="Vertex endpoint location for --concierge-model (for example us)")
     args = parser.parse_args()
+    require(bool(args.concierge_model) == bool(args.concierge_location), "Supply --concierge-model and --concierge-location together.")
+    concierge_override = None
+    if args.concierge_model:
+        require(re.fullmatch(r"[a-z0-9.-]+", args.concierge_model) and re.fullmatch(r"[a-z0-9-]+", args.concierge_location), "Invalid model or endpoint location.")
+        concierge_override = {"CONCIERGE_AI_MODEL": args.concierge_model, "CONCIERGE_AI_LOCATION": args.concierge_location}
     require(bool(args.reuse_build) == bool(args.build_commit), "Supply --reuse-build and --build-commit together.")
     commit = command("git", "rev-parse", "HEAD")
     require(not command("git", "status", "--porcelain", "--untracked-files=no"), "Tracked worktree must be clean.")
@@ -291,12 +309,12 @@ def main():
     service = describe_service(project)
     print("Reading the existing migration job.", flush=True)
     job = describe_job(project)
-    image_repo, instance = validate(service, job, project)
+    image_repo, instance = validate(service, job, project, concierge_override=concierge_override)
     print(f"Preflight passed: project={project}, service={SERVICE}, commit={commit}", flush=True)
     print("Configuration presence checked only; provider credentials/model access still require a live account test.", flush=True)
     reuse = reusable_build(project, commit, image_repo, args.reuse_build, args.build_commit) if args.reuse_build else None
     if args.apply:
-        rollout(project, service, job, commit, image_repo, instance, reuse=reuse)
+        rollout(project, service, job, commit, image_repo, instance, reuse=reuse, concierge_override=concierge_override)
     else:
         print("Read-only check complete. No cloud resources changed. Use --apply --expected-commit <reviewed SHA> to deploy.")
 

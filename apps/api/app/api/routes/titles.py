@@ -2,7 +2,7 @@ from datetime import date, timedelta
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -219,10 +219,20 @@ def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession) -> TitleR
 
 
 @router.get("/{title_id}", response_model=TitleResponse)
-def get_title(title_id: UUID, db: DbSession) -> TitleResponse:
+def get_title(title_id: UUID, db: DbSession, enrich: bool = True) -> TitleResponse:
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
     if title is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
+
+    if not enrich:
+        # Swipe prefetch needs cached synopsis/credits/providers, not five
+        # network enrichments and catalog writes per upcoming card.
+        from datetime import datetime, timezone
+        availability = list(db.scalars(select(ContentAvailability).where(
+            ContentAvailability.content_title_id == title.id,
+            ContentAvailability.expires_at > datetime.now(timezone.utc),
+        )).all())
+        return _to_title_response(title, availability=availability)
 
     try:
         title = refresh_title_details(db, title)
@@ -334,9 +344,12 @@ def undo_title_swipe(
     swipe_id: UUID,
     current_user: CurrentUser,
     db: DbSession,
+    background_tasks: BackgroundTasks,
 ) -> SwipeUndoResponse:
     from app.services.discovery_decisions import undo_decision
-    result = undo_decision(db, current_user.id, swipe_id)
+    from app.services.swipe_refresh import refresh_after_swipe
+    result = undo_decision(db, current_user.id, swipe_id, refresh_derived=False)
+    background_tasks.add_task(refresh_after_swipe, current_user.id)
     return SwipeUndoResponse(**result)
 
 
@@ -345,6 +358,7 @@ def record_title_swipe(
     payload: SwipeRecordCreate,
     current_user: CurrentUser,
     db: DbSession,
+    background_tasks: BackgroundTasks,
 ) -> SwipeRecordResponse:
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == payload.title_id))
     if title is None:
@@ -360,6 +374,7 @@ def record_title_swipe(
             reason=payload.reason,
             source_surface=payload.source_surface,
             idempotency_key=payload.idempotency_key,
+            refresh_derived=False,
         )
     except RatingConflictError as exc:
         # SWIPE01: 409 so the mobile client knows this was a
@@ -375,13 +390,14 @@ def record_title_swipe(
         ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    feedback = build_swipe_feedback(db, current_user.id, payload.title_id, payload.direction)
+    from app.services.swipe_refresh import refresh_after_swipe
+    background_tasks.add_task(refresh_after_swipe, current_user.id)
     return SwipeRecordResponse(
         swipe_id=record.id,
         title_id=payload.title_id,
         direction=payload.direction,
         updated_at=record.created_at,
-        scene_dna_feedback=feedback,
+        scene_dna_feedback=None,
     )
 
 

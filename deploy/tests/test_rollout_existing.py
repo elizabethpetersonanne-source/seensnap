@@ -45,6 +45,21 @@ def fixtures():
 
 
 class RolloutSafetyTests(unittest.TestCase):
+    def test_retired_model_requires_explicit_candidate_override(self):
+        service, job = fixtures()
+        env = service["spec"]["template"]["spec"]["containers"][0]["env"]
+        env.extend([{"name": "CONCIERGE_AI_MODEL", "value": "gemini-2.5-flash"},
+                    {"name": "CONCIERGE_AI_LOCATION", "value": "us-central1"}])
+        original = copy.deepcopy(service)
+        with self.assertRaisesRegex(RuntimeError, "retired"):
+            rollout.validate(service, job, PROJECT)
+        overrides = {"CONCIERGE_AI_MODEL": "gemini-3.5-flash-lite", "CONCIERGE_AI_LOCATION": "us"}
+        self.assertEqual(rollout.validate(service, job, PROJECT, concierge_override=overrides), (IMAGE, "beta-db"))
+        self.assertEqual(service, original, "Preflight must not mutate the running service")
+        overrides["CONCIERGE_AI_LOCATION"] = "us-central1"
+        with self.assertRaisesRegex(RuntimeError, "endpoint"):
+            rollout.validate(service, job, PROJECT, concierge_override=overrides)
+
     def test_resource_reader_keeps_valid_json_and_rejects_noisy_output_safely(self):
         build = {"status": "SUCCESS", "id": "test-build"}
         with patch.object(rollout, "command", return_value=json.dumps(build)):

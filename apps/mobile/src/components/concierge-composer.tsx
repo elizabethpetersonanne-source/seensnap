@@ -49,6 +49,7 @@ export type ConciergeTitleCard = {
   year: number | null;
   media_type: string;
   overview: string | null;
+  watch_options?: Array<{ provider_code: string; provider_name: string; offer_type: string; web_url: string | null }>;
 };
 
 export type ConciergeDecisionResponse = {
@@ -107,6 +108,8 @@ export function ConciergeComposer({
   draft,
   disabled,
   backdropUri,
+  continuing,
+  conversationVersion,
 }: {
   token: string | null;
   tier: "free" | "premium";
@@ -117,6 +120,8 @@ export function ConciergeComposer({
   draft?: string;
   disabled?: boolean;
   backdropUri?: string | null;
+  continuing?: boolean;
+  conversationVersion?: string;
 }) {
   const [intent, setIntent] = useState("");
   const [busy, setBusy] = useState(false);
@@ -129,11 +134,11 @@ export function ConciergeComposer({
   const inputRef = useRef<TextInput | null>(null);
   const requestBusy = useRef(false);
 
-  useEffect(() => { if (draft !== undefined) setIntent(draft); }, [draft]);
+  useEffect(() => { if (draft !== undefined) setIntent(draft); }, [draft, conversationVersion]);
 
   const outOfAllowance = tier === "free" && allowanceRemaining != null && allowanceRemaining <= 0;
   const currentExample = ROTATING_EXAMPLES[exampleIdx] ?? DEFAULT_EXAMPLE;
-  const placeholder = suggestions?.placeholder ?? currentExample;
+  const placeholder = continuing ? "Something shorter, lighter, or more like the second one…" : suggestions?.placeholder ?? currentExample;
 
   useEffect(() => {
     if (!token) return;

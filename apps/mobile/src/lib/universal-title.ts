@@ -280,10 +280,11 @@ export async function fetchPersonDetails(token: string, tmdbPersonId: number): P
 export async function fetchUniversalTitle(
   token: string,
   titleId: string,
-  seed?: TitleSeed | null
+  seed?: TitleSeed | null,
+  options?: { lightweight?: boolean },
 ): Promise<UniversalTitle> {
   try {
-    const data = await apiRequest<TitleResponse>(`/titles/${titleId}`, { token });
+    const data = await apiRequest<TitleResponse>(`/titles/${titleId}${options?.lightweight ? "?enrich=false" : ""}`, { token });
     return normalizeFromApi(data);
   } catch {
     if (seed) {

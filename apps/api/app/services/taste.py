@@ -148,8 +148,9 @@ def refresh_taste_profile(db: Session, user_id: UUID) -> UserTasteProfile:
 
 
 def get_taste_profile(db: Session, user_id: UUID, *, force_refresh: bool = False) -> UserTasteProfile:
+    from app.services.swipe_refresh import newer_discovery
     profile = db.scalar(select(UserTasteProfile).where(UserTasteProfile.user_id == user_id))
-    if profile is None or force_refresh or _is_stale(profile.updated_at, hours=12):
+    if profile is None or force_refresh or _is_stale(profile.updated_at, hours=12) or newer_discovery(db, user_id, profile.updated_at):
         return refresh_taste_profile(db, user_id)
     return profile
 
@@ -1967,6 +1968,7 @@ def record_swipe(
     reason: str | None = None,
     source_surface: str | None = None,
     idempotency_key: str | None = None,
+    refresh_derived: bool = True,
 ) -> SwipeRecord:
     if direction not in SWIPE_DIRECTION_WEIGHTS:
         raise ValueError(f"Unsupported swipe direction: {direction}")
@@ -2063,15 +2065,16 @@ def record_swipe(
         mark_watched(db, user_id, title_id, commit=False)
     create_decision(db, record, before, source_surface)
     db.commit()
-    # Taste refresh is derived work. A failure cannot undo an accepted action.
-    try:
-        _prune_old_swipes(db, user_id)
-        refresh_taste_profile(db, user_id)
-        from app.services.user_signals import compute_user_signals
-        compute_user_signals(db, user_id)
-        db.commit()
-    except Exception:
-        db.rollback()
+    # The HTTP path acknowledges the durable decision before derived work.
+    if refresh_derived:
+        try:
+            _prune_old_swipes(db, user_id)
+            refresh_taste_profile(db, user_id)
+            from app.services.user_signals import compute_user_signals
+            compute_user_signals(db, user_id)
+            db.commit()
+        except Exception:
+            db.rollback()
     db.refresh(record)
     return record
 
