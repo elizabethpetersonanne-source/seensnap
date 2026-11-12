@@ -12,10 +12,11 @@ The single ordered collection has no product size limit. Top 20 is
 "first 20"; Top 100 is "first 100". They cannot disagree because
 they read the same rows.
 
-Rating edits do NOT silently re-order once the user has customized —
-this is a manual list. The dedicated rebuild endpoint replaces the
-current list from watched+rated titles when the user explicitly
-requests it.
+New ratings and score changes place that title after the existing
+titles with the same score. Other titles retain their relative order,
+and manual moves remain available. Saving the same score preserves
+the title's position. The dedicated rebuild endpoint replaces the
+whole order only when the user explicitly requests it.
 """
 from __future__ import annotations
 
