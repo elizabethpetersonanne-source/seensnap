@@ -31,6 +31,11 @@ test('a suggestion starts a fresh Concierge search while a typed follow-up retai
     await act(async () => { await screen.root.findByType('TextInput').props.onSubmitEditing(); });
     assert.equal(calls[1][1].newSearch, true);
     assert.match(calls[1][0], /saved lists/);
+    // Parent preserves the pending draft after a failed new search; the
+    // old result is still visible, but Retry must not refine that old result.
+    await act(async () => screen.update(React.createElement(ConciergeComposer, { ...props, draft: calls[1][0] })));
+    await act(async () => { await screen.root.findByType('TextInput').props.onSubmitEditing(); });
+    assert.equal(calls[2][1].newSearch, true);
   } finally { await act(async () => screen.unmount()); }
 });
 test('compact rating editor exposes all ten choices and does not write until Save', async () => {

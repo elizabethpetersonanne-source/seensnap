@@ -135,7 +135,10 @@ export function ConciergeComposer({
   const requestBusy = useRef(false);
   const newSearch = useRef(false);
 
-  useEffect(() => { if (draft !== undefined) setIntent(draft); newSearch.current = false; }, [draft, conversationVersion]);
+  useEffect(() => { if (draft !== undefined) setIntent(draft); }, [draft, conversationVersion]);
+  // Draft updates also happen when a request fails. Keep its new-search
+  // mode until a different confirmed conversation replaces the old one.
+  useEffect(() => { newSearch.current = false; }, [conversationVersion]);
 
   const outOfAllowance = tier === "free" && allowanceRemaining != null && allowanceRemaining <= 0;
   const currentExample = ROTATING_EXAMPLES[exampleIdx] ?? DEFAULT_EXAMPLE;
