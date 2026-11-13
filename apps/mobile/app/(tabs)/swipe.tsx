@@ -64,7 +64,7 @@ type RecommendationItem = {
 
 // Oct-27 Swipe semantics:
 //   left  — Pass for now (temporary cooldown)
-//   right — Interested; does not save to a list
+//   right — Save to My Next Watch; leaves watched/rating unchanged
 //   up    — Watched; offer an optional rating
 //   down  — Watched and disliked; never invent a numeric rating
 type SwipeDirection = "left" | "right" | "up" | "down";
@@ -472,7 +472,7 @@ export default function SwipeTab() {
     const generation = generationRef.current;
     const { pauseMs, decisionKey } = attempt;
     try {
-      const res = await apiRequest<{ swipe_id: string }>("/titles/swipes", {
+      const res = await apiRequest<{ swipe_id: string; saved?: boolean }>("/titles/swipes", {
         method: "POST", token: sessionToken, signal: operation.signal,
         body: JSON.stringify({ title_id: item.title.id, direction, pause_ms: pauseMs,
           session_id: attempt.sessionId, reason: item.reason, source_surface: "swipe", idempotency_key: decisionKey }),
@@ -493,6 +493,8 @@ export default function SwipeTab() {
       currentIndexRef.current += 1;
       setCurrentIndex(currentIndexRef.current); setShowFilters(false);
       setLastSwipe({ swipeId: res.swipe_id, item, direction, at: Date.now() });
+      if (res.saved != null) patchTitleState(item.title.id, { saved: res.saved });
+      if (direction === "right" && res.saved) showUndoToast("Added to My Next Watch");
       if (direction === "up" || direction === "down") patchTitleState(item.title.id, { watched: true });
       if (direction === "up") setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
       trackEvent(`swipe_${direction}`, { title_id: item.title.id, session_id: sessionId });
@@ -524,7 +526,7 @@ export default function SwipeTab() {
     const previous = lastSwipe;
     const generation = generationRef.current;
     try {
-      const result = await apiRequest<{ reversed: string[]; partial_reason: string | null; watched: boolean | null }>(
+      const result = await apiRequest<{ reversed: string[]; partial_reason: string | null; watched: boolean | null; saved?: boolean }>(
         `/titles/swipes/${previous.swipeId}`, { method: "DELETE", token: sessionToken, signal: operation.signal },
       );
       if (generation !== generationRef.current) return;
@@ -536,8 +538,9 @@ export default function SwipeTab() {
       });
       setSwipes((swipes) => swipes.slice(0, -1));
       cardStartRef.current = Date.now();
+      if (result.saved != null) patchTitleState(previous.item.title.id, { saved: result.saved });
       if (result.watched != null) patchTitleState(previous.item.title.id, { watched: result.watched });
-      if (result.partial_reason) showUndoToast("Swipe undone. Your newer rating or watched status was kept.");
+      if (result.partial_reason) showUndoToast("Swipe undone. Your newer save, rating or watched status was kept.");
       trackEvent("swipe_undo", { direction: previous.direction, reversed: result.reversed.join(",") });
     } catch {
       if (generation === generationRef.current) showUndoToast("Couldn't undo. Tap Undo to retry.");
@@ -810,7 +813,7 @@ export default function SwipeTab() {
       ) : null}
 
       {/* Vision-mock decision dock: three big circular controls below
-          the card. PASS and SAVE are outlined; MORE LIKE THIS is the
+          the card. PASS and SAVE are outlined; NEXT WATCH is the
           filled yellow primary. Labels sit underneath in uppercase
           mono — matches the vision mock exactly. */}
       <View style={styles.decisionDock}>
@@ -831,12 +834,12 @@ export default function SwipeTab() {
             disabled={swipeBusy || !!swipeError}
             onPress={() => void animateSwipe("right")}
             accessibilityRole="button"
-            accessibilityLabel={`More like ${activeCard.title.title}`}
+            accessibilityLabel={`Save ${activeCard.title.title} to My Next Watch`}
             style={({ pressed }) => [styles.decisionCircle, styles.decisionCirclePrimary, pressed && { opacity: 0.88 }]}
           >
             <Ionicons name="heart" size={28} color={colors.background} />
           </Pressable>
-          <Text style={[styles.decisionLabel, styles.decisionLabelPrimary]}>MORE LIKE THIS</Text>
+          <Text style={[styles.decisionLabel, styles.decisionLabelPrimary]}>NEXT WATCH</Text>
         </View>
         <View style={styles.decisionCell}>
           <Pressable
@@ -913,7 +916,7 @@ export default function SwipeTab() {
             <Pressable onPress={() => setShowFilters((v) => !v)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>Filters{categoryFilter.genre ? ` · ${categoryFilter.genre}` : ""}</Text></Pressable>
             <Pressable onPress={() => setShowHelp((v) => !v)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>How to swipe</Text></Pressable>
           </View>
-          {showHelp ? <Text style={{ color: colors.muted, fontSize: 14, lineHeight: 21, marginBottom: 12 }}>Right — More like this. Left — Pass for now. Up — Watched; add a rating. Down — Watched and didn't like it. Tap the poster to flip to details; tap Back to poster to return. Save adds a title to your lists.</Text> : null}
+          {showHelp ? <Text style={{ color: colors.muted, fontSize: 14, lineHeight: 21, marginBottom: 12 }}>Right — Save to My Next Watch. Left — Pass for now. Up — Watched; add a rating. Down — Watched and didn't like it. Tap the poster to flip to details; tap Back to poster to return. Use the list button to choose another list.</Text> : null}
           {showFilters ? <CategoryChips
             value={categoryFilter}
             onChange={(next) => {
@@ -964,10 +967,10 @@ export default function SwipeTab() {
               hitSlop={4}
               style={({ pressed }) => [styles.swipeLegendPill, pressed && { opacity: 0.6 }]}
               accessibilityRole="button"
-              accessibilityLabel="More like this"
+              accessibilityLabel="Next Watch"
             >
               <Ionicons name="arrow-forward" size={11} color={colors.muted} />
-              <Text style={styles.swipeLegendLabel}>More like this</Text>
+              <Text style={styles.swipeLegendLabel}>Next Watch</Text>
             </Pressable>
             <Pressable
               onPress={() => activeCard && void animateSwipeRef.current("up")}
@@ -1197,7 +1200,7 @@ export default function SwipeTab() {
               <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
             </Animated.View>
             <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}>
-              <Text style={styles.deckEdgeChipTextRight}>MORE LIKE THIS</Text>
+              <Text style={styles.deckEdgeChipTextRight}>NEXT WATCH</Text>
             </Animated.View>
             <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipTop, { opacity: upLabelOpacity }]}>
               <Text style={styles.deckEdgeChipTextTop}>WATCHED + RATE</Text>
@@ -1226,12 +1229,12 @@ export default function SwipeTab() {
                 disabled={swipeBusy || !!swipeError}
             onPress={() => void animateSwipe("right")}
                 accessibilityRole="button"
-                accessibilityLabel={`More like ${activeCard.title.title}`}
+                accessibilityLabel={`Save ${activeCard.title.title} to My Next Watch`}
                 style={({ pressed }) => [styles.decisionCircle, styles.decisionCirclePrimary, pressed && { opacity: 0.88 }]}
               >
                 <Ionicons name="heart" size={28} color={colors.background} />
               </Pressable>
-              <Text style={[styles.decisionLabel, styles.decisionLabelPrimary]}>MORE LIKE THIS</Text>
+              <Text style={[styles.decisionLabel, styles.decisionLabelPrimary]}>NEXT WATCH</Text>
             </View>
             <View style={styles.decisionCell}>
               <Pressable
@@ -1355,7 +1358,7 @@ export default function SwipeTab() {
                     <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
                   </Animated.View>
                   <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}>
-                    <Text style={styles.deckEdgeChipTextRight}>MORE LIKE THIS</Text>
+                    <Text style={styles.deckEdgeChipTextRight}>NEXT WATCH</Text>
                   </Animated.View>
                   <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipTop, { opacity: upLabelOpacity }]}>
                     <Text style={styles.deckEdgeChipTextTop}>WATCHED + RATE</Text>

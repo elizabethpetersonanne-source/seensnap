@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 
+from app.services.taste_invalidation import invalidate_taste
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
 from app.models.social import FeedEvent, RankedFavorite, Rating
@@ -181,6 +182,7 @@ def replace_ranked_favorites(
                 version=1,
             )
         )
+    invalidate_taste(db, current_user.id)
     db.commit()
     favorites = db.scalars(
         select(RankedFavorite)
@@ -362,6 +364,7 @@ def move_ranked_favorite(
     # Place the target at its new position.
     target.position = to_position
     target.updated_at = now
+    invalidate_taste(db, current_user.id)
     db.commit()
     # Return a window centered on the new position so the UI can
     # scroll + render immediately without a second fetch for small
@@ -426,6 +429,7 @@ def publish_rank_change(
         payload=event_payload,
     )
     db.add(event)
+    invalidate_taste(db, current_user.id)
     db.commit()
     db.refresh(event)
     from app.services.social_feed import hydrate_feed_event
@@ -457,6 +461,7 @@ def remove_ranked_favorite(
             f.position = idx
             f.updated_at = now
             f.version += 1
+    invalidate_taste(db, current_user.id)
     db.commit()
     return RankedFavoritesResponse(items=_hydrate(db, current_user.id, remaining), total=len(remaining))
 
@@ -585,6 +590,7 @@ def append_unplaced_rated(
             updated_at=now,
         ))
         next_position += 1
+    invalidate_taste(db, current_user.id)
     db.commit()
 
     final_rows = db.scalars(
@@ -641,5 +647,6 @@ def add_ranked_favorite(
             f.position = idx
             f.updated_at = now
             f.version += 1
+    invalidate_taste(db, current_user.id)
     db.commit()
     return RankedFavoritesResponse(items=_hydrate(db, current_user.id, ordered), total=len(ordered))

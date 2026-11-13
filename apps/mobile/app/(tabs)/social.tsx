@@ -125,6 +125,9 @@ export default function SocialScreen() {
   const { sessionToken } = useAuth();
   const { post_id: postId } = useLocalSearchParams<{ post_id?: string }>();
   const feedRequest = useRef(0);
+  const paging = useRef(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [moreError, setMoreError] = useState<string | null>(null);
   // Cycling backdrop from the shared trending pool so the header matches the
   // visual weight of Discover / SceneDNA / Teams. Offset 9 is unique to
   // Social so different tabs pull different backdrops from the same pool.
@@ -275,6 +278,7 @@ export default function SocialScreen() {
   const loadFeed = useCallback(async () => {
     if (!sessionToken) return;
     const request = ++feedRequest.current;
+    paging.current = false; setLoadingMore(false); setMoreError(null);
     try {
       setError(null);
       const data: FeedResponse = postId
@@ -299,6 +303,18 @@ export default function SocialScreen() {
       return () => { feedRequest.current++; };
     }, [loadFeed]),
   );
+
+  async function loadMoreFeed() {
+    if (!sessionToken || postId || loading || paging.current || !feed?.has_more || !feed.next_cursor) return;
+    const request = feedRequest.current;
+    paging.current = true; setLoadingMore(true); setMoreError(null);
+    try {
+      const page = await apiRequest<FeedResponse>(`/social/feed?limit=20&before=${encodeURIComponent(feed.next_cursor)}`, { token: sessionToken });
+      if (request !== feedRequest.current) return;
+      setFeed(previous => previous ? { ...page, items: [...new Map([...previous.items, ...page.items].map(item => [item.id, item])).values()] } : page);
+    } catch { if (request === feedRequest.current) setMoreError("Couldn't load more posts. Tap to retry."); }
+    finally { if (request === feedRequest.current) { paging.current = false; setLoadingMore(false); } }
+  }
 
   async function runSearch(q: string) {
     if (!sessionToken || q.trim().length < 2) {
@@ -636,6 +652,9 @@ export default function SocialScreen() {
         <FlatList
           ListHeaderComponent={postId ? null : feedHeader}
           data={feed.items}
+          onEndReached={() => { if (!moreError) void loadMoreFeed(); }}
+          onEndReachedThreshold={0.5}
+          ListFooterComponent={loadingMore ? <ActivityIndicator color={colors.accent} /> : moreError ? <Pressable accessibilityRole="button" onPress={() => void loadMoreFeed()} style={styles.retryBtn}><Text style={styles.retryBtnText}>{moreError}</Text></Pressable> : null}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.content}
           refreshControl={

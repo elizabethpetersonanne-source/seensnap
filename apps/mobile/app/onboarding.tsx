@@ -449,7 +449,7 @@ export default function OnboardingScreen() {
           title_id: titleId,
           direction,
           source_surface: "onboarding_calibration",
-          action_version: 2,
+          action_version: 3,
           idempotency_key: `onboarding:${titleId}:${direction}:${position}`,
         }),
       });
@@ -980,7 +980,7 @@ export default function OnboardingScreen() {
                 </View>
                 <View style={styles.propRow}>
                   <Text style={styles.propIndex}>→</Text>
-                  <Text style={styles.propText}>Swipe right: Interested</Text>
+                  <Text style={styles.propText}>Swipe right: Save to My Next Watch</Text>
                 </View>
                 <View style={styles.propRow}>
                   <Text style={styles.propIndex}>↑</Text>
@@ -1161,7 +1161,7 @@ export default function OnboardingScreen() {
                         ]}
                       >
                         <Text style={styles.deckEdgeChipTextRight}>
-                          INTERESTED
+                          NEXT WATCH
                         </Text>
                       </Animated.View>
                     </Animated.View>
@@ -1212,7 +1212,7 @@ export default function OnboardingScreen() {
                         ]}
                         onPress={() => void animateSwipe("right", "button")}
                         accessibilityRole="button"
-                        accessibilityLabel={`More like ${currentCard.title}`}
+                        accessibilityLabel={`Save ${currentCard.title} to My Next Watch`}
                       >
                         <Ionicons
                           name="heart"
@@ -1220,7 +1220,7 @@ export default function OnboardingScreen() {
                           color={colors.background}
                         />
                         <Text style={styles.controlBtnPrimaryText}>
-                          Interested
+                          Next Watch
                         </Text>
                       </Pressable>
                     </View>

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import and_, exists, func, or_, select
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.content import ContentTitle
@@ -229,6 +229,19 @@ def _ensure_list_share_token(db: Session, *, list_id: UUID, author_user_id: UUID
     return token
 
 
+def delete_feed_events(db: Session, event_ids) -> None:
+    """Remove publications and their engagement in the caller's transaction."""
+    from sqlalchemy import delete, update
+    ids = list(event_ids)
+    if not ids:
+        return
+    comment_ids = select(FeedComment.id).where(FeedComment.event_id.in_(ids))
+    db.execute(update(FeedComment).where(FeedComment.parent_comment_id.in_(comment_ids)).values(parent_comment_id=None))
+    db.execute(delete(FeedReaction).where(FeedReaction.event_id.in_(ids)))
+    db.execute(delete(FeedComment).where(FeedComment.event_id.in_(ids)))
+    db.execute(delete(FeedEvent).where(FeedEvent.id.in_(ids)))
+
+
 def delete_social_post(db: Session, viewer_user_id: UUID, event_id: UUID) -> None:
     """Only the author may delete a post (§58 authorization)."""
     event = db.scalar(select(FeedEvent).where(FeedEvent.id == event_id))
@@ -236,12 +249,7 @@ def delete_social_post(db: Session, viewer_user_id: UUID, event_id: UUID) -> Non
         return
     if event.actor_user_id != viewer_user_id:
         raise PermissionError("Only the author may delete this post")
-    # Delete associated reactions + comments so the post disappears fully.
-    from sqlalchemy import delete as sa_delete
-
-    db.execute(sa_delete(FeedReaction).where(FeedReaction.event_id == event_id))
-    db.execute(sa_delete(FeedComment).where(FeedComment.event_id == event_id))
-    db.execute(sa_delete(FeedEvent).where(FeedEvent.id == event_id))
+    delete_feed_events(db, [event_id])
     db.commit()
 
 
@@ -254,6 +262,7 @@ def following_feed(
     *,
     limit: int = 20,
     before_created_at: datetime | None = None,
+    cursor: str | None = None,
 ) -> list[FeedEvent]:
     """SOC-01: three-bucket ranking.
 
@@ -266,9 +275,7 @@ def following_feed(
     `FeedEvent.id`. Visibility + block eligibility are enforced BEFORE
     ranking so a 90% match can't surface a private post.
 
-    Cursor pagination via `before_created_at` keeps working as a
-    crude timestamp cursor; a dedup check in the API layer prevents
-    duplicates when a post straddles a bucket boundary across pages.
+    Pagination uses the same bucket/time/id ordering as the query.
     """
     from app.models.taste import CompatibilityScore
 
@@ -321,27 +328,47 @@ def following_feed(
     if before_created_at is not None:
         conds.append(FeedEvent.created_at < before_created_at)
 
-    # Pull a bounded working set (3x the page) so Python-side bucket
-    # sort has room to prefer followed/high-match posts even when the
-    # most recent raw post is from the 80–89% bucket.
-    rows = list(
-        db.scalars(
-            select(FeedEvent)
-            .where(and_(*conds))
-            .order_by(FeedEvent.created_at.desc())
-            .limit(limit * 3)
-        ).all()
-    )
+    bucket = case((FeedEvent.actor_user_id.in_(following_ids), 0),
+                  (FeedEvent.actor_user_id.in_(bucket90_ids), 1), else_=2)
+    if cursor:
+        group, at, event_id = decode_feed_cursor(cursor)
+        conds.append(or_(bucket > group, and_(bucket == group, or_(
+            FeedEvent.created_at < at,
+            and_(FeedEvent.created_at == at, FeedEvent.id > event_id),
+        ))))
+    rows = db.execute(select(FeedEvent, bucket.label("feed_bucket"))
+                      .where(and_(*conds))
+                      .order_by(bucket, FeedEvent.created_at.desc(), FeedEvent.id)
+                      .limit(limit)).all()
+    for event, group in rows:
+        event._feed_bucket = group
+    return [event for event, _ in rows]
 
-    def _bucket(event: FeedEvent) -> int:
-        if event.actor_user_id in following_ids:
-            return 0
-        if event.actor_user_id in bucket90_ids:
-            return 1
-        return 2
 
-    rows.sort(key=lambda e: (_bucket(e), -e.created_at.timestamp(), str(e.id)))
-    return rows[:limit]
+def encode_feed_cursor(event: FeedEvent) -> str:
+    from base64 import urlsafe_b64encode
+    import json
+    payload = [1, event._feed_bucket, event.created_at.isoformat(), str(event.id)]
+    return "v1." + urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+
+def decode_feed_cursor(cursor: str):
+    from base64 import urlsafe_b64decode
+    import json
+    from fastapi import HTTPException
+    try:
+        if not cursor.startswith("v1.") or len(cursor) > 512:
+            raise ValueError()
+        raw = cursor[3:]
+        version, group, at, event_id = json.loads(urlsafe_b64decode(raw + "=" * (-len(raw) % 4)))
+        if version != 1 or group not in (0, 1, 2):
+            raise ValueError()
+        at = datetime.fromisoformat(at)
+        if at.tzinfo is None:
+            at = at.replace(tzinfo=timezone.utc)
+        return group, at, UUID(event_id)
+    except (ValueError, TypeError, KeyError, UnicodeError):
+        raise HTTPException(status_code=400, detail="Invalid feed cursor. Refresh the feed.")
 
 
 def user_activity_feed(

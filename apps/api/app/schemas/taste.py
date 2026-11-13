@@ -147,6 +147,7 @@ class SceneDnaFeedbackResponse(BaseModel):
 
 class SwipeRecordResponse(BaseModel):
     ok: bool = True
+    saved: bool | None = None
     # Oct-27 followup W06: expose the swipe id so the client can
     # undo the most recent action without a round-trip to look it
     # up by (title_id, timestamp).

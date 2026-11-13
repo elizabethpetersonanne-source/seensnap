@@ -64,7 +64,8 @@ def undo_decision(db, user_id, swipe_id, *, refresh_derived=True):
     if decision is None:
         raise HTTPException(status_code=404, detail="Swipe not found")
     if decision.undone_at:
-        return {"reversed": [], "partial_reason": None, "watched": _watched(db, user_id, decision.content_title_id)}
+        return {"reversed": [], "partial_reason": None, "watched": _watched(db, user_id, decision.content_title_id),
+                "saved": _saved(db, user_id, decision.content_title_id)}
     newer = db.scalar(select(DiscoveryDecision.id).where(
         DiscoveryDecision.user_id == user_id, DiscoveryDecision.content_title_id == decision.content_title_id,
         ((DiscoveryDecision.sequence > decision.sequence) if decision.sequence is not None else (DiscoveryDecision.created_at > decision.created_at)), DiscoveryDecision.undone_at.is_(None),
@@ -100,7 +101,20 @@ def undo_decision(db, user_id, swipe_id, *, refresh_derived=True):
                     db.add(WatchlistItem(watchlist_id=wl.id, content_title_id=decision.content_title_id,
                         added_via=queue_item["added_via"], position=queue_item.get("position"), notes=queue_item.get("notes")))
             reversed_bits.append("watched")
-    # Right means interest, not Save. Never erase any list on its Undo.
+    if decision.direction == "right":
+        created = (decision.state_before or {}).get("added_queue_item")
+        if created:
+            item = db.scalar(select(WatchlistItem).join(Watchlist).where(
+                WatchlistItem.id == UUID(created["id"]), Watchlist.owner_user_id == user_id,
+                WatchlistItem.content_title_id == decision.content_title_id,
+                Watchlist.system_role == "next_watch",
+            ))
+            if item and item.added_via == created["added_via"]:
+                db.delete(item)
+                reversed_bits.append("saved")
+            elif item:
+                partial = "newer_save_kept"
+        # Historical v2 right swipes have no save receipt and remove nothing.
     decision.undone_at = datetime.now(timezone.utc)
     record = db.get(SwipeRecord, swipe_id)
     if record:
@@ -116,7 +130,15 @@ def undo_decision(db, user_id, swipe_id, *, refresh_derived=True):
         except Exception:
             db.rollback()
     return {"reversed": reversed_bits, "partial_reason": partial,
-            "watched": _watched(db, user_id, decision.content_title_id)}
+            "watched": _watched(db, user_id, decision.content_title_id),
+            "saved": _saved(db, user_id, decision.content_title_id)}
+
+
+def _saved(db, user_id, title_id):
+    return db.scalar(select(WatchlistItem.id).join(Watchlist).where(
+        Watchlist.owner_user_id == user_id, Watchlist.system_role == "next_watch",
+        WatchlistItem.content_title_id == title_id,
+    )) is not None
 
 
 def _watched(db, user_id, title_id):

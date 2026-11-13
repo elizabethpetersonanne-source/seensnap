@@ -17,6 +17,7 @@ const items = (prefix = 'title') => Array.from({ length: 20 }, (_, i) => {
 // Render the actual Swipe screen with controllable transport and animation.
 // No live account, title state or remote service is changed by these tests.
 async function mount({ width = 390, holdExitAnimation = false, repeatPage = false } = {}) {
+  const patches = [];
   const requests = [], stateListeners = new Set(), hydration = [];
   let filter = { media_type: null, genre: null }, handlers, screen;
   let send = () => Promise.resolve({ swipe_id: 'receipt' });
@@ -83,7 +84,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
     if (name === '@/lib/swipe-sfx') return { playSwipeSound() {} };
     if (name === '@/lib/title-state') return {
       subscribeTitleState(fn) { stateListeners.add(fn); return () => stateListeners.delete(fn); },
-      patchTitleState(id, state) { for (const fn of stateListeners) fn({ title_id: id, ...state }); },
+      patchTitleState(id, state) { patches.push({id, ...state}); for (const fn of stateListeners) fn({ title_id: id, ...state }); },
     };
     if (name === '@/components/rating-editor') return { RatingEditor: 'RatingEditor', subscribeRatingChanges: () => () => {} };
     if (name.startsWith('@/components/')) return new Proxy({}, { get: (_, key) => String(key) });
@@ -96,7 +97,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
   await act(async () => { screen = renderer.create(React.createElement(Swipe)); });
   const button = label => screen.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label);
   return {
-    screen, requests, hydration, button, api, pan: pans[0], handlers: () => handlers,
+    screen, requests, hydration, patches, button, api, pan: pans[0], handlers: () => handlers,
     sendWith(fn) { send = fn; },
     async click(label) { const b = button(label); assert.ok(b, `Missing button: ${label}`); assert.ok(!b.props.disabled, `Disabled button: ${label}`); await act(async () => { b.props.onPress(); }); },
     async genre(genre) { await act(async () => { screen.root.findByType('CategoryChips').props.onChange({ media_type: null, genre }); }); },
@@ -139,7 +140,7 @@ test('prefetch requests each upcoming title once as other details finish', async
 test('real UUID title and session IDs produce a key within the deployed API limit', async () => {
   const h = await mount();
   try {
-    await h.click('More like this');
+    await h.click('Next Watch');
     const payload = JSON.parse(h.swipes()[0].options.body);
     assert.equal(payload.title_id.length, 36);
     assert.equal(payload.session_id.length, 36);
@@ -151,7 +152,7 @@ test('real UUID title and session IDs produce a key within the deployed API limi
 test('Retry swipe resends the same action, not a feed request or a new decision', async () => {
   const h = await mount(); h.sendWith(() => Promise.reject(new Error('timeout')));
   try {
-    await h.click('More like this');
+    await h.click('Next Watch');
     assert.ok(h.button('Flip title 0 to details'));
     const feedCount = h.requests.filter(r => r.url.startsWith('/titles/recommendations/feed')).length;
     const original = h.swipes()[0].options.body;
@@ -227,5 +228,15 @@ test('a repeated feed page stops automatic retries and preserves the remaining c
     assert.equal(h.requests.filter(r => r.url.startsWith('/titles/recommendations/feed')).length, 2);
     assert.ok(h.button('Flip title 12 to details'));
     assert.ok(h.screen.root.findAllByType('Text').some(node => typeof node.props.children === 'string' && node.props.children.includes("queue couldn't advance")));
+  } finally { await h.close(); }
+});
+
+
+test('a confirmed right swipe broadcasts the saved state and advances to the next title', async () => {
+  const h = await mount(); h.sendWith(() => Promise.resolve({ swipe_id: 'receipt', saved: true }));
+  try {
+    await h.click('Next Watch');
+    assert.equal(h.patches.at(-1).saved, true);
+    assert.ok(h.button('Flip title 1 to details'));
   } finally { await h.close(); }
 });

@@ -2041,7 +2041,7 @@ def record_swipe(
         # TASTE05: v2 is the Oct-27 four-direction semantic.
         # Historical rows stay at v1 so any reprocessing can
         # distinguish ambiguous Up actions.
-        action_version=2,
+        action_version=3,
     )
     db.add(record)
     db.flush()
@@ -2063,6 +2063,18 @@ def record_swipe(
     if direction in ("up", "down"):
         from app.services.title_state import mark_watched
         mark_watched(db, user_id, title_id, commit=False)
+    elif direction == "right":
+        from app.services.title_state import save_title
+        from app.services.watchlists import get_next_watch_list
+        marker = f"swipe:{record.id.hex[:24]}"
+        save_title(db, user_id, title_id, commit=False, added_via=marker)
+        queue = get_next_watch_list(db, user_id)
+        item = db.scalar(select(WatchlistItem).where(
+            WatchlistItem.watchlist_id == queue.id,
+            WatchlistItem.content_title_id == title_id,
+        ))
+        if item.added_via == marker:
+            before["added_queue_item"] = {"id": str(item.id), "added_via": marker}
     create_decision(db, record, before, source_surface)
     db.commit()
     # The HTTP path acknowledges the durable decision before derived work.

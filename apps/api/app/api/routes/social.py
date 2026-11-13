@@ -83,11 +83,19 @@ def get_following_feed(
     current_user: CurrentUser,
     db: DbSession,
     limit: int = Query(20, ge=1, le=50),
-    before: datetime | None = Query(None, description="Cursor: return posts strictly older than this timestamp"),
+    before: str | None = Query(None, max_length=512, description="Opaque feed cursor; legacy ISO timestamps remain accepted"),
 ) -> dict:
-    events = following_feed(db, current_user.id, limit=limit, before_created_at=before)
+    from app.services.social_feed import encode_feed_cursor
+    legacy = None
+    if before and not before.startswith("v1."):
+        try:
+            legacy = datetime.fromisoformat(before)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid feed cursor. Refresh the feed.")
+    events = following_feed(db, current_user.id, limit=limit, before_created_at=legacy,
+                            cursor=before if before and before.startswith("v1.") else None)
     hydrated = [hydrate_feed_event(db, e, current_user.id) for e in events]
-    next_cursor = events[-1].created_at.isoformat() if events else None
+    next_cursor = encode_feed_cursor(events[-1]) if events else None
     # SOC-01: expose a short label so the client can show "Followed",
     # "90%+ match", "80–89% match" chips on the mixed-source feed
     # without inventing bands on the client. Derived from the viewer's

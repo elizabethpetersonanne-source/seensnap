@@ -10,8 +10,8 @@
  * Metro resolves `youtube-player.native.tsx` on iOS/Android and
  * `youtube-player.tsx` on web, so the import site is one path.
  */
-import { forwardRef, useImperativeHandle, useRef, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import YoutubePlayer, { type YoutubeIframeRef } from "react-native-youtube-iframe";
 
 import { colors } from "@/constants/theme";
@@ -27,6 +27,7 @@ export type YoutubePlayerProps = {
   // enables this; swipes keep it off for a cleaner cinematic surface.
   showControls?: boolean;
   onFullScreenChange?: (isFull: boolean) => void;
+  onMutedFallback?: () => void;
 };
 
 
@@ -37,11 +38,26 @@ export type YoutubePlayerHandle = {
 
 
 const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProps>(function YouTubePlayerComponent(
-  { videoKey, isActive, muted, width, height, showControls = true, onFullScreenChange },
+  { videoKey, isActive, muted, width, height, showControls = true, onFullScreenChange, onMutedFallback },
   ref,
 ) {
   const [ready, setReady] = useState(false);
+  const [playing, setPlaying] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  const [error, setError] = useState<string | null>(null);
+  const started = useRef(false);
   const inner = useRef<YoutubeIframeRef | null>(null);
+  const fallback = useRef(onMutedFallback); fallback.current = onMutedFallback;
+  useEffect(() => { started.current = false; setReady(false); setPlaying(false); setError(null); }, [videoKey, attempt]);
+  useEffect(() => {
+    if (!isActive || playing || started.current) return;
+    const timer = setTimeout(() => {
+      if (ready && !muted && fallback.current) {
+        fallback.current(); setAttempt(n => n + 1);
+      } else setError("Trailer could not start. Tap Play, retry, or swipe to the next title.");
+    }, 15000);
+    return () => clearTimeout(timer);
+  }, [isActive, ready, muted, playing, videoKey, attempt]);
 
   useImperativeHandle(ref, () => ({
     async getCurrentTime() {
@@ -56,6 +72,7 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
   return (
     <View style={{ width, height, backgroundColor: "#000", overflow: "hidden" }}>
       <YoutubePlayer
+        key={`${videoKey}:${attempt}`}
         ref={inner}
         height={height}
         width={width}
@@ -76,16 +93,24 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
           mediaPlaybackRequiresUserAction: false,
         }}
         onReady={() => setReady(true)}
+        onChangeState={(state: string) => { setPlaying(state === "playing"); if (state === "playing") { started.current = true; setError(null); } }}
+        onError={() => setError("This trailer is unavailable. Retry or swipe to the next title.")}
         onFullScreenChange={(isFull: boolean) => {
           onFullScreenChange?.(isFull);
         }}
         webViewStyle={{ opacity: ready ? 1 : 0 }}
       />
-      {!ready ? (
+      {!ready && !error ? (
         <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
           <ActivityIndicator color={colors.accent} size="small" />
         </View>
       ) : null}
+      {error && isActive ? <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.85)", padding: 8 }}>
+        <Text style={{ color: "white", fontSize: 12 }}>{error}</Text>
+        <Pressable accessibilityRole="button" onPress={() => setAttempt(n => n + 1)} style={{ minHeight: 44, justifyContent: "center" }}>
+          <Text style={{ color: "white" }}>Retry trailer</Text>
+        </Pressable>
+      </View> : null}
     </View>
   );
 });

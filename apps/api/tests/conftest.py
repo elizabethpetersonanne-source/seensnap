@@ -31,7 +31,9 @@ def db():
         importlib.import_module(f"app.models.{path.stem}")
     url = os.environ.get("TEST_DATABASE_URL", "sqlite://")
     schema = "test_" + uuid4().hex
-    engine = create_engine(url)
+    from sqlalchemy.pool import StaticPool
+    engine = create_engine(url, **({"connect_args": {"check_same_thread": False}, "poolclass": StaticPool}
+                                  if url.startswith("sqlite") else {}))
     if engine.dialect.name == "postgresql":
         with engine.begin() as conn:
             conn.execute(text(f"CREATE SCHEMA {schema}"))
@@ -49,6 +51,7 @@ def db():
         "ranked_favorites",
         "title_watch_status",
         "user_signals",
+        "user_taste_profiles",
         "title_features",
         "swipe_records",
         "watch_handoffs",

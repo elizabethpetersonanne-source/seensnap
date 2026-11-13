@@ -1,16 +1,6 @@
 import { AppHeader } from "@/components/headers/app-header";
-/**
- * Oct-18 UI/UX rebuild: Privacy & Visibility sub-screen.
- * Spec image 4 (step 6). Public vs Followers-only + activity toggles.
- *
- * These settings are stored locally for now — the backend doesn't yet
- * enforce profile visibility beyond the explicit publication model
- * (brief §6). This screen gives users the control surface so the
- * server can wire them in behind the scenes.
- */
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
@@ -40,56 +30,42 @@ type Prefs = {
 export default function PrivacySettingsScreen() {
   const { sessionToken } = useAuth();
   const [loading, setLoading] = useState(true);
-  const [visibility, setVisibility] = useState<Visibility>("public");
-  const [showActivity, setShowActivity] = useState(true);
-  const [showTeams, setShowTeams] = useState(true);
-  const [showLists, setShowLists] = useState(true);
-
-  useEffect(() => {
-    if (!sessionToken) return;
-    let cancelled = false;
-    apiRequest<Prefs>("/me/preferences", { token: sessionToken })
-      .then((res) => {
-        if (cancelled) return;
-        setVisibility(res.profile_visibility === "followers" ? "followers" : "public");
-        setShowActivity(res.show_activity ?? true);
-        setShowTeams(res.show_teams ?? true);
-        setShowLists(res.show_public_lists ?? true);
-      })
-      .catch(() => {})
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
-  }, [sessionToken]);
-
-  async function persist(update: Partial<Prefs>) {
-    if (!sessionToken) return;
+  const [prefs, setPrefs] = useState<Prefs | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const generation = useRef(0);
+  const inFlight = useRef(false);
+  const load = useCallback(async () => {
+    const version = ++generation.current;
+    setLoading(true); setError(null); setPrefs(null);
     try {
-      await apiRequest("/me/preferences", {
-        method: "PATCH",
-        token: sessionToken,
-        body: JSON.stringify(update),
-      });
+      if (!sessionToken) return;
+      const res = await apiRequest<Prefs>("/me/preferences", { token: sessionToken });
+      if (generation.current === version) setPrefs(res);
     } catch {
-      // Keep the local optimistic state; silent failure beats stranding the user.
+      if (generation.current === version) setError("Couldn't load privacy settings. Retry before making changes.");
+    } finally { if (generation.current === version) setLoading(false); }
+  }, [sessionToken]);
+  useEffect(() => {
+    inFlight.current = false; setSaving(false); void load();
+    return () => { generation.current++; };
+  }, [load]);
+  async function persist(update: Partial<Prefs>) {
+    if (!sessionToken || !prefs || inFlight.current) return;
+    const version = generation.current;
+    inFlight.current = true; setSaving(true); setError(null);
+    try {
+      const res = await apiRequest<Prefs>("/me/preferences", {
+        method: "PATCH", token: sessionToken, body: JSON.stringify(update),
+      });
+      if (generation.current === version) setPrefs(res);
+    } catch {
+      if (generation.current === version) setError("Your change could not be confirmed. Your last confirmed settings are shown. Please try again.");
+    } finally {
+      if (generation.current === version) { inFlight.current = false; setSaving(false); }
     }
   }
-
-  function updateVisibility(next: Visibility) {
-    setVisibility(next);
-    void persist({ profile_visibility: next });
-  }
-  function updateActivity(v: boolean) {
-    setShowActivity(v);
-    void persist({ show_activity: v });
-  }
-  function updateTeams(v: boolean) {
-    setShowTeams(v);
-    void persist({ show_teams: v });
-  }
-  function updateLists(v: boolean) {
-    setShowLists(v);
-    void persist({ show_public_lists: v });
-  }
+  const visibility = prefs?.profile_visibility;
 
   return (
     <SafeAreaView style={styles.root}>
@@ -99,9 +75,12 @@ export default function PrivacySettingsScreen() {
         <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
       ) : (
         <ScrollView contentContainerStyle={styles.body}>
+          {error ? <Text accessibilityLiveRegion="polite" style={styles.optionBody}>{error}</Text> : null}
+          {!prefs ? <Pressable onPress={() => void load()} style={styles.option} accessibilityRole="button"><Text style={styles.optionTitle}>Retry</Text></Pressable> : null}
+          {saving ? <Text accessibilityLiveRegion="polite" style={styles.optionBody}>Saving…</Text> : null}
           <Text style={styles.groupTitle}>Profile visibility</Text>
 
-          <Pressable style={styles.option} onPress={() => updateVisibility("public")}>
+          <Pressable style={styles.option} disabled={saving || !prefs} onPress={() => void persist({ profile_visibility: "public" })}>
             <View style={styles.optionIcon}>
               <Ionicons name="earth-outline" size={18} color={colors.ink} />
             </View>
@@ -116,13 +95,13 @@ export default function PrivacySettingsScreen() {
             )}
           </Pressable>
 
-          <Pressable style={styles.option} onPress={() => updateVisibility("followers")}>
+          <Pressable style={styles.option} disabled={saving || !prefs} onPress={() => void persist({ profile_visibility: "followers" })}>
             <View style={styles.optionIcon}>
               <Ionicons name="people-outline" size={18} color={colors.ink} />
             </View>
             <View style={{ flex: 1 }}>
               <Text style={styles.optionTitle}>Followers only</Text>
-              <Text style={styles.optionBody}>Only approved followers can see your profile.</Text>
+              <Text style={styles.optionBody}>Only people who follow you can see your profile. Following does not require approval.</Text>
             </View>
             {visibility === "followers" ? (
               <Ionicons name="checkmark-circle" size={18} color={colors.accent} />
@@ -133,9 +112,8 @@ export default function PrivacySettingsScreen() {
 
           <Text style={styles.groupTitle}>Activity to show</Text>
 
-          <ToggleRow icon="pulse-outline" label="Show my activity" body="Ratings, lists and activity in feed" value={showActivity} onToggle={updateActivity} />
-          <ToggleRow icon="people" label="Show my Watch Teams" body="Keep your teams private" value={showTeams} onToggle={updateTeams} />
-          <ToggleRow icon="list" label="Show my public lists" body="Allow others to discover your lists" value={showLists} onToggle={updateLists} />
+          <ToggleRow icon="pulse-outline" label="Show my activity" body="Ratings, lists and activity in feed" disabled={saving || !prefs} value={prefs?.show_activity ?? false} onToggle={(v) => void persist({ show_activity: v })} />
+          <ToggleRow icon="list" label="Show my public lists" body="Allow others to discover your lists" disabled={saving || !prefs} value={prefs?.show_public_lists ?? false} onToggle={(v) => void persist({ show_public_lists: v })} />
         </ScrollView>
       )}
     </SafeAreaView>
@@ -149,11 +127,13 @@ function ToggleRow({
   body,
   value,
   onToggle,
+  disabled,
 }: {
   icon: keyof typeof Ionicons.glyphMap;
   label: string;
   body: string;
   value: boolean;
+  disabled?: boolean;
   onToggle: (v: boolean) => void;
 }) {
   return (
@@ -166,6 +146,7 @@ function ToggleRow({
         <Text style={styles.optionBody}>{body}</Text>
       </View>
       <Switch
+        disabled={disabled}
         value={value}
         onValueChange={onToggle}
         trackColor={{ false: "rgba(255,255,255,0.1)", true: colors.accent }}

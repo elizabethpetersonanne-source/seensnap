@@ -253,7 +253,8 @@ def rollout(project, before, job, commit, image_repo, instance, reuse=None, conc
     cloud_action(project, "run", "jobs", "execute", JOB, f"--region={REGION}", "--wait")
     require(describe_service(project)["spec"] == before["spec"], "Service changed during migration. Stop and inspect before deployment.")
     print("Deploying a revision with no production traffic; existing settings are retained.", flush=True)
-    overrides = ["--update-env-vars=" + ",".join(f"{key}={value}" for key, value in sorted(concierge_override.items()))] if concierge_override else []
+    release_env = {**(concierge_override or {}), "SEENSNAP_RELEASE_COMMIT": backend_commit}
+    overrides = ["--update-env-vars=" + ",".join(f"{key}={value}" for key, value in sorted(release_env.items()))]
     cloud_action(project, "run", "deploy", SERVICE, f"--region={REGION}", f"--image={image}",
           "--no-traffic", f"--tag={tag}", f"--revision-suffix={suffix}", *overrides)
     candidate = describe_service(project)

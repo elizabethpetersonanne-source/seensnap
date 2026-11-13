@@ -9,6 +9,7 @@ import { useIsFocused } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  AppState,
   Dimensions,
   FlatList,
   Image,
@@ -81,6 +82,15 @@ const YouTubeEmbed = YouTubePlayerComponent;
 export default function PreviewsScreen() {
   const { sessionToken, user } = useAuth();
   const focused = useIsFocused();
+  const [foreground, setForeground] = useState(true);
+  useEffect(() => {
+    const update = () => setForeground(AppState.currentState === "active" &&
+      (typeof document === "undefined" || !document.hidden));
+    update();
+    const subscription = AppState.addEventListener("change", update);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", update);
+    return () => { subscription.remove(); if (typeof document !== "undefined") document.removeEventListener("visibilitychange", update); };
+  }, []);
   const [actionTarget, setActionTarget] = useState<TitleActionTarget | null>(null);
   const insets = useSafeAreaInsets();
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
@@ -325,7 +335,7 @@ export default function PreviewsScreen() {
           scrollEventThrottle={100}
           getItemLayout={(_, index) => ({ length: cardHeight, offset: cardHeight * index, index })}
           renderItem={({ item, index }) => {
-            const isActive = focused && !showDetails && !showSaveSheet && !actionTarget && index === activeIndex;
+            const isActive = focused && foreground && !showDetails && !showSaveSheet && !actionTarget && index === activeIndex;
             const backdrop = resolveMediaUrl(item.backdrop_url) ?? resolveMediaUrl(item.poster_url);
             return (
               <View style={[styles.card, { height: cardHeight }]}>
@@ -344,6 +354,7 @@ export default function PreviewsScreen() {
                       videoKey={item.video.external_key}
                       isActive={isActive}
                       muted={muted}
+                      onMutedFallback={() => setMuted(true)}
                       width={videoWidth}
                       height={videoHeight}
                       // PRE-01: native YT controls are the fullscreen

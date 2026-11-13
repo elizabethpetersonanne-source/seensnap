@@ -4,6 +4,8 @@ from fastapi import APIRouter, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, func, select
 
+from app.models.user import User
+from app.services.taste_invalidation import invalidate_taste
 from app.api.dependencies import CurrentUser, DbSession
 from app.models.content import ContentTitle
 from app.models.social import Team, TeamMember, Watchlist, WatchlistItem
@@ -149,6 +151,7 @@ def add_watchlist_item(
     current_user: CurrentUser,
     db: DbSession,
 ) -> WatchlistResponse:
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
     watchlist = (
         get_watchlist_record(db, current_user.id, payload.list_id)
         if payload.list_id is not None
@@ -182,12 +185,16 @@ def add_watchlist_item(
                 added_via=payload.added_via,
                 entity_id=item.id,
             )
+        invalidate_taste(db, current_user.id)
         db.commit()
         # Save adds a positive intent signal — refresh SceneDNA immediately.
         try:
             refresh_taste_profile(db, current_user.id)
         except Exception:
             pass  # Non-blocking; profile will refresh on next lazy read.
+    if existing is not None:
+        existing.added_via = "save_title"
+        db.commit()
     return _watchlist_response(db, watchlist)
 
 
@@ -203,6 +210,7 @@ def delete_watchlist_item(item_id: UUID, current_user: CurrentUser, db: DbSessio
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Watchlist item not found")
     watchlist = db.scalar(select(Watchlist).where(Watchlist.id == item.watchlist_id))
     db.execute(delete(WatchlistItem).where(WatchlistItem.id == item.id))
+    invalidate_taste(db, current_user.id)
     db.commit()
     # Removing revokes the prior positive-intent signal — not a strong dislike, but
     # SceneDNA must reflect the change immediately so the taste profile stays dynamic.
@@ -228,6 +236,7 @@ def remove_title_from_list(list_id: UUID, title_id: UUID, current_user: CurrentU
     )
     if item is not None:
         db.execute(delete(WatchlistItem).where(WatchlistItem.id == item.id))
+        invalidate_taste(db, current_user.id)
         db.commit()
         try:
             refresh_taste_profile(db, current_user.id)
@@ -321,6 +330,7 @@ def apply_title_memberships(
     """LIST02: apply explicit additions/removals in one transaction.
     Every target list must be owned by the viewer; a foreign id
     aborts the whole call rather than partially applying."""
+    db.scalar(select(User.id).where(User.id == current_user.id).with_for_update())
     all_ids = set(payload.add_list_ids) | set(payload.remove_list_ids)
     if not all_ids:
         return ApplyMembershipResponse(added=[], removed=[])
@@ -349,6 +359,7 @@ def apply_title_memberships(
             )
         )
         if existing is not None:
+            existing.added_via = "manage_lists"
             skipped.append(lid)
             continue
         db.add(WatchlistItem(
@@ -369,6 +380,7 @@ def apply_title_memberships(
         if res.rowcount:
             removed.append(lid)
 
+    invalidate_taste(db, current_user.id)
     db.commit()
     try:
         refresh_taste_profile(db, current_user.id)

@@ -8,7 +8,7 @@ import { AppHeader } from "@/components/headers/app-header";
  * a customized order.
  */
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
+import { router, useFocusEffect } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
@@ -24,6 +24,8 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { subscribeRatingChanges } from "@/components/rating-editor";
+import { subscribeTitleState } from "@/lib/title-state";
 import { apiRequest } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
@@ -53,6 +55,8 @@ export default function RankedFavoritesScreen() {
   const [view, setView] = useState<RankedView>("all");
   const [serverTotal, setServerTotal] = useState<number>(0);
   const loadingMore = useRef(false);
+  const requestVersion = useRef(0);
+  const loadedCount = useRef(100);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -79,6 +83,8 @@ export default function RankedFavoritesScreen() {
 
   const load = useCallback(async (count = 100) => {
     if (!sessionToken) return;
+    const request = ++requestVersion.current;
+    loadingMore.current = false;
     setLoading(true);
     setError(null);
     try {
@@ -90,26 +96,38 @@ export default function RankedFavoritesScreen() {
         total = page.total;
         if (!page.has_more || !page.items.length) break;
       } while (collected.length < count);
+      if (request !== requestVersion.current) return;
+      loadedCount.current = Math.max(100, collected.length);
       setRows(collected);
       setServerTotal(total);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load your ranked favorites.");
+      if (request === requestVersion.current) setError(e instanceof Error ? e.message : "Couldn't load your ranked favorites.");
     } finally {
-      setLoading(false);
+      if (request === requestVersion.current) setLoading(false);
     }
   }, [sessionToken]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { setRows([]); loadedCount.current = 100; setPublishable(null); }, [sessionToken]);
+  useFocusEffect(useCallback(() => {
+    const refresh = () => { void load(loadedCount.current); };
+    refresh();
+    const stopRating = subscribeRatingChanges(refresh);
+    const stopState = subscribeTitleState(refresh);
+    return () => { requestVersion.current++; stopRating(); stopState(); };
+  }, [load]));
 
   async function loadMore() {
     if (!sessionToken || loadingMore.current || loading || busyId || rows.length >= serverTotal) return;
     loadingMore.current = true;
+    const request = requestVersion.current;
     try {
       const page = await apiRequest<ListResponse>(`/me/favorites/ranked?limit=100&offset=${rows.length}`, { token: sessionToken });
+      if (request !== requestVersion.current) return;
+      loadedCount.current = Math.max(100, rows.length + page.items.length);
       setRows((prior) => [...new Map([...prior, ...page.items].map((row) => [row.title_id, row])).values()].sort((a, b) => a.position - b.position));
       setServerTotal(page.total);
-    } catch { setError("Couldn't load more rankings. Scroll to retry."); }
-    finally { loadingMore.current = false; }
+    } catch { if (request === requestVersion.current) setError("Couldn't load more rankings. Scroll to retry."); }
+    finally { if (request === requestVersion.current) loadingMore.current = false; }
   }
 
   async function move(row: Row, direction: "up" | "down") {
@@ -295,7 +313,7 @@ export default function RankedFavoritesScreen() {
         </Pressable>
       ) : null}
 
-      {loading ? (
+      {loading && rows.length === 0 ? (
         <View style={styles.centerFill}>
           <ActivityIndicator color={colors.accent} />
         </View>
@@ -311,7 +329,7 @@ export default function RankedFavoritesScreen() {
           <Ionicons name="trophy-outline" size={40} color={colors.accent} />
           <Text style={styles.emptyTitle}>Nothing ranked yet</Text>
           <Text style={styles.emptyBody}>
-            Rate a few Watched titles and tap the refresh icon above to draft a Top 20 from your ratings — you'll always get to review before it saves.
+            Rate a title to add it after the existing titles with that score. You can move any title to your preferred position. Use Append ratings to add older ratings that are not yet ranked.
           </Text>
         </View>
       ) : (

@@ -6,6 +6,7 @@
  */
 import { apiRequest } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
+import { notifyMessageChanges } from "@/lib/message-events";
 
 export type MessageContentType = "title" | "list";
 
@@ -62,12 +63,8 @@ export async function fetchInbox(token: string, limit = 25): Promise<Conversatio
 }
 
 export async function fetchUnreadCount(token: string): Promise<number> {
-  try {
     const r = await apiRequest<{ count: number }>("/messages/conversations/unread-count", { token });
     return r.count;
-  } catch {
-    return 0;
-  }
 }
 
 export async function startDirectConversation(token: string, recipientUserId: string): Promise<string> {
@@ -123,11 +120,13 @@ export async function sendMessage(
     message_type: msg.message_type,
     source_surface: payload.sourceSurface,
   });
+  notifyMessageChanges();
   return msg;
 }
 
 export async function markConversationRead(token: string, conversationId: string): Promise<void> {
   await apiRequest(`/messages/conversations/${conversationId}/read`, { method: "POST", token });
+  notifyMessageChanges();
 }
 
 export async function toggleMute(token: string, conversationId: string, muted: boolean): Promise<void> {
@@ -140,4 +139,5 @@ export async function toggleMute(token: string, conversationId: string, muted: b
 
 export async function hideConversation(token: string, conversationId: string): Promise<void> {
   await apiRequest(`/messages/conversations/${conversationId}/hide`, { method: "POST", token });
+  notifyMessageChanges();
 }

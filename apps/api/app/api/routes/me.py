@@ -302,6 +302,8 @@ def patch_preferences(
         merged.update({str(k): bool(v) for k, v in payload.notification_channels.items()})
         preferences.notification_channels = merged
 
+    from app.services.taste_invalidation import invalidate_taste
+    invalidate_taste(db, current_user.id)
     db.commit()
     db.refresh(preferences)
     return _to_prefs_response(preferences)
