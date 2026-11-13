@@ -1,3 +1,4 @@
+import { SHARE_BASE } from "@/lib/share";
 /**
  * Oct-18 UI/UX rebuild: immersive public profile pod.
  *
@@ -214,7 +215,7 @@ export default function PublicProfileScreen() {
 
   function sharePublic() {
     if (!profile) return;
-    const url = `https://seensnap.app/profile/${profile.user_id}`;
+    const url = `${SHARE_BASE}/profile/${profile.user_id}`;
     void Share.share({ message: `${profile.display_name} on SeenSnap — ${url}` }).catch(() => {});
   }
 

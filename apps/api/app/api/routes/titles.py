@@ -6,7 +6,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException, Query, status
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
-from app.api.dependencies import CurrentUser, DbSession
+from app.api.dependencies import CurrentUser, DbSession, OptionalCurrentUser
 from app.models.content import ContentAvailability, ContentTitle
 from app.models.social import WatchlistItem
 from app.schemas.content import (
@@ -102,7 +102,7 @@ def get_calibration_candidates(
             if t.id not in seen:
                 seen.add(t.id)
                 pool.append(t)
-    except TmdbConfigurationError:
+    except (TmdbConfigurationError, httpx.HTTPError):
         pass
 
     calibration_genres = ["drama", "action", "comedy", "thriller", "animation"]
@@ -115,7 +115,7 @@ def get_calibration_candidates(
                 if t.id not in seen:
                     seen.add(t.id)
                     pool.append(t)
-        except TmdbConfigurationError:
+        except (TmdbConfigurationError, httpx.HTTPError):
             continue
 
     # Reopening onboarding starts with unhandled titles; never offset a
@@ -163,7 +163,7 @@ def get_person_details(tmdb_person_id: int) -> PersonDetailResponse:
 
 
 @router.get("/by-tmdb/{media_type}/{tmdb_id}", response_model=TitleResponse)
-def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession) -> TitleResponse:
+def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession, current_user: OptionalCurrentUser = None) -> TitleResponse:
     """Look up (or create) a ContentTitle from a TMDB id + media type.
     Used when the client only has a TMDB id (e.g. Person Detail filmography credits).
     Returns the full TitleResponse so the client can open the canonical detail modal."""
@@ -204,11 +204,14 @@ def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession) -> TitleR
 
     try:
         gallery = fetch_title_gallery(title, limit=14)
-    except TmdbConfigurationError:
+    except (TmdbConfigurationError, httpx.HTTPError):
         gallery = []
     try:
-        related_titles = fetch_related_titles(db, title, limit=10)
-    except TmdbConfigurationError:
+        related_titles = fetch_related_titles(db, title, limit=30 if current_user else 10)
+        if current_user:
+            from app.services.related_titles import rank_related_titles
+            related_titles = rank_related_titles(db, current_user.id, title, related_titles)
+    except (TmdbConfigurationError, httpx.HTTPError):
         related_titles = []
     availability = db.scalars(
         select(ContentAvailability)
@@ -219,7 +222,7 @@ def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession) -> TitleR
 
 
 @router.get("/{title_id}", response_model=TitleResponse)
-def get_title(title_id: UUID, db: DbSession, enrich: bool = True) -> TitleResponse:
+def get_title(title_id: UUID, db: DbSession, enrich: bool = True, current_user: OptionalCurrentUser = None) -> TitleResponse:
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
     if title is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
@@ -236,7 +239,7 @@ def get_title(title_id: UUID, db: DbSession, enrich: bool = True) -> TitleRespon
 
     try:
         title = refresh_title_details(db, title)
-    except TmdbConfigurationError:
+    except (TmdbConfigurationError, httpx.HTTPError):
         pass
     try:
         wikipedia_metadata = resolve_wikipedia_metadata(
@@ -248,15 +251,18 @@ def get_title(title_id: UUID, db: DbSession, enrich: bool = True) -> TitleRespon
         wikipedia_metadata = None
     try:
         refresh_streaming_options(db, title)
-    except TmdbConfigurationError:
+    except (TmdbConfigurationError, httpx.HTTPError):
         pass
     try:
         gallery = fetch_title_gallery(title, limit=14)
-    except TmdbConfigurationError:
+    except (TmdbConfigurationError, httpx.HTTPError):
         gallery = []
     try:
-        related_titles = fetch_related_titles(db, title, limit=10)
-    except TmdbConfigurationError:
+        related_titles = fetch_related_titles(db, title, limit=30 if current_user else 10)
+        if current_user:
+            from app.services.related_titles import rank_related_titles
+            related_titles = rank_related_titles(db, current_user.id, title, related_titles)
+    except (TmdbConfigurationError, httpx.HTTPError):
         related_titles = []
     availability = db.scalars(
         select(ContentAvailability)
@@ -273,9 +279,7 @@ def get_title_videos(title_id: UUID, db: DbSession) -> list[dict]:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
     try:
         return fetch_title_videos(title)
-    except TmdbConfigurationError:
-        return []
-    except httpx.HTTPError:
+    except (TmdbConfigurationError, httpx.HTTPError):
         return []
 
 

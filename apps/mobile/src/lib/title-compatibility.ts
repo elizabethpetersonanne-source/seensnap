@@ -11,6 +11,7 @@ export type TitleCompatibility = {
   confidence: number;
   available_dimensions: string[];
   learning: boolean;
+  learning_reason?: "more_ratings" | "limited_title_evidence" | null;
   explanation: string;
 };
 type Pending = {

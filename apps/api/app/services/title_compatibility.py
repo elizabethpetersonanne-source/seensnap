@@ -2,8 +2,8 @@
 
 Each canonical title contributes once. Categorical attributes split its weight;
 semantic exemplars use weighted Jaccard on actual TMDB keywords and separately
-enriched features, never the old genre-derived semantic labels. The shrinkage
-and coverage formula is the November beta proposal, not a calibrated model.
+enriched features, never the old genre-derived semantic labels. Affinity is regularized once; metadata coverage is reported separately.
+This is a preference match, not a calibrated probability of enjoyment.
 """
 
 from collections import defaultdict
@@ -158,33 +158,42 @@ class TitleScorer:
         self.evidence, self.numeric_count, self.features = evidence, numeric_count, features
         self.candidate_features = candidate_features if candidate_features is not None else features
         self.version, self.weights, self.now = version, weights, now or datetime.now(timezone.utc)
+        self.score_cache = {}
         self.semantic_index = defaultdict(set)
         for key in evidence:
             for attr in features.get(key, {}).get("exemplars", {}):
                 self.semantic_index[attr].add(key)
+        self.known_dimensions = set()
         self.attribute_sum = defaultdict(float)
         self.attribute_weight = defaultdict(float)
-        self.dimension_evidence = defaultdict(set)
-        self.dimension_quality = defaultdict(float)
+        self.attribute_evidence = defaultdict(set)
         for key, signal in evidence.items():
             for dimension, attrs in features.get(key, {}).items():
                 if dimension == "exemplars" or not attrs:
                     continue
-                self.dimension_evidence[dimension].add(key)
-                self.dimension_quality[dimension] += (
-                    1.0 if signal.kind in ("rating", "dislike") else 0.5
-                )
+                self.known_dimensions.add(dimension)
                 for attribute, share in attrs.items():
+                    self.attribute_evidence[dimension, attribute].add(key)
                     weight = share * signal.boost
                     self.attribute_sum[dimension, attribute] += weight * signal.utility
                     self.attribute_weight[dimension, attribute] += weight
 
     def score_features(self, candidate):
         breakdown = []
+        comparable_weight = 0.0
         for dimension, configured_weight in self.weights.items():
             attrs = candidate.get(dimension) or {}
             if not attrs:
                 continue
+            # Unknown attributes contribute neutral fit, without pretending to
+            # carry confidence. Otherwise omitting an unseen genre can make it
+            # outrank a known favorite merely by changing the denominator.
+            if dimension == "exemplars":
+                if self.semantic_index:
+                    comparable_weight += configured_weight
+            elif dimension in self.known_dimensions:
+                comparable_weight += configured_weight
+            supported_mass = 1.0
             if dimension == "exemplars":
                 numerator = denominator = quality = 0.0
                 count = 0
@@ -208,17 +217,23 @@ class TitleScorer:
                     quality += 1.0 if signal.kind in ("rating", "dislike") else 0.5
                 affinity = numerator / (AFFINITY_PRIOR + denominator)
             else:
-                count = len(self.dimension_evidence[dimension])
-                quality = self.dimension_quality[dimension]
+                supported = {attr: share for attr, share in attrs.items()
+                             if self.attribute_evidence[dimension, attr]}
+                related = set().union(*(self.attribute_evidence[dimension, attr] for attr in supported))
+                count = len(related)
+                quality = sum(1.0 if self.evidence[key].kind in ("rating", "dislike") else 0.5
+                              for key in related)
+                supported_mass = sum(supported.values())
+                # Unseen actors/genres are missing evidence, not neutral votes.
+                # The regularizing prior already protects sparse attributes.
                 affinity = sum(
-                    share
-                    * self.attribute_sum[dimension, attr]
+                    share * self.attribute_sum[dimension, attr]
                     / (AFFINITY_PRIOR + self.attribute_weight[dimension, attr])
-                    for attr, share in attrs.items()
+                    for attr, share in supported.items()
                 )
             if not count:
                 continue
-            confidence = min(1.0, sqrt(count / CONFIDENCE_FULL_TITLES)) * (quality / count)
+            confidence = min(1.0, sqrt(count / CONFIDENCE_FULL_TITLES)) * (quality / count) * supported_mass
             # Enriched semantics are interpretations, not certified preferences.
             if dimension == "exemplars" and any(not k.startswith("keyword:") for k in attrs):
                 confidence *= 0.75
@@ -233,12 +248,11 @@ class TitleScorer:
             )
         denominator = sum(d.weight * d.confidence for d in breakdown)
         coverage = min(1.0, denominator / 100)
-        raw = (
-            sum(d.weight * d.confidence * d.score for d in breakdown) / denominator
-            if denominator
-            else None
+        score = (
+            max(0.0, min(100.0, 50 + sum(d.weight * (d.score - 50) for d in breakdown)
+                         / comparable_weight))
+            if breakdown and comparable_weight else None
         )
-        score = max(0.0, min(100.0, 50 + coverage * (raw - 50))) if raw is not None else None
         show = self.numeric_count >= DISPLAY_MIN_RATINGS and coverage >= DISPLAY_MIN_COVERAGE
         positive = sorted(
             (d for d in breakdown if d.score > 50),
@@ -274,11 +288,19 @@ class TitleScorer:
             available_dimensions=[d.dimension for d in breakdown],
             breakdown=breakdown,
             learning=not show,
+            learning_reason=("more_ratings" if self.numeric_count < DISPLAY_MIN_RATINGS
+                             else "limited_title_evidence") if not show else None,
             explanation=explanation,
         )
 
     def score(self, title):
-        return self.score_features(self.candidate_features.get(title.id) or title_features(title))
+        features = self.candidate_features.get(title.id) or title_features(title)
+        key = tuple((dim, tuple(sorted(attrs.items()))) for dim, attrs in sorted(features.items()))
+        # Only this scorer/request owns the cache. No cross-account or stale
+        # taste-state reuse; identical feature sets need evaluating only once.
+        if key not in self.score_cache:
+            self.score_cache[key] = self.score_features(features)
+        return self.score_cache[key]
 
 
 def load_effective_evidence(db, user_id):

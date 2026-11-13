@@ -24,3 +24,21 @@ export class TrailerPlayback {
     this.active ? this.player.playVideo() : this.player.pauseVideo();
   }
 }
+
+/** Readiness is not playback. Check media progress, and respect a user's pause. */
+export class TrailerProgress {
+  private lastTime = 0;
+  private lastProgress: number | null = null;
+  private recovered = false;
+  reset() { this.lastTime = 0; this.lastProgress = null; this.recovered = false; }
+  sample(active: boolean, state: number, time: number, now: number): "retry" | "stalled" | null {
+    if (!active || state === 2 || state === 0) { this.lastProgress = null; return null; }
+    if (this.lastProgress === null || time > this.lastTime + .1) {
+      this.lastProgress = now; this.lastTime = time; this.recovered = false; return null;
+    }
+    if (now - this.lastProgress < 12000) return null;
+    this.lastProgress = now;
+    if (!this.recovered) { this.recovered = true; return "retry"; }
+    return "stalled";
+  }
+}

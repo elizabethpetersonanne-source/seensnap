@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     app_auth_secret: str = "replace-me"
     app_auth_audience: str = "seensnap-mobile"
     uploads_dir: str = "uploads"
-    share_base_url: str = "https://seensnap.app"
+    share_base_url: str = "https://seensnapalpha.netlify.app"
     # Comma-separated list of origins allowed to hit the API from a browser.
     # Empty by default (native app doesn't need CORS). Set on staging/prod to
     # the Netlify preview URL + any custom domains.

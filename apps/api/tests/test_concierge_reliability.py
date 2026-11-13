@@ -122,3 +122,9 @@ def test_explicit_rewatch_includes_unrated_watched_titles(db, monkeypatch):
     fake_review(monkeypatch)
     result = retrieval.retrieve(db, user_id=user.id, suggested_names=[], constraints=concierge.ConciergeConstraints(collection_scope="watched", rewatch_intent=True), context=concierge.PersonalContext())
     assert result.title_ids == [row.id]
+
+
+@pytest.mark.parametrize("prompt", ["Help me choose from one of my saved lists.", "Choose from my weekend list", "Only from my lists"])
+def test_suggested_saved_list_prompt_is_a_hard_source_constraint(prompt):
+    result = concierge._resolve_collection_scope(concierge.ConciergeConstraints(), prompt)
+    assert result.collection_scope == "named_list" and result.collection_list_id is None

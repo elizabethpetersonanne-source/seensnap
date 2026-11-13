@@ -904,7 +904,7 @@ export default function DiscoverScreen() {
               disabled={conciergeBusy}
               continuing={!!conciergeDecision?.titles.length}
               conversationVersion={`${conciergeDecision?.decision_id ?? "new"}:${conciergeDecision?.version ?? 0}`}
-              onSubmit={(prompt) => conciergeDecision?.titles.length && conciergeDecision.decision_id
+              onSubmit={(prompt, options) => !options?.newSearch && conciergeDecision?.titles.length && conciergeDecision.decision_id
                 ? refineConcierge("custom", { prompt })
                 : searchConcierge(prompt, recoveryScope.current?.intent === prompt.trim() ? recoveryScope.current.listId : undefined)}
             />

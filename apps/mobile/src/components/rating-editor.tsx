@@ -309,7 +309,7 @@ export function RatingEditor({
                 <Text style={styles.actionSecondaryText}>Retry</Text>
               </Pressable>
             ) : null}
-            <View style={styles.actions}>
+            <View style={[styles.actions, (fontScale > 1.3 || width < 360) && { flexDirection: "column" }]}>
               {hasExisting ? (
                 <Pressable
                   onPress={() => void clearScore()}

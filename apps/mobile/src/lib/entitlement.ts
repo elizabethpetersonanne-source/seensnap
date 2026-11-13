@@ -24,14 +24,15 @@ export function useEntitlement(token: string | null): EntitlementResponse | null
       setState(null);
       return;
     }
+    setState(null);
     void fetchEntitlement(token)
       .then((res) => {
         if (!cancelled) setState(res);
       })
       .catch(() => {
         if (!cancelled) {
-          // Fail safe to free tier — the server is still authoritative
-          // on every protected call.
+          // Unknown access is not a confirmed Free plan. The server still
+          // authorizes every protected request.
           setState({
             tier: "free",
             sources: [],

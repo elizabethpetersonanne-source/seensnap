@@ -28,3 +28,20 @@ test('sound changes reuse the existing player and its playback position', () => 
   playback.ready(player); playback.update(true, true); playback.update(true, false);
   assert.deepEqual(calls.slice(-2), ['unMute','playVideo']);
 });
+
+const { TrailerProgress } = exportsObject;
+test('ready but stuck at zero retries once and reports a stalled video', () => {
+  const p = new TrailerProgress();
+  assert.equal(p.sample(true, 3, 0, 0), null);
+  assert.equal(p.sample(true, 3, 0, 12000), 'retry');
+  assert.equal(p.sample(true, 1, 0, 24000), 'stalled');
+  assert.equal(p.sample(true, 1, 2, 25000), null);
+});
+test('a paused or inactive trailer never triggers autoplay recovery', () => {
+  const p = new TrailerProgress();
+  p.sample(true, 1, 1, 0);
+  assert.equal(p.sample(true, 2, 1, 30000), null);
+  assert.equal(p.sample(false, 3, 1, 60000), null);
+  assert.equal(p.sample(true, 3, 1, 90000), null);
+  assert.equal(p.sample(true, 3, 1, 102000), 'retry');
+});

@@ -27,9 +27,8 @@ TOKEN_BYTES = 12  # 96 bits — plenty for share tokens, short URL-safe base64
 
 
 def _build_share_url(token: str) -> str:
-    # `share_base_url` should be set in prod (e.g. https://seensnap.app).
-    # For dev, defaults to the API host so URLs are testable.
-    base = (getattr(settings, "share_base_url", None) or "https://seensnap.app").rstrip("/")
+    # Keep share_base_url aligned with the deployed web application.
+    base = (getattr(settings, "share_base_url", None) or "https://seensnapalpha.netlify.app").rstrip("/")
     return f"{base}/lists/{token}"
 
 

@@ -14,6 +14,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import YoutubePlayer, { type YoutubeIframeRef } from "react-native-youtube-iframe";
 
+import { TrailerProgress } from "@/lib/trailer-playback";
 import { colors } from "@/constants/theme";
 
 
@@ -46,6 +47,7 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const started = useRef(false);
+  const playbackState = useRef(-1);
   const inner = useRef<YoutubeIframeRef | null>(null);
   const fallback = useRef(onMutedFallback); fallback.current = onMutedFallback;
   useEffect(() => { started.current = false; setReady(false); setPlaying(false); setError(null); }, [videoKey, attempt]);
@@ -58,6 +60,25 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
     }, 15000);
     return () => clearTimeout(timer);
   }, [isActive, ready, muted, playing, videoKey, attempt]);
+
+  useEffect(() => {
+    if (!ready || !isActive) return;
+    let active = true, reading = false;
+    const progress = new TrailerProgress();
+    const timer = setInterval(async () => {
+      if (reading) return;
+      reading = true;
+      try {
+        const time = await inner.current?.getCurrentTime();
+        if (!active || time == null) return;
+        const action = progress.sample(isActive, playbackState.current, time, Date.now());
+        if (action === "retry" && !muted) fallback.current?.();
+        if (action === "stalled") setError("The video isn't loading. Tap Play, retry, or swipe to the next title.");
+      } catch { if (active) setError("Couldn't read the trailer. Retry or swipe to the next title."); }
+      finally { reading = false; }
+    }, 1000);
+    return () => { active = false; clearInterval(timer); };
+  }, [ready, isActive, muted, videoKey, attempt]);
 
   useImperativeHandle(ref, () => ({
     async getCurrentTime() {
@@ -93,7 +114,7 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
           mediaPlaybackRequiresUserAction: false,
         }}
         onReady={() => setReady(true)}
-        onChangeState={(state: string) => { setPlaying(state === "playing"); if (state === "playing") { started.current = true; setError(null); } }}
+        onChangeState={(state: string) => { playbackState.current = state === "paused" ? 2 : state === "ended" ? 0 : state === "playing" ? 1 : 3; setPlaying(state === "playing"); if (state === "playing") { started.current = true; setError(null); } }}
         onError={() => setError("This trailer is unavailable. Retry or swipe to the next title.")}
         onFullScreenChange={(isFull: boolean) => {
           onFullScreenChange?.(isFull);

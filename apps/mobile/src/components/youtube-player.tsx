@@ -1,7 +1,7 @@
 /** Web trailer player. The player survives resizing and mute changes. */
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable } from "react-native";
-import { TrailerPlayback } from "@/lib/trailer-playback";
+import { TrailerPlayback, TrailerProgress } from "@/lib/trailer-playback";
 
 export type YoutubePlayerProps = {
   videoKey: string; isActive: boolean; muted: boolean; width: number; height: number;
@@ -13,6 +13,7 @@ export type YoutubePlayerHandle = {
 };
 type Player = {
   playVideo(): void; pauseVideo(): void; mute(): void; unMute(): void;
+  getCurrentTime(): number; getPlayerState(): number; seekTo(seconds: number, allowSeekAhead: boolean): void;
   setSize(width: number, height: number): void; destroy(): void;
 };
 type PlayerAPI = { Player: new (element: HTMLElement, options: {
@@ -46,11 +47,15 @@ export default function YouTubePlayerComponent(props: YoutubePlayerProps) {
   const [activated, setActivated] = useState(isActive);
   const [notice, setNotice] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
+  const resume = useRef({ key: videoKey, time: 0 });
   const playback = useRef<TrailerPlayback | null>(null);
   useEffect(() => { if (isActive) setActivated(true); }, [isActive]);
   useEffect(() => {
     if (!activated || typeof window === "undefined") return;
     let cancelled = false;
+    let monitor: ReturnType<typeof setInterval> | undefined;
+    const progress = new TrailerProgress();
+    if (resume.current.key !== videoKey) resume.current = { key: videoKey, time: 0 };
     setNotice(null);
     const controller = new TrailerPlayback(
       () => latest.current.onMutedFallback?.(),
@@ -72,6 +77,19 @@ export default function YouTubePlayerComponent(props: YoutubePlayerProps) {
             clearTimeout(timeout);
             controller.update(latest.current.isActive, latest.current.muted);
             controller.ready(target);
+            if (resume.current.time > 0) target.seekTo(resume.current.time, true);
+            monitor = setInterval(() => {
+              if (cancelled) return;
+              const time = target.getCurrentTime();
+              if (Number.isFinite(time) && time > 0) resume.current.time = time;
+              const action = progress.sample(latest.current.isActive, target.getPlayerState(), time, Date.now());
+              if (action === "retry") {
+                // A muted play request is permitted by more mobile browsers.
+                target.mute(); latest.current.onMutedFallback?.(); target.playVideo();
+              } else if (action === "stalled") {
+                setNotice("The video isn't loading. Retry this trailer or swipe to the next title.");
+              } else if (time > 0 && target.getPlayerState() === 1) setNotice(null);
+            }, 1000);
           },
           onAutoplayBlocked: () => { if (!cancelled) controller.blocked(); },
           onStateChange: ({ data }) => { if (!cancelled && data === 1) setNotice(null); },
@@ -79,7 +97,7 @@ export default function YouTubePlayerComponent(props: YoutubePlayerProps) {
         },
       });
     }).catch(() => { clearTimeout(timeout); if (!cancelled) setNotice("Couldn't load the trailer. Retry or swipe to the next title."); });
-    return () => { cancelled = true; clearTimeout(timeout); playback.current = null; player.current?.destroy(); player.current = null; host?.replaceChildren(); };
+    return () => { cancelled = true; clearTimeout(timeout); clearInterval(monitor); playback.current = null; player.current?.destroy(); player.current = null; host?.replaceChildren(); };
   }, [videoKey, activated, attempt]);
   useEffect(() => {
     playback.current?.update(isActive, muted);

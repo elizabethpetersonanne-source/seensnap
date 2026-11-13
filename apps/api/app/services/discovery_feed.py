@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
-from app.models.content import ContentTitle
+from app.models.content import ContentTitle, ContentAvailability
 from app.models.discovery import DiscoverySession
 from app.models.taste import TitleFeatures
 from app.models.user import UserProfile
@@ -123,6 +123,21 @@ def _video(title):
     return None
 
 
+def private_sources(db, user_id, excluded):
+    from app.services.taste import _source_social_saves, _source_watch_team
+    from app.services.teams import list_user_teams
+    social = _source_social_saves(db, user_id, excluded, 20)
+    team_ids = [team.id for team, _ in list_user_teams(db, user_id)]
+    teams = _source_watch_team(db, team_ids, excluded, 20)
+    return social, teams
+
+
+def source_labels(social, teams):
+    labels = {str(item["title"].id): "In your Watch Teams" for item in teams}
+    labels.update({str(item["title"].id): "Saved by someone you follow" for item in social})
+    return labels
+
+
 def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit=20, surface="swipe", mode="streaming"):
     now = datetime.now(timezone.utc)
     profile = db.get(UserProfile, user_id)
@@ -152,6 +167,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
             ]))).all()
             scorer = scorer_for_user(db, user_id, rows)
             matches = {str(row.id):scorer.score(row).model_dump(mode="json") for row in rows}
+            current_sources = source_labels(*private_sources(db, user_id, excluded))
             for item in response["items"]:
                 key = str(item.get("title_id") or item["title"]["id"])
                 if key in matches:
@@ -160,6 +176,11 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
                         matches[key] = previous
                     if "title_id" in item: item["scenedna"] = matches[key]
                     else: item["title"] = {**item["title"], "scenedna":matches[key]}
+                    old_reason = item.get("reason")
+                    label = old_reason.get("label") if isinstance(old_reason, dict) else old_reason
+                    if label in {"In your Watch Teams", "Saved by someone you follow"}:
+                        label = current_sources.get(key) or matches[key]["explanation"]
+                        item["reason"] = {**old_reason, "label": label} if isinstance(old_reason, dict) else label
             return response
         if requested_version != session.version:
             raise HTTPException(status_code=409, detail={"error": "reset_feed", "message": "This feed cursor is out of date."})
@@ -213,10 +234,47 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
                 title.metadata_raw = metadata
                 if str(title.id) not in served and eligible(title, excluded, preferred_type, genre, region, mode, as_of, now):
                     pending[str(title.id)] = title
+    # Private sources are read in the viewer's scope. They still must pass
+    # exactly the same genre/media/region/exclusion rules as catalog titles.
+    social, teams = private_sources(db, user_id, excluded)
+    source_reasons = {}
+    source_ids = {item["title"].id for item in social + teams}
+    # Current provider evidence can qualify a team/followed title even when it
+    # was not in this page of the TMDB popularity feed.
+    source_availability = {}
+    if source_ids:
+        for offer in db.scalars(select(ContentAvailability).where(
+            ContentAvailability.content_title_id.in_(source_ids),
+            ContentAvailability.region_code == region,
+            ContentAvailability.expires_at > now,
+            ContentAvailability.monetization_type.in_(["flatrate", "free", "ads"] if mode == "streaming" else ["flatrate", "free", "ads", "rent", "buy"]),
+        )).all():
+            source_availability[offer.content_title_id] = offer.expires_at
+
+    for source, label in ((social, "Saved by someone you follow"), (teams, "In your Watch Teams")):
+        for item in source:
+            title = item["title"]
+            key = str(title.id)
+            expires = source_availability.get(title.id)
+            if expires:
+                expires = expires.replace(tzinfo=timezone.utc) if expires.tzinfo is None else expires
+                meta = dict(title.metadata_raw or {})
+                stamps = dict(meta.get("_discovery_availability", {}))
+                # Never extend the actual provider cache lifetime.
+                stamps[f"{region}:{mode}"] = min(now, expires - timedelta(hours=24)).isoformat()
+                title.metadata_raw = {**meta, "_discovery_availability": stamps}
+            if key not in served and eligible(title, excluded, preferred_type, genre, region, mode, as_of, now):
+                pending[key] = title
+                source_reasons.setdefault(key, label)
     scorer = scorer_for_user(db, user_id, pending.values())
     scores = {key: scorer.score(title) for key, title in pending.items()}
     bands = {band: sorted([key for key, t in pending.items() if age_band(t.release_date, as_of) == band],
                          key=lambda key: (-(scores[key].score if scores[key].score is not None else 50.), key)) for band in range(4)}
+    for band, keys in bands.items():
+        related = [key for key in keys if key in source_reasons]
+        if related:
+            keys.remove(related[0])
+            keys.insert(0, related[0])
     selected, video_cache, checked = [], {}, 0
     counts = list(state["counts"])
     if surface == "preview":
@@ -257,7 +315,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
         served.add(key)
         compatibility = scores[key]
         matching = compatibility.score is not None
-        reason = compatibility.explanation if matching else "Available to stream in your region · learning your taste"
+        reason = source_reasons.get(key) or (compatibility.explanation if matching else "Available to stream in your region · learning your taste")
         if surface == "preview":
             items.append({"feed_item_id": f"pfi-{title.id}", "title_id": str(title.id), "tmdb_id": title.tmdb_id,
                 "media_type": title.content_type, "title": title.title, "year": title.release_date.year,

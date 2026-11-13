@@ -116,7 +116,7 @@ export function ConciergeComposer({
   allowanceRemaining: number | null;
   allowanceCap: number | null;
   resetsAt: string | null;
-  onSubmit: (intent: string) => Promise<ConciergeDecisionResponse | undefined>;
+  onSubmit: (intent: string, options?: { newSearch: boolean }) => Promise<ConciergeDecisionResponse | undefined>;
   draft?: string;
   disabled?: boolean;
   backdropUri?: string | null;
@@ -133,8 +133,9 @@ export function ConciergeComposer({
   const previousDraftRef = useRef<string | null>(null);
   const inputRef = useRef<TextInput | null>(null);
   const requestBusy = useRef(false);
+  const newSearch = useRef(false);
 
-  useEffect(() => { if (draft !== undefined) setIntent(draft); }, [draft, conversationVersion]);
+  useEffect(() => { if (draft !== undefined) setIntent(draft); newSearch.current = false; }, [draft, conversationVersion]);
 
   const outOfAllowance = tier === "free" && allowanceRemaining != null && allowanceRemaining <= 0;
   const currentExample = ROTATING_EXAMPLES[exampleIdx] ?? DEFAULT_EXAMPLE;
@@ -158,12 +159,14 @@ export function ConciergeComposer({
     } else if (!intent.trim()) {
       previousDraftRef.current = null;
     }
+    newSearch.current = true;
     setIntent(chip.prompt);
     inputRef.current?.focus();
   }
 
   function restorePreviousDraft() {
     if (previousDraftRef.current !== null) {
+      newSearch.current = false;
       setIntent(previousDraftRef.current);
       previousDraftRef.current = null;
     }
@@ -177,7 +180,7 @@ export function ConciergeComposer({
     setBusy(true);
     setError(null);
     try {
-      await onSubmit(trimmed);
+      await onSubmit(trimmed, { newSearch: newSearch.current });
     } catch {
       setError("Concierge couldn't finish this search. Your request is still here; please try again.");
     } finally {
@@ -255,7 +258,7 @@ export function ConciergeComposer({
         {suggestions && suggestions.prompts.length > 0 ? (
           <View style={styles.promptsBlock}>
             <View style={styles.promptsHead}>
-              <Text style={styles.promptsLabel}>TRY ASKING</Text>
+              <Text style={styles.promptsLabel}>{continuing ? "NEW SEARCH IDEAS" : "TRY ASKING"}</Text>
               {previousDraftRef.current !== null ? (
                 <Pressable
                   onPress={restorePreviousDraft}

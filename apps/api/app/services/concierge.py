@@ -425,7 +425,7 @@ def resolve_concierge_decision(
     # the default matches the brief: "on my subscription" must not
     # silently mean paid rental.
     low = intent.lower()
-    if effective_constraints is None and any(p in low for p in ("my services", "my subscriptions", "services i subscribe")):
+    if effective_constraints is None and any(p in low for p in ("my services", "my subscriptions", "services i subscribe", "my selected streaming services", "my streaming services")):
         constraints.required_providers = list(context.selected_services)
         if not constraints.required_providers:
             return ConciergeDecision(None, constraints, "Choose your streaming services first, or search without a service filter.",
@@ -604,7 +604,7 @@ def _resolve_collection_scope(constraints: ConciergeConstraints, intent: str) ->
             constraints.collection_scope = "my_next_watch"
             return constraints
     import re
-    if re.search(r"\bfrom my .{1,80}\blist\b", low):
+    if re.search(r"\b(?:from|in|choose)\b.{0,45}\bmy\b.{0,45}\blists?\b", low):
         constraints.collection_scope = "named_list"
         return constraints
     for p in _NAMED_LIST_PATTERNS:

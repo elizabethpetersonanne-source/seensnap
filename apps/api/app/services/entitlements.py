@@ -30,7 +30,7 @@ Tier = Literal["premium", "free"]
 class Entitlement:
     tier: Tier
     sources: list[str]
-    expires_at: datetime | None  # earliest tier-ending moment across active grants, None = indefinite
+    expires_at: datetime | None  # last tier-ending moment across active grants, None = indefinite
     verified: bool
     concierge_monthly_cap: int | None  # None = effectively unlimited (fair-use ceiling set elsewhere)
     is_beta: bool
@@ -67,14 +67,14 @@ def resolve_entitlement(db: Session, user_id: UUID, now: datetime | None = None)
     is enough to grant Premium; a cancelled-but-still-valid subscription
     remains active until its ends_at. Earned/promo + purchased grants
     coexist — the resolver takes the premium tier if ANY active grant
-    is premium, and the earliest ends_at as the composite expiry."""
+    is premium, and the last ends_at as the composite expiry."""
     grants = _active_grants(db, user_id, now=now)
     is_premium = any(g.tier == "premium" for g in grants)
     is_beta = any(g.source == "beta" for g in grants)
-    # Expiry: earliest non-null ends_at across tier-giving grants.
+    # Access ends only when ALL grants giving this tier have ended.
     tier_grants = [g for g in grants if g.tier == "premium"] if is_premium else grants
     expiries = [g.ends_at for g in tier_grants if g.ends_at is not None]
-    expires_at = min(expiries) if expiries else None
+    expires_at = max(expiries) if expiries and len(expiries) == len(tier_grants) else None
     # Oct-18 §9: Premium is unlimited (configured fair-use elsewhere).
     monthly_cap = None if is_premium else CONCIERGE_FREE_MONTHLY_ALLOWANCE
     return Entitlement(
