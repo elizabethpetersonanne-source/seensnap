@@ -109,7 +109,7 @@ def get_next_watch_list(db: Session, user_id: UUID) -> Watchlist | None:
     )
 
 
-def ensure_next_watch_list(db: Session, user_id: UUID) -> Watchlist:
+def ensure_next_watch_list(db: Session, user_id: UUID, *, commit: bool = True) -> Watchlist:
     """QUEUE01: resolve or back-fill the Next Watch system list. If
     the migration already stamped a row we return it; otherwise we
     promote the owner's default (name-matched) list; if neither
@@ -128,7 +128,10 @@ def ensure_next_watch_list(db: Session, user_id: UUID) -> Watchlist:
     )
     if candidate is not None:
         candidate.system_role = "next_watch"
-        db.commit()
+        if commit:
+            db.commit()
+        else:
+            db.flush()
         db.refresh(candidate)
         return candidate
     # Last resort — create one.
@@ -141,7 +144,10 @@ def ensure_next_watch_list(db: Session, user_id: UUID) -> Watchlist:
         system_role="next_watch",
     )
     db.add(row)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     db.refresh(row)
     return row
 
@@ -237,5 +243,7 @@ def delete_watchlist(db: Session, watchlist: Watchlist) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Default My Picks list cannot be deleted")
     db.query(WatchlistItem).filter(WatchlistItem.watchlist_id == watchlist.id).delete(synchronize_session=False)
     db.delete(watchlist)
+    from app.services.taste_invalidation import invalidate_taste
+    invalidate_taste(db, watchlist.owner_user_id)
     db.commit()
 

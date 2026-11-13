@@ -52,4 +52,7 @@ app.mount("/media", StaticFiles(directory=str(uploads_dir)), name="media")
 
 @app.get("/health", tags=["health"])
 def healthcheck() -> dict[str, str]:
-    return {"status": "ok", "environment": settings.environment}
+    import os
+    return {"status": "ok", "environment": settings.environment,
+            "commit": os.environ.get("SEENSNAP_RELEASE_COMMIT", "unknown"),
+            "revision": os.environ.get("K_REVISION", "local")}

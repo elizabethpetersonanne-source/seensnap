@@ -35,6 +35,8 @@ This service does NOT:
 """
 from __future__ import annotations
 
+from app.services.taste_invalidation import invalidate_taste
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -88,7 +90,7 @@ def _get_or_create_next_watch(db: Session, user_id: UUID) -> Watchlist:
     Delegates to the shared resolver which handles legacy back-fill
     atomically with the partial unique index."""
     from app.services.watchlists import ensure_next_watch_list
-    return ensure_next_watch_list(db, user_id)
+    return ensure_next_watch_list(db, user_id, commit=False)
 
 
 def _snapshot(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
@@ -160,7 +162,8 @@ def _snapshot(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
     )
 
 
-def save_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot:
+def save_title(db: Session, user_id: UUID, title_id: UUID, *, commit: bool = True,
+               added_via: str = "save_title") -> TitleStateSnapshot:
     """Save → add to Next Watch; leaves watched/rating/favorite alone.
     If the user had explicitly saved a previously-watched title, we
     keep both — rewatch intent is independent of past watching."""
@@ -177,9 +180,17 @@ def save_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapshot
         db.add(WatchlistItem(
             watchlist_id=wl.id,
             content_title_id=title_id,
-            added_via="save_title",
+            added_via=added_via,
         ))
-    db.commit()
+    elif added_via == "save_title":
+        # A separate explicit Save takes ownership from an earlier swipe.
+        # Undoing that swipe must not erase the user's newer save intent.
+        existing.added_via = added_via
+    invalidate_taste(db, user_id)
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     return _snapshot(db, user_id, title_id)
 
 
@@ -195,7 +206,8 @@ def unsave_title(db: Session, user_id: UUID, title_id: UUID) -> TitleStateSnapsh
                 WatchlistItem.content_title_id == title_id,
             )
         )
-        db.commit()
+        invalidate_taste(db, user_id)
+    db.commit()
     return _snapshot(db, user_id, title_id)
 
 
@@ -242,6 +254,7 @@ def mark_watched(db: Session, user_id: UUID, title_id: UUID, *, commit: bool = T
                 WatchlistItem.content_title_id == title_id,
             )
         )
+    invalidate_taste(db, user_id)
     if commit:
         db.commit()
     else:
@@ -364,6 +377,7 @@ def rate_title(
             )
         )
     _place_rating_in_ranked_favorites(db, user_id, title_id, score, previous_score)
+    invalidate_taste(db, user_id)
     db.commit()
     return _snapshot(db, user_id, title_id)
 
@@ -401,5 +415,6 @@ def clear_rating(db: Session, user_id: UUID, title_id: UUID, *, expected_version
         ws.updated_at = datetime.now(timezone.utc)
     advance_revision(db,user_id,title_id)
     db.delete(rating)
+    invalidate_taste(db, user_id)
     db.commit()
     return _snapshot(db, user_id, title_id)

@@ -36,6 +36,8 @@
     <string>1</string>
     <key>LSMinimumSystemVersion</key>
     <string>12.0</string>
+    <key>NSPhotoLibraryUsageDescription</key>
+    <string>SeenSnap uses the photo you choose for your profile, team picture or bug report.</string>
     <key>LSRequiresIPhoneOS</key>
     <true/>
     <key>NSAppTransportSecurity</key>
@@ -65,9 +67,11 @@
     <array>
       <string>UIInterfaceOrientationPortrait</string>
       <string>UIInterfaceOrientationPortraitUpsideDown</string>
+      <string>UIInterfaceOrientationLandscapeLeft</string>
+      <string>UIInterfaceOrientationLandscapeRight</string>
     </array>
     <key>UIUserInterfaceStyle</key>
-    <string>Light</string>
+    <string>Dark</string>
     <key>UIViewControllerBasedStatusBarAppearance</key>
     <false/>
   </dict>

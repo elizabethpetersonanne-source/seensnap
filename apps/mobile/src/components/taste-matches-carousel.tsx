@@ -13,10 +13,12 @@
  *   - evidence requirement (null compat → omitted, never a fabricated %)
  */
 import { Ionicons } from "@expo/vector-icons";
-import { router } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { router, useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Image, Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
+import { subscribeRatingChanges } from "@/components/rating-editor";
+import { subscribeTitleState } from "@/lib/title-state";
 import { Avatar } from "@/components/avatar";
 import { CompatibilitySheet } from "@/components/compatibility-sheet";
 import { apiRequest } from "@/lib/api";
@@ -67,24 +69,30 @@ export function TasteMatchesCarousel() {
   const [loaded, setLoaded] = useState(false);
   const [detailFor, setDetailFor] = useState<{ userId: string; displayName: string | null } | null>(null);
 
+  const generation = useRef(0);
   const load = useCallback(async () => {
     if (!sessionToken) return;
+    const version = ++generation.current;
     try {
       const res = await apiRequest<TasteMatchesResponse>(
         "/social/people/taste-matches?limit=12",
         { token: sessionToken },
       );
-      setData(res);
+      if (version === generation.current) setData(res);
     } catch {
-      setData({ items: [], has_evidence: false });
+      if (version === generation.current) setData({ items: [], has_evidence: false, empty_state: "network_error" });
     } finally {
-      setLoaded(true);
+      if (version === generation.current) setLoaded(true);
     }
   }, [sessionToken]);
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  useEffect(() => { setData(null); setLoaded(false); setFollowedIds(new Set()); }, [sessionToken]);
+  useFocusEffect(useCallback(() => {
+    const refresh = () => { void load(); };
+    refresh();
+    const stopRating = subscribeRatingChanges(refresh), stopState = subscribeTitleState(refresh);
+    return () => { generation.current++; stopRating(); stopState(); };
+  }, [load]));
 
   async function toggleFollow(userId: string, currentlyFollowed: boolean) {
     if (!sessionToken || pendingFollowIds.has(userId)) return;

@@ -3,6 +3,7 @@ import { AppState } from "react-native";
 
 import { useAuth } from "@/lib/auth";
 import { fetchUnreadCount } from "@/lib/messaging";
+import { subscribeMessageChanges } from "@/lib/message-events";
 
 /**
  * Shared unread-conversations count — powers the badge on the persistent
@@ -22,6 +23,7 @@ export function UnreadMessagesProvider({ children }: PropsWithChildren) {
   const { sessionToken } = useAuth();
   const [count, setCount] = useState(0);
   const currentToken=useRef(sessionToken);currentToken.current=sessionToken;
+  const request = useRef(0);
   useEffect(()=>setCount(0),[sessionToken]);
 
   const refresh = useCallback(async () => {
@@ -29,13 +31,22 @@ export function UnreadMessagesProvider({ children }: PropsWithChildren) {
       setCount(0);
       return;
     }
-    const c = await fetchUnreadCount(sessionToken);
-    if(currentToken.current===sessionToken)setCount(c);
+    const version = ++request.current;
+    try {
+      const c = await fetchUnreadCount(sessionToken);
+      if(currentToken.current===sessionToken && request.current === version)setCount(c);
+    } catch { /* Keep the last confirmed badge during transient failures. */ }
   }, [sessionToken]);
 
   useEffect(() => {
     void refresh();
-  }, [refresh]);
+    if (!sessionToken) return;
+    const stop = subscribeMessageChanges(() => { void refresh(); });
+    const timer = setInterval(() => {
+      if (AppState.currentState === "active" && (typeof document === "undefined" || !document.hidden)) void refresh();
+    }, 30000);
+    return () => { stop(); clearInterval(timer); request.current++; };
+  }, [refresh, sessionToken]);
 
   useEffect(() => {
     const sub = AppState.addEventListener("change", (state) => {

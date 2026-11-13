@@ -90,6 +90,8 @@ def apple_auth(request: Request, payload: AppleAuthRequest) -> SessionResponse:
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 def delete_account(current_user: CurrentUser, db: DbSession) -> None:
     uid = current_user.id
+    from app.services.social_feed import delete_feed_events
+    delete_feed_events(db, db.scalars(select(FeedEvent.id).where(FeedEvent.actor_user_id == uid)).all())
 
     # Nullify parent_comment_id on replies that reference this user's comments
     user_comment_ids = list(db.scalars(select(FeedComment.id).where(FeedComment.user_id == uid)))

@@ -162,6 +162,7 @@ def delete_publication(
     ))
     if event is None:
         return None
-    db.delete(event)
+    from app.services.social_feed import delete_feed_events
+    delete_feed_events(db, [event.id])
     db.commit()
     return None

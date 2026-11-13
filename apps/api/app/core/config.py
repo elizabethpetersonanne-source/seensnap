@@ -45,6 +45,8 @@ class Settings(BaseSettings):
     concierge_ai_model: str = ""
     concierge_ai_project: str = ""
     concierge_ai_location: str = "us"
+    # Optional internal scheduler credential. Empty disables the HTTP trigger.
+    internal_job_token: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

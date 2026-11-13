@@ -329,6 +329,7 @@ def get_my_recommendations(
 
 class SwipeUndoResponse(BaseModel):
     watched: bool | None = None
+    saved: bool | None = None
     ok: bool = True
     # Honest description of what WAS reversed. UI can show
     # "Removed from My Next Watch" / "Reset to Not watched" / etc.
@@ -392,7 +393,9 @@ def record_title_swipe(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     from app.services.swipe_refresh import refresh_after_swipe
     background_tasks.add_task(refresh_after_swipe, current_user.id)
+    from app.services.discovery_decisions import _saved
     return SwipeRecordResponse(
+        saved=_saved(db, current_user.id, payload.title_id),
         swipe_id=record.id,
         title_id=payload.title_id,
         direction=payload.direction,

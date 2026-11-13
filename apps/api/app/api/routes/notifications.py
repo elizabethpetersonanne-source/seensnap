@@ -1,7 +1,7 @@
 from datetime import UTC, datetime
 from uuid import UUID
 
-from fastapi import APIRouter, BackgroundTasks, Query, Response, status
+from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Response, status
 from sqlalchemy import func, select, update
 
 from app.api.dependencies import CurrentUser, DbSession
@@ -168,8 +168,13 @@ def update_notification_preferences(
 
 
 @router.post("/admin/send-pending", status_code=status.HTTP_204_NO_CONTENT, include_in_schema=False)
-def trigger_send_pending(background_tasks: BackgroundTasks) -> Response:
+def trigger_send_pending(background_tasks: BackgroundTasks, authorization: str | None = Header(default=None)) -> Response:
     """Internal endpoint to process outbox. Call from a cron or health-check script."""
+    from secrets import compare_digest
+    from app.core.config import settings
+    token = settings.internal_job_token
+    if not token or not isinstance(authorization, str) or not compare_digest(authorization, f"Bearer {token}"):
+        raise HTTPException(status_code=403, detail="Internal authorization required")
     background_tasks.add_task(_deliver_pending)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 

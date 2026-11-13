@@ -55,6 +55,7 @@ def test_resume_recovers_lost_prefetch_without_skipping_or_repeating_accepted_ac
             content_title_id=original[0],
             direction="right",
             action_version=2,
+            created_at=datetime.now(timezone.utc),
         )
     )
     db.add(
