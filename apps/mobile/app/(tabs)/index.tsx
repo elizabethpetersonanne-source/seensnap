@@ -38,6 +38,7 @@ import { HeroFourSection, type HeroFourTitle } from "@/components/hero-four-sect
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
+import { useForYou } from "@/lib/use-for-you";
 import { useEntitlement } from "@/lib/entitlement";
 import { Avatar } from "@/components/avatar";
 import { trackEvent } from "@/lib/analytics";
@@ -345,14 +346,6 @@ export default function DiscoverScreen() {
   // Discover content
   const [trending, setTrending] = useState<TrendingResponse | null>(null);
   const [trendingLoading, setTrendingLoading] = useState(true);
-  const [collections, setCollections] = useState<CollectionSummary[]>([]);
-  const [collectionsLoading, setCollectionsLoading] = useState(true);
-  const [recommendations, setRecommendations] = useState<RecommendationItem[]>([]);
-  // Unified Discover feed (SceneDNA brief §28) — one server call returns
-  // ordered modules the client renders directly. Replaces the prior three
-  // parallel endpoints + hardcoded module order.
-  const [discoverFeed, setDiscoverFeed] = useState<DiscoverFeedResponse | null>(null);
-  const [discoverFeedLoading, setDiscoverFeedLoading] = useState(true);
 
   // Title modal
   const [selectedTitleId, setSelectedTitleId] = useState<string | null>(null);
@@ -487,8 +480,7 @@ export default function DiscoverScreen() {
   // DISC01/02: server-filtered For You source. Fetched on media
   // toggle so the result is authoritative instead of a local filter
   // over a mixed-media mixed response.
-  const [forYouFiltered, setForYouFiltered] = useState<RecommendationItem[] | null>(null);
-  const [forYouLoading, setForYouLoading] = useState(false);
+  const forYou = useForYou<RecommendationItem>(sessionToken, forYouMedia);
   const [trendingMedia, setTrendingMedia] = useState<"movie" | "tv">("movie");
 
   const searchInputRef = useRef<TextInput>(null);
@@ -529,40 +521,6 @@ export default function DiscoverScreen() {
     }
   }
 
-  async function loadCollections() {
-    if (!sessionToken) return;
-    try {
-      const result = await apiRequest<CollectionSummary[]>("/collections?limit=18", {
-        token: sessionToken,
-      });
-      // Show up to 18 curated collections per product ask — was capped
-      // to 3 previously as an editorial preview. The Collections module
-      // scrolls horizontally so the extra rows don't crowd the page.
-      setCollections(result.slice(0, 18));
-    } catch {
-      // silently degrade
-    } finally {
-      setCollectionsLoading(false);
-    }
-  }
-
-  async function loadRecommendations() {
-    if (!sessionToken) return;
-    try {
-      // DISC01/02: server-side media filter BEFORE candidate limit
-      // and ranking. We pass preferred_type through so a TV request
-      // never falls back to movies by filtering a small mixed set.
-      const preferredType = forYouMedia === "movie" ? "movie" : "show";
-      const result = await apiRequest<RecommendationItem[]>(
-        `/titles/recommendations/for-me?limit=12&preferred_type=${preferredType}`,
-        { token: sessionToken }
-      );
-      setRecommendations(result);
-    } catch {
-      // silently degrade — module hidden when empty
-    }
-  }
-
   // DISC01: when the Trending toggle flips, refetch server-filtered
   // trending so the carousel actually swaps media types instead of
   // filtering client-side on a 12-item mixed pool.
@@ -572,56 +530,6 @@ export default function DiscoverScreen() {
     void loadTrending(trendingMedia);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trendingMedia, sessionToken]);
-
-  // DISC01/02/03: whenever the For You media toggle changes, fetch
-  // a server-filtered rec list. This replaces the previous local
-  // filter + unfiltered fallback that could show movies when the
-  // user asked for TV.
-  useEffect(() => {
-    let cancelled = false;
-    async function loadFiltered() {
-      if (!sessionToken) {
-        setForYouFiltered(null);
-        return;
-      }
-      setForYouLoading(true);
-      setForYouFiltered(null);
-      try {
-        const preferredType = forYouMedia === "movie" ? "movie" : "show";
-        const result = await apiRequest<RecommendationItem[]>(
-          `/titles/recommendations/for-me?limit=12&preferred_type=${preferredType}`,
-          { token: sessionToken },
-        );
-        if (!cancelled) setForYouFiltered(result);
-      } catch {
-        if (!cancelled) setForYouFiltered([]);
-      } finally {
-        if (!cancelled) setForYouLoading(false);
-      }
-    }
-    void loadFiltered();
-    return () => { cancelled = true; };
-  }, [forYouMedia, sessionToken]);
-
-  async function loadDiscoverFeed() {
-    if (!sessionToken) return;
-    setDiscoverFeedLoading(true);
-    try {
-      // Pass the client's local hour so context resolution matches the user's
-      // clock (backend defaults to server time otherwise).
-      const localHour = new Date().getHours();
-      const result = await apiRequest<DiscoverFeedResponse>(
-        `/discover/feed?local_hour=${localHour}`,
-        { token: sessionToken },
-      );
-      setDiscoverFeed(result);
-    } catch {
-      // silently degrade — falls back to the legacy trending/for-you/collections
-      // triple below if this endpoint is unreachable.
-    } finally {
-      setDiscoverFeedLoading(false);
-    }
-  }
 
   async function loadNowInTheaters() {
     if (!sessionToken) return;
@@ -671,18 +579,11 @@ export default function DiscoverScreen() {
   useFocusEffect(
     useCallback(() => {
       setIsFocused(true);
-      void loadDiscoverFeed();
-      void loadTrending();       // still fetched for the header backdrop cycling
-      void loadCollections();    // editorial collections stay a separate module
+      // Only request modules this screen actually renders. The old unified
+      // feed built several unused rails and competed with For You on first load.
+      void loadTrending();
       void loadNowInTheaters();
       void loadConciergeBackdrop();
-      // loadRecommendations() removed — it called /titles/recommendations/for-me
-      // (the slow SceneDNA-fanout endpoint that spins up 10 TMDB related-titles
-      // calls per request) but nothing on Discover actually consumed the
-      // resulting `recommendations` state. It was a dead prefetch that added
-      // several seconds to first paint. The discover_feed endpoint already
-      // provides personalized rails from the same recommendation service via
-      // the unified /discover/feed response.
       void getRecentSearches().then(setRecentSearches);
       trackEvent("discover_viewed", {});
       return () => setIsFocused(false);
@@ -1122,17 +1023,17 @@ export default function DiscoverScreen() {
               is a section header + hero backdrop with title overlay +
               row of four portrait posters with uppercase captions. */}
 
-          {/* 1 · For You — explicitly SceneDNA-driven. DISC01/02/03:
-              uses the server-filtered forYouFiltered source so a TV
-              request never falls back to movies. The /discover/feed
-              module is kept as a secondary source for its subtitle
-              label when available. */}
+          {/* For You stays scoped to the requested media and account. */}
+          {forYou.error && forYou.items.length > 0 ? (
+            <View style={styles.moduleEmpty}>
+              <Text style={styles.coldStartBody}>{forYou.error} Showing your previous picks.</Text>
+              <Pressable accessibilityRole="button" accessibilityLabel="Retry For You" onPress={() => void forYou.refresh()}>
+                <Text style={styles.coldStartCtaLabel}>RETRY</Text>
+              </Pressable>
+            </View>
+          ) : null}
           {(() => {
-            const forYouModule = discoverFeed?.modules.find(
-              (m) => m.type === "personalized_rail" || m.type === "because_you",
-            );
-            // Primary source is the server-filtered rec list.
-            const serverItems = forYouFiltered ?? [];
+            const serverItems = forYou.items;
             if (serverItems.length > 0) {
               const subtitle = serverItems[0].reason || "Learning your taste";
               return (
@@ -1154,29 +1055,28 @@ export default function DiscoverScreen() {
                 />
               );
             }
-            if (forYouLoading || discoverFeedLoading) {
-              return (
-                <View style={styles.moduleLoading}>
-                  <ActivityIndicator color={colors.accent} size="small" />
-                </View>
-              );
-            }
             return (
               <View style={styles.coldStartCard}>
                 <Text style={styles.coldStartKicker}>FOR YOU</Text>
-                <Text style={styles.coldStartTitle}>
-                  {forYouMedia === "tv"
-                    ? "No TV picks yet."
-                    : "Your SceneDNA is still forming."}
-                </Text>
-                <Text style={styles.coldStartBody}>
-                  {forYouMedia === "tv"
-                    ? "Rate a few TV shows and your series recommendations will fill in. Movies may be ready right now — flip the toggle."
-                    : "Rate titles, save them, and swipe through a few. The more you tell us, the sharper your recommendations get."}
-                </Text>
-                <Pressable onPress={() => router.push("/(tabs)/swipe")} style={styles.coldStartCta}>
-                  <Text style={styles.coldStartCtaLabel}>START SWIPING</Text>
-                </Pressable>
+                <MediaToggle value={forYouMedia} onChange={setForYouMedia} />
+                {forYou.loading ? (
+                  <View accessibilityLabel="Loading your recommendations">
+                    <ActivityIndicator color={colors.accent} size="small" />
+                    <Text style={styles.coldStartBody}>Finding your recommendations…</Text>
+                  </View>
+                ) : (
+                  <>
+                    <Text style={styles.coldStartTitle}>
+                      {forYou.error ? "Your picks couldn't load." : `No ${forYouMedia === "tv" ? "TV" : "movie"} picks available right now.`}
+                    </Text>
+                    <Text style={styles.coldStartBody}>
+                      {forYou.error ?? "Try the other media type or check again for more recommendations."}
+                    </Text>
+                    <Pressable accessibilityRole="button" accessibilityLabel="Retry For You" onPress={() => void forYou.refresh()} style={styles.coldStartCta}>
+                      <Text style={styles.coldStartCtaLabel}>TRY AGAIN</Text>
+                    </Pressable>
+                  </>
+                )}
               </View>
             );
           })()}
