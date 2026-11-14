@@ -228,7 +228,6 @@ export function SaveToListSheet({ visible, token, titleId, onClose, onSaved, onE
                       <View style={{ flex: 1 }}>
                         <Text style={styles.listName}>
                           {list.name}
-                          {list.is_system_list ? " · system" : list.is_default ? " · default" : ""}
                         </Text>
                         <Text style={styles.listMeta}>
                           {list.title_count} {list.title_count === 1 ? "title" : "titles"}

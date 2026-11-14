@@ -374,7 +374,7 @@ export default function MyPicksScreen() {
           title="Nothing here yet."
           body={
             activeCategory === "ranked_favorites"
-              ? "Rank your Top 20 and they'll appear in order."
+              ? "Rate a title to start your ranked favorites. You can change the order anytime."
               : activeCategory === "my_next_watch"
               ? "Save a title to your Next Watch list to plan what you'll watch next."
               : activeCategory === "favorites"
