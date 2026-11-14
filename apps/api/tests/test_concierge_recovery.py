@@ -83,7 +83,9 @@ def test_abandoned_lease_is_recoverable_and_old_worker_cannot_commit(db):
     assert lock_current(db, user.id, receipt_id, resumed.lease_id).attempt == 2
 
 
-def test_parallel_claims_share_one_receipt_and_free_cap_is_atomic(db):
+def test_parallel_claims_share_one_receipt_and_free_cap_is_atomic(db, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "concierge_max_concurrent_per_user", 20)  # isolate billing cap from operational protection
     if db.bind.dialect.name != "postgresql": pytest.skip("row locking requires PostgreSQL")
     user, _ = seed(db)
     uid, engine = user.id, db.get_bind()
@@ -100,7 +102,9 @@ def test_parallel_claims_share_one_receipt_and_free_cap_is_atomic(db):
     assert sum(r[2] for r in different) == 2  # one slot was already reserved
 
 
-def test_expired_reservations_release_cap_and_beta_has_no_cap(db):
+def test_expired_reservations_release_cap_and_beta_has_no_cap(db, monkeypatch):
+    from app.core.config import settings
+    monkeypatch.setattr(settings, "concierge_max_concurrent_per_user", 20)  # isolate billing cap
     user, _ = seed(db)
     for i in range(3): claim(db, user.id, request(f"expire-{i:03}"))
     _, _, denied = claim(db, user.id, request("expire-four"))

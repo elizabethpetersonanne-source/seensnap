@@ -317,7 +317,7 @@ def load_effective_evidence(db, user_id):
         db.scalars(
             select(WatchlistItem.content_title_id)
             .join(Watchlist)
-            .where(Watchlist.owner_user_id == user_id)
+            .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
         ).all()
     )
     watched = set(

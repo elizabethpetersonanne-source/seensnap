@@ -465,7 +465,7 @@ def get_taste_matches(
     existing people-discovery eligibility filter and scores each
     candidate via the canonical `get_compatibility` service.
     """
-    from app.services.compatibility import get_compatibility, to_compatibility_response
+    from app.services.compatibility import get_compatibility, get_compatibilities, to_compatibility_response
     from app.services.people_discovery import _eligible_candidate_ids
     from app.models.social import Rating as _Rating
     from sqlalchemy import func as _func
@@ -568,13 +568,18 @@ def get_taste_matches(
     # (compat_int|None, user_id, shared_genres, shared_title_count)
     scored: list[tuple[int | None, UUID, list[str], int]] = []
     scoring_failures = 0
+    try:
+        pair_records = get_compatibilities(db, current_user.id, candidate_ids)
+    except Exception:
+        db.rollback()
+        pair_records = {}
     for cid in candidate_ids:
         profile = profiles.get(cid)
         if profile is None:
             continue
         try:
-            record = get_compatibility(db, current_user.id, cid)
-            resp = to_compatibility_response(record, current_user.id, cid, db=db)
+            record = pair_records[cid]
+            resp = to_compatibility_response(record, current_user.id, cid, db=db, include_titles=False)
         except Exception:
             # Non-fatal: skip this candidate but keep scoring the rest.
             # M04: track failure count so an all-failed request becomes

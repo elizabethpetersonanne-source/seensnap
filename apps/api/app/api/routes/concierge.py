@@ -292,8 +292,43 @@ class ConciergeRefineRequest(BaseModel):
     idempotency_key: str = Field(min_length=8, max_length=96)
 
 
+
 @router.post("/decision/{decision_id}/refine", response_model=ConciergeDecisionResponse)
-def post_concierge_refinement(
+def post_concierge_refinement(decision_id: UUID, payload: ConciergeRefineRequest,
+    current_user: CurrentUser, db: DbSession) -> ConciergeDecisionResponse:
+    from app.models.entitlements import ConciergeDecisionRecord, ConciergeRequest
+    from app.services.concierge_requests import claim, lock_current
+    from datetime import datetime, timezone
+    if not db.scalar(select(ConciergeDecisionRecord.id).where(
+        ConciergeDecisionRecord.id == decision_id, ConciergeDecisionRecord.user_id == current_user.id)):
+        raise HTTPException(404, detail="Decision not found.")
+    key = "refine-" + hashlib.sha256(f"{decision_id}:{payload.idempotency_key}".encode()).hexdigest()
+    claim_payload = payload.model_copy(update={"idempotency_key": key})
+    receipt, run, _ = claim(db, current_user.id, claim_payload, reserve_allowance=False)
+    if not run:
+        if receipt.state == "completed":
+            return _request_response(db, receipt)
+        raise HTTPException(429, detail={"code": "search_busy", "retryable": True}, headers={"Retry-After": "3"})
+    receipt_id, lease_id = receipt.id, receipt.lease_id
+    try:
+        response = _post_concierge_refinement(decision_id, payload, current_user, db)
+        receipt = lock_current(db, current_user.id, receipt_id, lease_id)
+        receipt.response = response.model_dump(mode="json")
+        receipt.state = "completed"
+        # Keep decision_id null: only the initial receipt owns its billing slot.
+        receipt.updated_at = datetime.now(timezone.utc)
+        db.commit()
+        return response
+    except Exception:
+        db.rollback()
+        receipt = db.scalar(select(ConciergeRequest).where(ConciergeRequest.id == receipt_id).with_for_update())
+        if receipt and receipt.lease_id == lease_id:
+            receipt.state = "retryable"
+            db.commit()
+        raise
+
+
+def _post_concierge_refinement(
     decision_id: UUID,
     payload: ConciergeRefineRequest,
     current_user: CurrentUser,

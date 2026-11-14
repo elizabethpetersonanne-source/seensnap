@@ -2,8 +2,8 @@
  * Oct-18 UI/UX rebuild: My Picks.
  *
  * Five categories, full-screen hero + 4 continuation posters per
- * section, bottom pill nav. Each category pages vertically through
- * the user's full collection in groups of 5 (one hero + four).
+ * section. Browse sections vertically and titles horizontally. Selection
+ * never changes the underlying personal ranking.
  *
  * Spec image 6. Data source: GET /me/picks/collections (one round
  * trip returns all five categories).
@@ -14,9 +14,9 @@ import { router } from "expo-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Pressable,
-  ScrollView,
   Share,
   StyleSheet,
   Text,
@@ -25,7 +25,7 @@ import {
   type NativeScrollEvent,
   type NativeSyntheticEvent,
 } from "react-native";
-import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
+import { SafeAreaView } from "react-native-safe-area-context";
 
 import { AddToTeamSheet } from "@/components/add-to-team-sheet";
 import { apiRequest } from "@/lib/api";
@@ -45,6 +45,7 @@ import {
   type PicksCollections,
 } from "@/lib/picks";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
+import { shareTitle } from "@/lib/share";
 import { trackEvent } from "@/lib/analytics";
 
 
@@ -73,29 +74,27 @@ function pickToFullBleed(t: PickTitle): FullBleedTitle {
 }
 
 
-// Group a flat list into sections of 5 (one hero + four continuation).
-function groupBySections(items: PickTitle[]): { hero: PickTitle; four: PickTitle[] }[] {
-  const sections: { hero: PickTitle; four: PickTitle[] }[] = [];
-  for (let i = 0; i < items.length; i += 5) {
-    const slice = items.slice(i, i + 5);
-    if (slice.length === 0) break;
-    sections.push({ hero: slice[0], four: slice.slice(1, 5) });
-  }
-  return sections;
-}
-
-
 export default function MyPicksScreen() {
   const { sessionToken } = useAuth();
-  const insets = useSafeAreaInsets();
   const { height } = useWindowDimensions();
 
   const [teamTarget, setTeamTarget] = useState<PickTitle | null>(null);
-  const [pageError, setPageError] = useState<string | null>(null);
-  const pageBusy = useRef(false);
+  const [pageErrors, setPageErrors] = useState<Record<string, string>>({});
+  const pageBusy = useRef(new Set<string>());
+  const [featured, setFeatured] = useState<Record<string, string>>({});
+  const [sectionHeight, setSectionHeight] = useState(Math.max(320, height - 160));
+  const dataRef = useRef<PicksCollections | null>(null);
+  const requestGeneration = useRef(0);
+  const [loadError, setLoadError] = useState(false);
   const [data, setData] = useState<PicksCollections | null>(null);
   const [loading, setLoading] = useState(true);
-  const [activeCategory, setActiveCategory] = useState<CategoryKey>("ranked_favorites");
+  useEffect(() => { dataRef.current = data; }, [data]);
+  useEffect(() => {
+    requestGeneration.current += 1;
+    dataRef.current = null;
+    setData(null); setFeatured({}); setLoading(true); setLoadError(false);
+    setPageErrors({}); pageBusy.current.clear();
+  }, [sessionToken]);
 
   const [titleModalId, setTitleModalId] = useState<string | null>(null);
   const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
@@ -109,25 +108,16 @@ export default function MyPicksScreen() {
 
   const refetch = useCallback(() => {
     if (!sessionToken) return () => {};
+    const generation = ++requestGeneration.current;
     let cancelled = false;
-    fetchPicksCollections(sessionToken)
-      .then((res) => { if (!cancelled) setData(res); })
-      .catch(() => { /* keep whatever's already shown */ });
+    setLoadError(false);
+    fetchPicksCollections(sessionToken, dataRef.current)
+      .then((res) => { if (!cancelled && generation === requestGeneration.current) setData(res); })
+      .catch(() => { if (!cancelled && generation === requestGeneration.current) setLoadError(true); })
+      .finally(() => { if (!cancelled && generation === requestGeneration.current) setLoading(false); });
     return () => { cancelled = true; };
   }, [sessionToken]);
-
-  useFocusEffect(
-    useCallback(() => {
-      let cancelled = false;
-      if (!sessionToken) return;
-      setLoading(true);
-      fetchPicksCollections(sessionToken)
-        .then((res) => { if (!cancelled) setData(res); })
-        .catch(() => { if (!cancelled) setData(null); })
-        .finally(() => { if (!cancelled) setLoading(false); });
-      return () => { cancelled = true; };
-    }, [sessionToken]),
-  );
+  useFocusEffect(refetch);
 
   // A46–A47: subscribe to the shared title-state pub/sub so a save
   // or watched flip triggered from another surface (feed card,
@@ -149,88 +139,47 @@ export default function MyPicksScreen() {
     };
   }, [refetch]);
 
-  const reservedBottomNav = 56 + insets.bottom + 48; // tab bar + pill nav
-  const sectionHeight = height - insets.top - reservedBottomNav;
-
-  const items: PickTitle[] = useMemo(() => {
-    if (!data) return [];
-    if (activeCategory === "my_lists") {
-      // Each list becomes a "section" with its own hero (first title) + up to 4 more.
-      return data.my_lists.flatMap((list) => list.titles);
-    }
-    return (data[activeCategory] as PickTitle[]) ?? [];
-  }, [data, activeCategory]);
-
   type Section = {
     key: string;
-    hero: PickTitle;
-    four: PickTitle[];
-    kicker: string | null;
-    listMeta: PickList | null;
+    category: CategoryKey;
+    label: string;
+    titles: PickTitle[];
+    total: number;
+    listMeta?: PickList;
   };
-
-  // Oct-27 spec PICKS-01: display count must match the eligible
-  // collection, not just the loaded page.
-  const categoryTotalCount = useMemo(() => {
-    if (!data) return 0;
-    switch (activeCategory) {
-      case "ranked_favorites": return data.ranked_favorites_count ?? data.ranked_favorites.length;
-      case "my_next_watch": return data.my_next_watch_count ?? data.my_next_watch.length;
-      case "favorites": return data.favorites_count ?? data.favorites.length;
-      case "watched": return data.watched_count ?? data.watched.length;
-      case "my_lists": return data.my_lists.length;
-      default: return 0;
-    }
-  }, [data, activeCategory]);
-
   const sections = useMemo<Section[]>(() => {
-    if (activeCategory !== "my_lists") {
-      // One section per category. The hero is the top item; the
-      // continuation strip gets the full remainder — the strip is
-      // horizontally scrollable so the user sees everything they've
-      // ranked / saved, not just the top 5.
-      if (items.length === 0) return [];
-      return [
-        {
-          key: `${activeCategory}-${items[0].id}`,
-          hero: items[0],
-          four: items.slice(1),
-          kicker: null,
-          listMeta: null,
-        },
-      ];
-    }
-    // For my_lists, group one section PER list so each list has its own
-    // dominant hero and the user can tell them apart. The list name
-    // becomes a prominent section kicker at the top of each page.
     if (!data) return [];
-    return data.my_lists
-      .filter((l) => l.titles.length > 0)
-      .map((l) => {
-        const count = l.total_count ?? l.titles.length;
-        return {
-          key: `list-${l.id}`,
-          hero: l.titles[0],
-          four: l.titles.slice(1),
-          kicker: `${l.name.toUpperCase()} · ${count} TITLE${count === 1 ? "" : "S"}`,
-          listMeta: l,
-        };
-      });
-  }, [data, activeCategory, items]);
+    const main = CATEGORIES.filter(c => c.key !== "my_lists").map(c => {
+      const key = c.key as Exclude<CategoryKey, "my_lists">;
+      return { key, category: c.key, label: c.label, titles: data[key], total: data[`${key}_count`] ?? data[key].length };
+    });
+    const lists = [...data.my_lists].sort((a, b) => Number(!!a.is_previous_collection) - Number(!!b.is_previous_collection));
+    return [...main, { key: "my_lists", category: "my_lists" as const, label: "My Lists", titles: [], total: lists.length }, ...lists.map(list => ({
+      key: `list-${list.id}`, category: "my_lists" as const,
+      label: list.is_previous_collection ? `Previous collections · ${list.name}` : list.name,
+      titles: list.titles, total: list.total_count ?? list.titles.length, listMeta: list,
+    }))];
+  }, [data]);
 
-  async function loadMoreTitles() {
-    if (!sessionToken || !data || activeCategory === "my_lists" || pageBusy.current || items.length >= categoryTotalCount) return;
-    const key = activeCategory;
-    pageBusy.current = true;
-    setPageError(null);
+  async function loadMoreTitles(section: Section) {
+    const { key, titles, total, listMeta } = section;
+    if (!sessionToken || !data || key === "my_lists" || pageBusy.current.has(key) || titles.length >= total) return;
+    pageBusy.current.add(key);
+    setPageErrors(prior => ({ ...prior, [key]: "" }));
+    const generation = requestGeneration.current;
     try {
-      const page = await apiRequest<{ items: PickTitle[]; total: number }>(`/me/picks/collections/${key}?limit=100&offset=${items.length}`, { token: sessionToken });
-      setData((prior) => prior ? { ...prior,
-        [key]: [...new Map([...prior[key], ...page.items].map((title) => [title.id, title])).values()],
-        [key + "_count"]: page.total } : prior);
-    } catch {
-      setPageError("Could not load more titles. Tap to retry.");
-    } finally { pageBusy.current = false; }
+      const path = listMeta ? `/me/picks/lists/${listMeta.id}/titles` : `/me/picks/collections/${key}`;
+      const page = await apiRequest<{ items: PickTitle[]; total: number }>(`${path}?limit=100&offset=${titles.length}`, { token: sessionToken });
+      if (generation !== requestGeneration.current) return;
+      setData(prior => {
+        if (!prior) return prior;
+        const merge = (old: PickTitle[]) => [...new Map([...old, ...page.items].map(t => [t.id, t])).values()];
+        if (listMeta) return { ...prior, my_lists: prior.my_lists.map(list => list.id === listMeta.id ? { ...list, titles: merge(list.titles), total_count: page.total } : list) };
+        const category = section.category as Exclude<CategoryKey, "my_lists">;
+        return { ...prior, [category]: merge(prior[category]), [category + "_count"]: page.total };
+      });
+    } catch { setPageErrors(prior => ({ ...prior, [key]: "Could not load more titles. Tap to retry." })); }
+    finally { pageBusy.current.delete(key); }
   }
 
   async function openTitle(titleId: string) {
@@ -252,7 +201,7 @@ export default function MyPicksScreen() {
     setUniversalTitle(null);
   }
 
-  function buildRail(title: PickTitle): VerticalRailAction[] {
+  function buildRail(title: PickTitle, activeCategory: CategoryKey): VerticalRailAction[] {
     const base: VerticalRailAction[] = [];
     base.push(
       {
@@ -271,7 +220,13 @@ export default function MyPicksScreen() {
         label: "Send",
         onPress: () => {
           trackEvent("my_picks_send", { title_id: title.id, category: activeCategory });
-          void Share.share({ message: `${title.title} — on SeenSnap` }).catch(() => {});
+          void (async () => {
+            if (!sessionToken) return;
+            try {
+              const detail = title.tmdb_id ? { tmdbId: title.tmdb_id, mediaType: title.media_type === "movie" ? "movie" as const : "tv" as const } : await fetchUniversalTitle(sessionToken, title.id);
+              await shareTitle({ titleId: title.id, displayTitle: title.title, tmdbId: detail.tmdbId, mediaType: detail.mediaType, entryPoint: "my_picks" });
+            } catch { Alert.alert("Couldn’t share this title", "Please try again."); }
+          })();
         },
       },
       {
@@ -313,136 +268,55 @@ export default function MyPicksScreen() {
     return base;
   }
 
-  const activeCategoryLabel = CATEGORIES.find((c) => c.key === activeCategory)?.label ?? "";
-
   return (
     <SafeAreaView style={styles.root} edges={[]}>
       <AppHeader variant="primary" title="My Picks" />
-      <View style={styles.sectionKicker}>
-        <Text style={styles.sectionKickerLabel}>{activeCategoryLabel.toUpperCase()}</Text>
-        {categoryTotalCount > 0 ? (
-          <Text style={styles.sectionKickerCount}>
-            {"  ·  "}{categoryTotalCount} {activeCategory === "my_lists" ? "LISTS" : "TITLES"}
-          </Text>
-        ) : null}
-        {activeCategory === "ranked_favorites" && (data?.rated_unplaced_count ?? 0) > 0 ? (
-          <Pressable
-            onPress={() => router.push("/favorites/unplaced")}
-            hitSlop={4}
-            accessibilityRole="button"
-            accessibilityLabel="Open rated titles not yet placed in your ranking"
-          >
-            <Text style={[styles.sectionKickerCount, styles.sectionKickerCountLink]}>
-              {"  ·  "}{data?.rated_unplaced_count} NOT YET PLACED
-            </Text>
-          </Pressable>
-        ) : null}
-        <View style={{ flex: 1 }} />
-        {activeCategory === "ranked_favorites" ? (
-          <Pressable
-            onPress={() => router.push("/favorites/ranked")}
-            hitSlop={6}
-            style={styles.editOrderBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Edit ranking order"
-          >
-            <Ionicons name="swap-vertical" size={14} color={colors.background} />
-            <Text style={styles.editOrderBtnLabel}>EDIT ORDER</Text>
-          </Pressable>
-        ) : null}
-        {activeCategory === "my_lists" ? (
-          <Pressable
-            onPress={() => router.push("/favorites/new-list" as never)}
-            hitSlop={6}
-            style={styles.newListBtn}
-            accessibilityRole="button"
-            accessibilityLabel="Create a new list"
-          >
-            <Ionicons name="add" size={14} color={colors.background} />
-            <Text style={styles.newListBtnLabel}>NEW LIST</Text>
-          </Pressable>
-        ) : null}
-      </View>
-
-      {pageError ? <Pressable onPress={() => void loadMoreTitles()}><Text style={{ color: colors.accent, padding: 12 }}>{pageError}</Text></Pressable> : null}
-      {loading && !data ? (
-        <LoadingView height={sectionHeight} />
-      ) : sections.length === 0 ? (
-        <EmptyView
-          height={sectionHeight}
-          icon="bookmark-outline"
-          title="Nothing here yet."
-          body={
-            activeCategory === "ranked_favorites"
-              ? "Rate a title to start your ranked favorites. You can change the order anytime."
-              : activeCategory === "my_next_watch"
-              ? "Save a title to your Next Watch list to plan what you'll watch next."
-              : activeCategory === "favorites"
-              ? "Rate titles 8 or higher and they'll land here automatically."
-              : activeCategory === "watched"
-              ? "Mark titles watched and they'll appear here."
-              : "Create a list to start organizing titles you love."
-          }
-          actionLabel={activeCategory === "ranked_favorites" ? "Rank favorites" : activeCategory === "my_lists" ? "Create a list" : "Start swiping"}
-          onAction={() => {
-            if (activeCategory === "ranked_favorites") router.push("/favorites/ranked");
-            else if (activeCategory === "my_lists") router.push("/favorites/new-list");
-            else router.push("/(tabs)/swipe");
-          }}
-        />
-      ) : (
+      {loadError ? <Pressable accessibilityRole="button" onPress={refetch} style={{ padding: 12, minHeight: 44 }}><Text style={{ color: colors.accent }}>Couldn't refresh your picks. Tap to retry.</Text></Pressable> : null}
+      <View style={{ flex: 1 }} onLayout={event => setSectionHeight(Math.max(280, event.nativeEvent.layout.height))}>
+      {loading && !data ? <LoadingView height={sectionHeight} /> : (
         <FlatList
           data={sections}
-          keyExtractor={(section) => section.key}
+          extraData={featured}
+          keyExtractor={section => section.key}
           snapToInterval={sectionHeight}
           decelerationRate="fast"
           showsVerticalScrollIndicator={false}
-          renderItem={({ item }) => (
-            <View style={{ height: sectionHeight }}>
-              <FullBleedPosterSection
-                heroHeight={sectionHeight}
-                sectionKicker={item.kicker}
-                hero={pickToFullBleed(item.hero)}
-                four={item.four.map(pickToFullBleed)}
-                onPressHero={() => void openTitle(item.hero.id)}
-                onPressContinuation={(t) => void openTitle(t.id)}
-                railActions={buildRail(item.hero)}
-                onEndReached={() => void loadMoreTitles()}
-                // Push the continuation strip above the pill nav so
-                // posters past the first few aren't hidden behind it.
-                continuationBottomOffset={56 + 20}
-                onPressKicker={item.listMeta ? () => router.push(`/favorites/list/${item.listMeta!.id}`) : undefined}
-              />
-            </View>
-          )}
+          renderItem={({ item }) => {
+            const hero = item.titles.find(t => t.id === featured[item.key]) ?? item.titles[0];
+            const posterHeight = Math.max(220, sectionHeight - 52);
+            return <View style={{ height: sectionHeight }}>
+              <View style={[styles.sectionKicker, { minHeight: 52, flexWrap: "wrap", gap: 8 }]}>
+                <Pressable disabled={!item.listMeta} onPress={() => router.push(`/favorites/list/${item.listMeta!.id}`)} style={{ flex: 1, minWidth: 110, minHeight: 44, justifyContent: "center" }}>
+                  <Text style={styles.sectionKickerLabel} numberOfLines={2}>{item.label}</Text>
+                  <Text style={styles.sectionKickerCount}>{item.total} {item.key === "my_lists" ? "lists" : "titles"}</Text>
+                </Pressable>
+                {item.category === "ranked_favorites" ? <Pressable accessibilityRole="button" accessibilityLabel="Edit ranking order" onPress={() => router.push("/favorites/ranked")} style={[styles.editOrderBtn, { minHeight: 44 }]}><Text style={styles.editOrderBtnLabel}>Edit order</Text></Pressable> : null}
+                {item.key === "my_lists" ? <Pressable accessibilityRole="button" onPress={() => router.push("/favorites/new-list")} style={[styles.newListBtn, { minHeight: 44 }]}><Text style={styles.newListBtnLabel}>New list</Text></Pressable> : null}
+                {item.listMeta ? <Pressable accessibilityRole="button" accessibilityLabel={`Manage ${item.listMeta.name}`} onPress={() => router.push(`/favorites/list/${item.listMeta!.id}`)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>Manage</Text></Pressable> : null}
+              </View>
+              {pageErrors[item.key] ? <Pressable onPress={() => void loadMoreTitles(item)} style={{ position: "absolute", zIndex: 10, top: 56, left: 12, right: 12, backgroundColor: colors.background, padding: 12 }}><Text style={{ color: colors.accent }}>{pageErrors[item.key]}</Text></Pressable> : null}
+              {hero ? <FullBleedPosterSection
+                heroHeight={posterHeight}
+                hero={pickToFullBleed(hero)}
+                four={item.titles.map(pickToFullBleed)}
+                onPressHero={() => void openTitle(hero.id)}
+                onPressContinuation={title => setFeatured(prior => ({ ...prior, [item.key]: title.id }))}
+                railActions={buildRail(hero, item.category)}
+                onEndReached={() => void loadMoreTitles(item)}
+                continuationBottomOffset={12}
+              /> : <EmptyView
+                height={posterHeight}
+                icon="bookmark-outline"
+                title={item.key === "my_lists" ? "Your collections" : "Nothing here yet"}
+                body={item.key === "my_lists" ? (item.total ? "Swipe up to browse and manage your lists, including any previous collections." : "Create a list to organize your next movie night.") : item.listMeta ? "This list is ready for titles. Use Save on any title to add it here." : item.category === "ranked_favorites" ? "Rate a title to start your ranking. You can change the order anytime." : item.category === "favorites" ? "Titles you rate 8 or higher appear here." : item.category === "watched" ? "Titles you've watched appear here." : "Swipe right or save a title to My Next Watch."}
+                actionLabel={item.listMeta ? "Manage list" : item.key === "my_lists" ? "New list" : "Discover titles"}
+                onAction={() => item.listMeta ? router.push(`/favorites/list/${item.listMeta.id}`) : item.key === "my_lists" ? router.push("/favorites/new-list") : router.push("/(tabs)/swipe")}
+              />}
+            </View>;
+          }}
         />
       )}
-
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.pillNavContent}
-        style={[styles.pillNav, { bottom: insets.bottom + 56 }]}
-      >
-        {CATEGORIES.map((cat) => {
-          const active = cat.key === activeCategory;
-          return (
-            <Pressable
-              key={cat.key}
-              onPress={() => {
-                setActiveCategory(cat.key);
-                trackEvent("my_picks_category_changed", { category: cat.key });
-              }}
-              hitSlop={6}
-              style={[styles.pillBtn, active && styles.pillBtnActive]}
-            >
-              <Text style={[styles.pillLabel, active && styles.pillLabelActive]} numberOfLines={1}>
-                {cat.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </ScrollView>
+      </View>
 
       <AddToTeamSheet visible={!!teamTarget} token={sessionToken} title={teamTarget} onClose={() => setTeamTarget(null)} />
       <UniversalTitleModal

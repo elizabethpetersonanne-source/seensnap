@@ -270,11 +270,11 @@ def _fresh_stamp(value, hours=24):
         return False
 
 
-def refresh_title_details(db: Session, title: ContentTitle) -> ContentTitle:
+def refresh_title_details(db: Session, title: ContentTitle, *, timeout_seconds: float = 15) -> ContentTitle:
     if _fresh_stamp((title.metadata_raw or {}).get("_seensnap_details_at")):
         return title
     endpoint = f"/movie/{title.tmdb_id}" if title.content_type == "movie" else f"/tv/{title.tmdb_id}"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(timeout_seconds)) as client:
         response = client.get(
             endpoint,
             params={"language": "en-US", "append_to_response": "credits,images,keywords", "include_image_language": "en,null"},

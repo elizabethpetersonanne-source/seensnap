@@ -21,7 +21,7 @@ type HelpOption = {
 };
 
 const OPTIONS: HelpOption[] = [
-  { icon: "book-outline", title: "Help Center", body: "Browse articles and guides", url: "https://seensnap.com/help" },
+  { icon: "book-outline", title: "Help Center", body: "Browse articles and guides", route: "/settings/guide" },
   { icon: "mail-outline", title: "Contact Us", body: "Send us a message", email: "support@seensnap.com" },
   { icon: "megaphone-outline", title: "Send Feedback", body: "Help us make SeenSnap better", email: "feedback@seensnap.com" },
   { icon: "warning-outline", title: "Report a Problem", body: "Describe the issue and attach a screenshot", route: "/settings/report-a-problem" },

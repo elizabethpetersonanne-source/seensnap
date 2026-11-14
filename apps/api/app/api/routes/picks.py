@@ -13,6 +13,7 @@ collections.
 """
 
 from __future__ import annotations
+from uuid import UUID
 
 
 from fastapi import APIRouter, HTTPException, Query
@@ -35,6 +36,7 @@ router = APIRouter()
 
 class PickTitle(BaseModel):
     id: str
+    tmdb_id: int
     title: str
     poster_url: str | None
     backdrop_url: str | None
@@ -52,6 +54,7 @@ class PickList(BaseModel):
     is_default: bool
     titles: list[PickTitle]
     total_count: int = 0
+    is_previous_collection: bool = False
 
 
 class PicksCollections(BaseModel):
@@ -77,6 +80,7 @@ def _title_to_pick(
 ) -> PickTitle:
     return PickTitle(
         id=str(t.id),
+        tmdb_id=t.tmdb_id,
         title=t.title,
         poster_url=t.poster_url,
         backdrop_url=t.backdrop_url,
@@ -212,6 +216,7 @@ def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksC
                 is_default=bool(wl.is_default),
                 titles=[_title_to_pick(t) for t in titles],
                 total_count=total,
+                is_previous_collection=wl.merged_into_id is not None,
             )
         )
     return PicksCollections(
@@ -220,3 +225,14 @@ def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksC
         my_lists=my_lists,
         rated_unplaced_count=rated_unplaced_count,
     )
+
+
+@router.get("/lists/{list_id}/titles", response_model=PicksPage)
+def get_my_list_titles(list_id: UUID, current_user: CurrentUser, db: DbSession,
+    limit: int = Query(100, ge=1, le=200), offset: int = Query(0, ge=0)):
+    from app.services.watchlists import get_watchlist
+    get_watchlist(db, current_user.id, list_id)
+    query = select(ContentTitle).join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)        .where(WatchlistItem.watchlist_id == list_id).order_by(WatchlistItem.created_at.desc(), ContentTitle.id)
+    total = int(db.scalar(select(func.count()).select_from(query.order_by(None).subquery())) or 0)
+    titles = db.scalars(query.offset(offset).limit(limit)).all()
+    return PicksPage(items=[_title_to_pick(t) for t in titles], total=total, offset=offset, has_more=offset+len(titles)<total)

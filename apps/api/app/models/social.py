@@ -105,6 +105,9 @@ class Watchlist(Base):
     # "favorites" = canonical Favorites set. At most one list per
     # owner per non-null role. Resolver uses this, NOT name/is_default.
     system_role: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    # Original collections remain readable with their original audience and links.
+    # They no longer compete with the canonical queue in save destinations.
+    merged_into_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("watchlists.id", ondelete="SET NULL"), nullable=True)
     # Oct-27 followup A69: list audience. "private" (owner only),
     # "followers" (owner's followers can read), "public" (anyone with
     # the share link). Default private — explicit publish required.

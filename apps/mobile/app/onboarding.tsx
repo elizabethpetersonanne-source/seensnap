@@ -112,6 +112,7 @@ function BasicsBody({
       </Text>
       <TextInput
         autoCapitalize="words"
+        accessibilityLabel="Your display name"
         autoComplete="name"
         autoCorrect={false}
         placeholder="Your name"
@@ -128,6 +129,7 @@ function BasicsBody({
       </Text>
       <TextInput
         autoCapitalize="none"
+        accessibilityLabel="Your public username"
         autoComplete="username"
         autoCorrect={false}
         placeholder="@yourhandle"
@@ -700,8 +702,7 @@ export default function OnboardingScreen() {
   }
 
   // Progress bar — show as small dots between Basics and Calibration.
-  // Removed the "region" step per spec §7 (country_code stays at
-  // account default). Removed "first-list" step per spec §4 Non-Goals.
+  // Country is selected within Services; progress remains three short steps.
   const MAIN_STEPS: Step[] = [
     "welcome",
     "basics",
@@ -760,6 +761,7 @@ export default function OnboardingScreen() {
     <SafeAreaView style={styles.safeArea}>
       {/* Header bar */}
       <View style={styles.headerBar}>
+        {stepIndex > 0 && stepIndex < 4 ? <Pressable accessibilityRole="button" accessibilityLabel="Back to previous onboarding step" disabled={isSaving} onPress={() => { setError(null); setStep(MAIN_STEPS[stepIndex - 1]); }} style={{ minWidth: 44, minHeight: 44, justifyContent: "center" }}><Ionicons name="arrow-back" size={22} color={colors.ink} /></Pressable> : null}
         {showDots ? (
           <View style={styles.dots}>
             {MAIN_STEPS.slice(1).map((s) => (
@@ -789,6 +791,7 @@ export default function OnboardingScreen() {
       >
         <ScrollView
           keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           contentContainerStyle={{
             flexGrow: 1,
             width: "100%",

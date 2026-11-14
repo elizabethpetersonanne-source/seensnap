@@ -141,7 +141,7 @@ def _collect_interactions(
             if at is None: continue
             at = at.replace(tzinfo=timezone.utc) if at.tzinfo is None else at
             if row.content_title_id not in times or at > times[row.content_title_id]: times[row.content_title_id] = at
-    for row in db.scalars(select(WatchlistItem).join(Watchlist).where(Watchlist.owner_user_id == user_id)).all():
+    for row in db.scalars(select(WatchlistItem).join(Watchlist).where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))).all():
         at = row.created_at.replace(tzinfo=timezone.utc) if row.created_at.tzinfo is None else row.created_at
         if row.content_title_id not in times or at > times[row.content_title_id]: times[row.content_title_id] = at
     return [(titles[key], signal.utility * signal.boost * 5, times.get(key)) for key,signal in evidence.items() if key in titles]

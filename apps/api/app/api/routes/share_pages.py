@@ -22,6 +22,7 @@ number of pages and inline HTML keeps the deployment simple.
 from __future__ import annotations
 
 import html
+from urllib.parse import urlparse
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, status
@@ -39,15 +40,6 @@ router = APIRouter()
 # iOS bundle id + Android package should stay in sync with apps/mobile/app.json.
 # When these change, AASA / assetlinks must be re-served, and Apple/Google
 # re-crawl their caches on the next TLS request.
-IOS_APP_ID_PREFIX = "TEAMIDXXXX"  # replace with Apple Team ID before ship
-IOS_BUNDLE_ID = "com.seensnap.app"
-ANDROID_PACKAGE = "com.seensnap.app"
-# SHA-256 signing cert fingerprint — placeholder until we have a release
-# keystore. `expo credentials:manager` prints the current fingerprint.
-ANDROID_SHA256_FINGERPRINT = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99"
-
-APP_STORE_URL = "https://apps.apple.com/app/seensnap/id0"       # placeholder
-PLAY_STORE_URL = "https://play.google.com/store/apps/details?id=com.seensnap.app"
 
 
 def _og_page(
@@ -76,6 +68,13 @@ def _og_page(
             f'<meta name="twitter:image" content="{esc_image}" />'
         )
 
+    store_links = "".join(
+        f'<a class="cta secondary" href="{html.escape(url, quote=True)}">{label}</a>'
+        for url, label, host in (
+            (settings.ios_app_store_url, "iOS App Store", "apps.apple.com"),
+            (settings.android_play_store_url, "Google Play", "play.google.com"),
+        ) if url and urlparse(url).scheme == "https" and urlparse(url).hostname == host
+    )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -124,8 +123,7 @@ def _og_page(
     {body_html}
     <div style="margin-top: 32px;">
       <a class="cta" href="{esc_deep}">Open in SeenSnap</a>
-      <a class="cta secondary" href="{APP_STORE_URL}">iOS App Store</a>
-      <a class="cta secondary" href="{PLAY_STORE_URL}">Google Play</a>
+      {store_links}
     </div>
     <footer>
       <p>SeenSnap is where you save what you love, discover what's next, and share it with the people you watch with.</p>
@@ -397,12 +395,14 @@ def apple_app_site_association() -> JSONResponse:
             "apps": [],
             "details": [
                 {
-                    "appID": f"{IOS_APP_ID_PREFIX}.{IOS_BUNDLE_ID}",
+                    "appID": f"{settings.ios_team_id}.{settings.apple_bundle_id}",
                     "paths": ["/lists/*", "/titles/*", "/events/*", "/profiles/*"],
                 }
             ],
         }
     }
+    if not (settings.ios_team_id and settings.apple_bundle_id):
+        payload["applinks"]["details"] = []
     # Explicitly no Cache-Control tuning — Apple ignores it and refetches on
     # its own schedule. Content-Type must be application/json.
     return JSONResponse(content=payload, media_type="application/json")
@@ -418,9 +418,12 @@ def android_asset_links() -> JSONResponse:
             "relation": ["delegate_permission/common.handle_all_urls"],
             "target": {
                 "namespace": "android_app",
-                "package_name": ANDROID_PACKAGE,
-                "sha256_cert_fingerprints": [ANDROID_SHA256_FINGERPRINT],
+                "package_name": settings.android_app_package,
+                "sha256_cert_fingerprints": [settings.android_sha256_fingerprint],
             },
         }
     ]
+    import re
+    if not re.fullmatch(r"(?:[A-Fa-f0-9]{2}:){31}[A-Fa-f0-9]{2}", settings.android_sha256_fingerprint):
+        payload = []
     return JSONResponse(content=payload, media_type="application/json")

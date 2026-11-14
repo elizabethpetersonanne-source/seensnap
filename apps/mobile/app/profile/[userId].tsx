@@ -79,7 +79,7 @@ type PublicList = {
   name: string;
   description: string | null;
   item_count: number;
-  share_token: string;
+  share_token?: string | null;
   preview_posters: string[];
 };
 
