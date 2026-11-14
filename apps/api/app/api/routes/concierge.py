@@ -309,6 +309,8 @@ def post_concierge_refinement(decision_id: UUID, payload: ConciergeRefineRequest
     receipt, run, _ = claim(db, current_user.id, claim_payload, reserve_allowance=False)
     if not run:
         if receipt.state == "completed":
+            list_id = (receipt.response.get("constraints") or {}).get("collection_list_id")
+            if list_id: _validate_selected_list(db, current_user.id, UUID(list_id))
             return _request_response(db, receipt)
         raise HTTPException(429, detail={"code": "search_busy", "retryable": True}, headers={"Retry-After": "3"})
     receipt_id, lease_id = receipt.id, receipt.lease_id

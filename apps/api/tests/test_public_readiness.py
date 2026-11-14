@@ -236,3 +236,20 @@ def test_profile_cache_tracks_current_taste_version(db):
     first.updated_at = datetime.now(timezone.utc); db.commit()
     refreshed = taste.get_taste_profile(db, user.id)
     assert refreshed.source_version == user.taste_version and refreshed.top_genres == []
+
+
+def test_cached_refinement_rechecks_deleted_list_access(db, monkeypatch):
+    from app.api.routes import concierge as routes
+    from app.services.concierge import ConciergeDecision, ConciergeConstraints
+    user, movie = person(db), title(db)
+    collection = Watchlist(owner_user_id=user.id, name="My list")
+    db.add(collection); db.commit()
+    constraints = ConciergeConstraints(collection_scope="named_list", collection_list_id=str(collection.id))
+    monkeypatch.setattr(routes, "resolve_concierge_decision", lambda *a, **k: ConciergeDecision(None, constraints, "", [movie.id], "partial"))
+    initial = routes.post_concierge_decision(routes.ConciergeDecisionRequest(intent="From this list", collection_list_id=collection.id, idempotency_key="list-initial-test"), user, db)
+    payload = routes.ConciergeRefineRequest(kind="shorter", expected_version=1, idempotency_key="list-refine-test")
+    routes.post_concierge_refinement(initial.decision_id, payload, user, db)
+    db.delete(collection); db.commit()
+    with pytest.raises(HTTPException) as error:
+        routes.post_concierge_refinement(initial.decision_id, payload, user, db)
+    assert error.value.status_code == 404
