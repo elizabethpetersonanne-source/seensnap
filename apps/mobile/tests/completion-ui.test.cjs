@@ -15,6 +15,27 @@ function load(file, overrides) {
   }).outputText, { exports, require: name => { assert.ok(name in mocks, name); return mocks[name]; } });
   return exports;
 }
+test('list choice and empty lists do not claim recommendations were selected', async () => {
+  const { ConciergeEmptyState } = load('../src/components/concierge-empty-state.tsx');
+  const actions = [];
+  let screen;
+  const props = { originalIntent: 'From my saved lists', rationale: 'Selected these titles from your favorites.',
+    onApplyAdjustment: (...args) => actions.push(args) };
+  await act(async () => { screen = renderer.create(React.createElement(ConciergeEmptyState,
+    { ...props, statusDetail: 'needs_list_selection' })); });
+  try {
+    let text = screen.root.findAllByType('Text').map(n => n.props.children).join(' ');
+    assert.match(text, /Which list should I search/);
+    assert.doesNotMatch(text, /Selected these|NO EXACT MATCH/);
+    await act(async () => screen.root.findByType('Pressable').props.onPress());
+    assert.equal(actions[0][1], 'edit_named');
+    await act(async () => screen.update(React.createElement(ConciergeEmptyState,
+      { ...props, statusDetail: 'empty_named_list_scope' })));
+    text = screen.root.findAllByType('Text').map(n => n.props.children).join(' ');
+    assert.match(text, /No matching title in this list/);
+    assert.doesNotMatch(text, /Selected these/);
+  } finally { await act(async () => screen.unmount()); }
+});
 test('a suggestion starts a fresh Concierge search while a typed follow-up retains context', async () => {
   const calls = [];
   const { ConciergeComposer } = load('../src/components/concierge-composer.tsx', {

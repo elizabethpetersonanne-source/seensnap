@@ -57,7 +57,7 @@ def test_followup_keeps_filters_and_resolves_the_second_actual_title(db, monkeyp
     c = concierge.ConciergeConstraints(genres=["comedy"], year_min=1980, year_max=1989, required_providers=["netflix"], original_language="en")
     monkeypatch.setattr(concierge, "_call_configured_model", lambda *a, **kw: {"updates": {"moods": ["light"], "runtime_max": 90}})
     result = refine_constraints(db, c, "Something lighter and under 90 minutes", [str(t.id) for t in rows])
-    assert result.moods == ["light"] and result.runtime_max == 90
+    assert result.moods == ["light"] and result.runtime_max == 89
     assert result.year_min == 1980 and result.required_providers == ["netflix"] and result.original_language == "en"
     result = refine_constraints(db, c, "more like the second one", [str(t.id) for t in rows])
     assert result.anchor_title_ids == [str(rows[1].id)] and result.genres == ["comedy"]

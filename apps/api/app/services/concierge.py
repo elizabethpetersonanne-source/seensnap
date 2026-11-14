@@ -497,7 +497,9 @@ def resolve_concierge_decision(
         return ConciergeDecision(
             decision_id=None,
             constraints=constraints,
-            rationale=rationale,
+            # Interpretation happens before retrieval; its prose cannot claim
+            # that any titles were selected when the verified result is empty.
+            rationale="",
             title_ids=[],
             status="error" if retrieval.partial_reason in {"metadata_unavailable", "upstream_failure"} else "empty",
             status_detail=(retrieval.partial_reason if retrieval.partial_reason in {
@@ -1016,7 +1018,8 @@ def _ground_suggestions(
 
 
 def _constraints_from_raw(raw: dict, intent: str) -> ConciergeConstraints:
-    parsed = ConciergeIntent.model_validate(raw)
+    from app.services.concierge_contract import explicit_runtime_bounds
+    parsed = ConciergeIntent.model_validate({**raw, **explicit_runtime_bounds(intent)})
     values = parsed.model_dump(exclude={"suggested_titles", "rationale"})
     for key in ("genres", "moods", "exclusions"):
         values[key] = [v.strip().lower() for v in values[key]]

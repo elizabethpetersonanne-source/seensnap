@@ -22,6 +22,16 @@ Regression coverage includes candidate-specific score evidence, positive/negativ
 
 Before this release, the signed-in production Concierge returned five titles for “Comedy movies under 90 minutes on Netflix.” “Different options” returned five new titles and retained those constraints. The live “From my saved list” suggestion incorrectly continued that search; this release fixes both the UI routing and deterministic plural-list recognition. These observations do not replace acceptance against the new backend.
 
+### Live backend acceptance and final corrections
+
+The deployed API now reports `d94bd39a702bc3f73451c34ff44f90d3b578c710`, revision `seensnap-api-staging-beta-d94bd39a70-1794623693`, on both service addresses. Its backup, migration and structural checks passed. The frontend remains at the previous production build until the final corrections below are deployed and accepted.
+
+- The established account's evidence is present (33 ratings, 286 saves and 501 swipes). Movie For You initially timed out but loaded on retry; TV also returned a full media-appropriate set. This is not a latency benchmark or proof that the first-load timeout is resolved.
+- A fresh Tom Hanks comedy search returned Bachelor Party, The Money Pit, Big, The 'Burbs and Splash. Saved-list search opened the actual owned-list chooser; choosing an empty list returned no outside titles.
+- The first provider/runtime request stayed in processing. A fresh request completed with five Netflix comedy titles and individual explanations. Promoting every thumbnail exposed a boundary error: a 90-minute title passed an “under 90 minutes” request. Explicit numeric runtime wording now converts to inclusive catalog bounds consistently on initial searches and follow-ups: under 90 means at most 89; up to 90 still includes 90. Minute/hour wording and lower bounds are covered by regression tests.
+- Empty-list results exposed model interpretation prose claiming titles had been selected. Empty backend results no longer retain that unverified prose, and the client uses truthful list-selection/empty-list copy even for old receipts. Selecting a list is labeled “Choose a list.”
+- Final acceptance must repeat strict runtime and follow-up behavior after the correction deploy. Physical-device acceptance and the external configuration items below remain outstanding.
+
 ## Release and acceptance
 
 1. Run `deploy/rollout_existing.py --apply --expected-commit <reviewed commit>` from the existing Cloud Shell checkout. Use the existing model and location; no provider override is required. The rollout retains backup, migration, no-traffic revision, health/structure validation and exact-revision traffic promotion.

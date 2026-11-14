@@ -83,10 +83,10 @@ function diagnosisFor(
           { id: "edit", label: "Edit request", prompt: originalIntent ?? "" }] };
     case "needs_list_selection":
       return {
-        headline: "Which list?",
-        body: "Tell me the name of the list you want to pick from, or open a list to browse.",
+        headline: "Which list should I search?",
+        body: "Choose one of your lists so I can search only those titles.",
         adjustments: [
-          { id: "edit_named", label: "Name the list", prompt: originalIntent ?? "From my saved list, " },
+          { id: "edit_named", label: "Choose a list", prompt: originalIntent ?? "From my saved list, " },
         ],
       };
     case "empty_provider_constraint":
@@ -143,16 +143,16 @@ export function ConciergeEmptyState({
   busy?: boolean;
 }) {
   const d = diagnosisFor(statusDetail, originalIntent, partialReason);
-  // Prefer the server's rationale when it's non-empty — Chunk C may
-  // have populated it with a precise explanation; otherwise fall back
-  // to the generic copy table.
+  // Old receipts can contain interpretation prose written before retrieval.
+  // A list choice or an empty list must never imply we selected any titles.
   const incomplete = ["retrieval_timeout", "retrieval_budget_reached", "upstream_failure", "metadata_unavailable"].includes(partialReason ?? "");
-  const headline = incomplete ? d.headline : rationale?.trim() || d.headline;
+  const needsList = statusDetail === "needs_list_selection";
+  const headline = incomplete || needsList || statusDetail === "empty_named_list_scope" ? d.headline : rationale?.trim() || d.headline;
   return (
     <View style={styles.wrap}>
       <View style={styles.kickerRow}>
         <Ionicons name="alert-circle-outline" size={11} color={colors.accent} />
-        <Text style={styles.kicker}>{incomplete ? "SEARCH IN PROGRESS" : "NO EXACT MATCH"}</Text>
+        <Text style={styles.kicker}>{incomplete ? "SEARCH IN PROGRESS" : needsList ? "CHOOSE A LIST" : "NO EXACT MATCH"}</Text>
       </View>
       <Text style={styles.headline}>{headline}</Text>
       <Text style={styles.body}>{d.body}</Text>
