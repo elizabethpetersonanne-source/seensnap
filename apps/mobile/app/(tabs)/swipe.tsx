@@ -526,6 +526,7 @@ export default function SwipeTab() {
     swipeOperationRef.current = operation;
     swipingRef.current = true;
     setSwipeBusy(true);
+    setUndoToast(null);
     const previous = lastSwipe;
     const generation = generationRef.current;
     try {
@@ -545,8 +546,16 @@ export default function SwipeTab() {
       if (result.watched != null) patchTitleState(previous.item.title.id, { watched: result.watched });
       if (result.partial_reason) showUndoToast("Swipe undone. Your newer save, rating or watched status was kept.");
       trackEvent("swipe_undo", { direction: previous.direction, reversed: result.reversed.join(",") });
-    } catch {
-      if (generation === generationRef.current) showUndoToast("Couldn't undo. Tap Undo to retry.");
+    } catch (error) {
+      if (generation === generationRef.current) {
+        // Status only: never log the account, title, token, or raw response.
+        console.warn("[swipe-undo] Request failed", error instanceof ApiError ? error.status : "network");
+        showUndoToast(error instanceof ApiError && error.status === 409
+          ? "This title changed elsewhere. Your newer choice was kept."
+          : error instanceof ApiError && error.status === 404
+            ? "This swipe is no longer available to undo."
+            : "Couldn't undo. Tap Undo to retry.");
+      }
     } finally {
       if (swipeOperationRef.current === operation) {
         swipeOperationRef.current = null; swipingRef.current = false; setSwipeBusy(false);
@@ -1460,7 +1469,7 @@ export default function SwipeTab() {
       {/* Feedback never participates in the deck's layout. Only Undo captures
           touches; the poster and navigation remain in their original positions. */}
       {swipeBusy || undoToast || lastSwipe || loadingMore ? (
-        <View pointerEvents="box-none" style={[styles.swipeStatus, { bottom: RESERVED_BOTTOM_NAV + safeInsets.bottom + 8 }]}>
+        <View pointerEvents="box-none" style={styles.swipeStatus}>
           <View pointerEvents="box-none" style={styles.swipeStatusContent}>
             {swipeBusy ? (
               <View pointerEvents="none" accessibilityRole="progressbar" accessibilityLabel="Saving swipe" style={styles.swipeStatusMessage}>
@@ -1644,6 +1653,9 @@ const styles = StyleSheet.create({
   },
   swipeStatus: {
     position: "absolute",
+    // The tab navigator already reserves its bar and bottom safe area.
+    // Adding those again raises feedback over the title's action controls.
+    bottom: 8,
     left: 12,
     right: 12,
     alignItems: "center",

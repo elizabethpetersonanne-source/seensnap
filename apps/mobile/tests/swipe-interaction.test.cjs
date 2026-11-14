@@ -21,6 +21,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
   const requests = [], stateListeners = new Set(), hydration = [];
   let filter = { media_type: null, genre: null }, handlers, screen;
   let send = () => Promise.resolve({ swipe_id: 'receipt' });
+  let undo = () => Promise.resolve({ reversed: ['swipe', 'saved'], partial_reason: null, watched: false, saved: false });
   const pans = [];
   class Value {
     constructor(value) { this.value = value; }
@@ -52,6 +53,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
       }
       if (url === '/me/preferences') return Promise.resolve({ connected_streaming_services: [] });
       if (url === '/titles/swipes') return send(options);
+      if (url.startsWith('/titles/swipes/') && options.method === 'DELETE') return undo(options);
       throw new Error(`Unexpected request: ${url}`);
     },
   };
@@ -99,6 +101,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
   return {
     screen, requests, hydration, patches, button, api, pan: pans[0], handlers: () => handlers,
     sendWith(fn) { send = fn; },
+    undoWith(fn) { undo = fn; },
     async click(label) { const b = button(label); assert.ok(b, `Missing button: ${label}`); assert.ok(!b.props.disabled, `Disabled button: ${label}`); await act(async () => { b.props.onPress(); }); },
     async genre(genre) { await act(async () => { screen.root.findByType('CategoryChips').props.onChange({ media_type: null, genre }); }); },
     async close() { await act(async () => screen.unmount()); },
@@ -118,6 +121,36 @@ test('a slow swipe shows progress, blocks duplicate gestures, and advances exact
     await act(async () => request.resolve({ swipe_id: 'receipt' }));
     assert.ok(h.button('Flip title 1 to details'));
     assert.equal(h.button('Pass this title').props.disabled, false);
+  } finally { await h.close(); }
+});
+
+test('Undo restores the saved card and queue state only after acknowledgement', async () => {
+  const h = await mount(), request = deferred();
+  try {
+    await h.click('Next Watch');
+    h.undoWith(() => request.promise);
+    await h.click('Undo last swipe: right');
+    assert.ok(h.button('Flip title 1 to details'));
+    assert.equal(h.button('Next Watch').props.disabled, true);
+    await act(async () => request.resolve({ reversed: ['swipe', 'saved'], partial_reason: null, watched: false, saved: false }));
+    assert.ok(h.button('Flip title 0 to details'));
+    assert.equal(h.button('Undo last swipe: right'), undefined);
+    assert.ok(h.patches.some(p => p.saved === false));
+  } finally { await h.close(); }
+});
+
+test('a failed Undo preserves the current card and receipt so retry can succeed', async () => {
+  const h = await mount();
+  try {
+    await h.click('Next Watch');
+    h.undoWith(() => Promise.reject(new h.api.ApiError('Server error', 503)));
+    await h.click('Undo last swipe: right');
+    assert.ok(h.button('Flip title 1 to details'));
+    assert.equal(h.button('Undo last swipe: right').props.disabled, false);
+    assert.ok(h.screen.root.findAllByType('Text').some(n => n.props.children === "Couldn't undo. Tap Undo to retry."));
+    h.undoWith(() => Promise.resolve({ reversed: ['swipe', 'saved'], partial_reason: null, watched: false, saved: false }));
+    await h.click('Undo last swipe: right');
+    assert.ok(h.button('Flip title 0 to details'));
   } finally { await h.close(); }
 });
 
