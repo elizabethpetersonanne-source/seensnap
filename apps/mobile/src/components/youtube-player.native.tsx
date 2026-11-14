@@ -14,6 +14,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import YoutubePlayer, { type YoutubeIframeRef } from "react-native-youtube-iframe";
 
+import { trailerDiagnostic } from "@/lib/trailer-diagnostics";
 import { TrailerProgress } from "@/lib/trailer-playback";
 import { colors } from "@/constants/theme";
 
@@ -47,6 +48,9 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
   const [attempt, setAttempt] = useState(0);
   const [error, setError] = useState<string | null>(null);
   const started = useRef(false);
+  const resumeAt = useRef(0);
+  const activeVideo = useRef(videoKey);
+  if (activeVideo.current !== videoKey) { activeVideo.current = videoKey; resumeAt.current = 0; }
   const playbackState = useRef(-1);
   const inner = useRef<YoutubeIframeRef | null>(null);
   const fallback = useRef(onMutedFallback); fallback.current = onMutedFallback;
@@ -71,6 +75,7 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
       try {
         const time = await inner.current?.getCurrentTime();
         if (!active || time == null) return;
+        if (Number.isFinite(time) && time >= 0) resumeAt.current = time;
         const action = progress.sample(isActive, playbackState.current, time, Date.now());
         if (action === "retry" && !muted) fallback.current?.();
         if (action === "stalled") setError("The video isn't loading. Tap Play, retry, or swipe to the next title.");
@@ -86,6 +91,7 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
       catch { return 0; }
     },
     seekTo(seconds: number, allowSeekAhead = true) {
+      resumeAt.current = Math.max(0, seconds);
       try { inner.current?.seekTo?.(seconds, allowSeekAhead); } catch { /* non-fatal */ }
     },
   }), []);
@@ -113,9 +119,13 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
           allowsInlineMediaPlayback: true,
           mediaPlaybackRequiresUserAction: false,
         }}
-        onReady={() => setReady(true)}
-        onChangeState={(state: string) => { playbackState.current = state === "paused" ? 2 : state === "ended" ? 0 : state === "playing" ? 1 : 3; setPlaying(state === "playing"); if (state === "playing") { started.current = true; setError(null); } }}
-        onError={() => setError("This trailer is unavailable. Retry or swipe to the next title.")}
+        onReady={() => {
+          if (resumeAt.current > 0) inner.current?.seekTo(resumeAt.current, true);
+          trailerDiagnostic("ready", attempt);
+          setReady(true);
+        }}
+        onChangeState={(state: string) => { playbackState.current = state === "paused" ? 2 : state === "ended" ? 0 : state === "playing" ? 1 : 3; setPlaying(state === "playing"); if (state === "playing") { if (!started.current) trailerDiagnostic("started", attempt); started.current = true; setError(null); } }}
+        onError={() => { trailerDiagnostic("player_error", attempt); setError("This trailer is unavailable. Retry or swipe to the next title."); }}
         onFullScreenChange={(isFull: boolean) => {
           onFullScreenChange?.(isFull);
         }}
@@ -128,7 +138,7 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
       ) : null}
       {error && isActive ? <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.85)", padding: 8 }}>
         <Text style={{ color: "white", fontSize: 12 }}>{error}</Text>
-        <Pressable accessibilityRole="button" onPress={() => setAttempt(n => n + 1)} style={{ minHeight: 44, justifyContent: "center" }}>
+        <Pressable accessibilityRole="button" onPress={() => { trailerDiagnostic("retry", attempt); setAttempt(n => n + 1); }} style={{ minHeight: 44, justifyContent: "center" }}>
           <Text style={{ color: "white" }}>Retry trailer</Text>
         </Pressable>
       </View> : null}

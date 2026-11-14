@@ -93,7 +93,7 @@ def get_saved_title_ids(current_user: CurrentUser, db: DbSession) -> list[UUID]:
     return db.scalars(
         select(WatchlistItem.content_title_id)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .where(Watchlist.owner_user_id == current_user.id)
+        .where(Watchlist.owner_user_id == current_user.id, Watchlist.merged_into_id.is_(None))
     ).all()
 
 
@@ -276,7 +276,7 @@ def get_title_memberships(
             (WatchlistItem.watchlist_id == Watchlist.id) & (WatchlistItem.content_title_id == title_id),
             isouter=True,
         )
-        .where(Watchlist.owner_user_id == current_user.id)
+        .where(Watchlist.owner_user_id == current_user.id, Watchlist.merged_into_id.is_(None))
     ).all()
     # Collapse to one row per list; count ALL items per list separately
     # since the join only materialises matching rows for this title.

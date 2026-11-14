@@ -1,6 +1,7 @@
 /** Web trailer player. The player survives resizing and mute changes. */
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable } from "react-native";
+import { trailerDiagnostic } from "@/lib/trailer-diagnostics";
 import { TrailerPlayback, TrailerProgress } from "@/lib/trailer-playback";
 
 export type YoutubePlayerProps = {
@@ -55,15 +56,17 @@ export default function YouTubePlayerComponent(props: YoutubePlayerProps) {
     let cancelled = false;
     let monitor: ReturnType<typeof setInterval> | undefined;
     const progress = new TrailerProgress();
+    const reported = new Set<string>();
+    const report = (state: Parameters<typeof trailerDiagnostic>[0]) => { if (!reported.has(state)) { reported.add(state); trailerDiagnostic(state, attempt); } };
     if (resume.current.key !== videoKey) resume.current = { key: videoKey, time: 0 };
     setNotice(null);
     const controller = new TrailerPlayback(
       () => latest.current.onMutedFallback?.(),
-      () => { if (!cancelled) setNotice("Autoplay is blocked on this device. Tap Play in the video."); },
+      () => { if (!cancelled) { report("autoplay_blocked"); setNotice("Autoplay is blocked on this device. Tap Play in the video."); } },
     );
     playback.current = controller;
     controller.update(latest.current.isActive, latest.current.muted);
-    const timeout = setTimeout(() => { if (!cancelled) setNotice("The trailer is taking too long to load. Retry or swipe to the next title."); }, 20000);
+    const timeout = setTimeout(() => { if (!cancelled) { report("load_timeout"); setNotice("The trailer is taking too long to load. Retry or swipe to the next title."); } }, 20000);
     const host = container.current;
     loadPlayer().then((api) => {
       if (cancelled || !host) return;
@@ -87,13 +90,14 @@ export default function YouTubePlayerComponent(props: YoutubePlayerProps) {
                 // A muted play request is permitted by more mobile browsers.
                 target.mute(); latest.current.onMutedFallback?.(); target.playVideo();
               } else if (action === "stalled") {
+                report("stalled");
                 setNotice("The video isn't loading. Retry this trailer or swipe to the next title.");
               } else if (time > 0 && target.getPlayerState() === 1) setNotice(null);
             }, 1000);
           },
           onAutoplayBlocked: () => { if (!cancelled) controller.blocked(); },
-          onStateChange: ({ data }) => { if (!cancelled && data === 1) setNotice(null); },
-          onError: () => { clearTimeout(timeout); if (!cancelled) setNotice("This trailer is unavailable. Retry or swipe to the next title."); },
+          onStateChange: ({ data }) => { if (!cancelled && data === 1) { report("started"); setNotice(null); } },
+          onError: () => { report("player_error"); clearTimeout(timeout); if (!cancelled) setNotice("This trailer is unavailable. Retry or swipe to the next title."); },
         },
       });
     }).catch(() => { clearTimeout(timeout); if (!cancelled) setNotice("Couldn't load the trailer. Retry or swipe to the next title."); });
@@ -107,7 +111,7 @@ export default function YouTubePlayerComponent(props: YoutubePlayerProps) {
     <div ref={container} style={{ width, height }} />
     {notice && isActive ? <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.85)", padding: 8 }}>
       <Text accessibilityLiveRegion="polite" style={{ color: "white", fontSize: 12 }}>{notice}</Text>
-      <Pressable accessibilityRole="button" onPress={() => setAttempt(n => n + 1)} style={{ minHeight: 44, justifyContent: "center" }}>
+      <Pressable accessibilityRole="button" onPress={() => { trailerDiagnostic("retry", attempt); setAttempt(n => n + 1); }} style={{ minHeight: 44, justifyContent: "center" }}>
         <Text style={{ color: "white", fontWeight: "600" }}>Retry trailer</Text>
       </Pressable>
     </View> : null}

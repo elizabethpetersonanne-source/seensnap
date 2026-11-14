@@ -36,7 +36,7 @@ from app.models.social import (
     WatchlistItem,
 )
 from app.models.analytics import AnalyticsEvent
-from app.models.taste import CompatibilityScore, RecommendationSignal, SwipeRecord, UserTasteProfile, WrappedStat
+from app.models.taste import CompatibilityScore, TeamAnalyticsSnapshot, RecommendationSignal, SwipeRecord, UserTasteProfile, WrappedStat
 from app.models.user import AuthIdentity, Device, User, UserPreferences, UserProfile
 from app.schemas.auth import AppleAuthRequest, DevAuthRequest, GoogleAuthRequest, SessionResponse, SessionUserResponse
 from app.services.auth import (
@@ -184,6 +184,7 @@ def delete_account(current_user: CurrentUser, db: DbSession) -> None:
     # still keep their picks / SceneDNA — only the shared team is gone.
     owned_team_ids = db.scalars(select(Team.id).where(Team.owner_user_id == uid)).all()
     if owned_team_ids:
+        db.execute(delete(TeamAnalyticsSnapshot).where(TeamAnalyticsSnapshot.team_id.in_(owned_team_ids)))
         db.execute(delete(TeamActivity).where(TeamActivity.team_id.in_(owned_team_ids)))
         db.execute(delete(TeamTitle).where(TeamTitle.team_id.in_(owned_team_ids)))
         db.execute(delete(TeamMember).where(TeamMember.team_id.in_(owned_team_ids)))

@@ -35,62 +35,17 @@ def _ensure_public_share(db: Session, watchlist: Watchlist) -> None:
     db.add(share)
     db.flush()
 
-DEFAULT_LISTS: tuple[tuple[str, str | None, bool, bool], ...] = (
-    ("My Picks", "Your master saved list.", True, True),
-    ("Want to Watch", "Future viewing queue.", False, True),
-    ("Favorites", "Your personal canon.", False, True),
-)
-
-
 def ensure_default_watchlists(db: Session, user_id: UUID) -> list[Watchlist]:
-    existing = db.scalars(select(Watchlist).where(Watchlist.owner_user_id == user_id)).all()
-    by_name = {item.name.lower(): item for item in existing}
-    changed = False
-    for name, description, is_default, is_system in DEFAULT_LISTS:
-        current = by_name.get(name.lower())
-        if current is None:
-            db.add(
-                Watchlist(
-                    owner_user_id=user_id,
-                    name=name,
-                    description=description,
-                    is_default=is_default,
-                    is_system_list=is_system,
-                )
-            )
-            changed = True
-            continue
-        if is_default and not current.is_default:
-            current.is_default = True
-            changed = True
-        if is_system and not current.is_system_list:
-            current.is_system_list = True
-            changed = True
-        if current.description != description and current.is_system_list:
-            current.description = description
-            changed = True
-    if changed:
-        db.commit()
-    lists = db.scalars(
-        select(Watchlist).where(Watchlist.owner_user_id == user_id).order_by(Watchlist.is_default.desc(), Watchlist.created_at.asc())
-    ).all()
-    # Oct-18 brief §3 fix 8: lists are PRIVATE by default. No implicit
-    # public share creation. The earlier "share-by-default" behavior
-    # has been removed — a list only has a public ListShare when the
-    # user explicitly publishes it via POST /me/watchlist/lists/{id}/share.
-    # Legacy intentionally-public shares already in the database are
-    # preserved; nothing is retroactively privatized here.
-    return lists
+    ensure_next_watch_list(db, user_id, commit=False)
+    # Favorites is a rating-derived section. Preserve historical lists,
+    # but do not create another physical Favorites destination for new users.
+    db.commit()
+    return db.scalars(select(Watchlist).where(Watchlist.owner_user_id == user_id,
+        Watchlist.merged_into_id.is_(None)).order_by(Watchlist.is_default.desc(), Watchlist.created_at)).all()
 
 
 def get_default_watchlist(db: Session, user_id: UUID) -> Watchlist:
-    ensure_default_watchlists(db, user_id)
-    watchlist = db.scalar(
-        select(Watchlist).where(Watchlist.owner_user_id == user_id, Watchlist.is_default.is_(True))
-    )
-    if watchlist is None:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Default list missing")
-    return watchlist
+    return ensure_next_watch_list(db, user_id)
 
 
 def get_next_watch_list(db: Session, user_id: UUID) -> Watchlist | None:
@@ -99,7 +54,7 @@ def get_next_watch_list(db: Session, user_id: UUID) -> Watchlist | None:
     system_role='next_watch' or None if the user has none yet.
 
     Callers that need to CREATE the queue should use the ensure flow
-    which stamps system_role on the historical default list.
+    which creates a private queue when the migration did not find one.
     """
     return db.scalar(
         select(Watchlist).where(
@@ -110,40 +65,29 @@ def get_next_watch_list(db: Session, user_id: UUID) -> Watchlist | None:
 
 
 def ensure_next_watch_list(db: Session, user_id: UUID, *, commit: bool = True) -> Watchlist:
-    """QUEUE01: resolve or back-fill the Next Watch system list. If
-    the migration already stamped a row we return it; otherwise we
-    promote the owner's default (name-matched) list; if neither
-    exists we create a new one.
+    """Resolve the canonical role, or create it under the owner lock.
+
+    Legacy consolidation belongs to the migration, never a name-based read.
     """
+    from app.models.user import User
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     existing = get_next_watch_list(db, user_id)
     if existing is not None:
+        _reconcile_legacy_queue(db, user_id, existing)
+        if commit: db.commit()
         return existing
-    # Try the historical default list first.
-    candidate = db.scalar(
-        select(Watchlist).where(
-            Watchlist.owner_user_id == user_id,
-            Watchlist.is_default.is_(True),
-            Watchlist.name.ilike("next%watch%"),
-        )
-    )
-    if candidate is not None:
-        candidate.system_role = "next_watch"
-        if commit:
-            db.commit()
-        else:
-            db.flush()
-        db.refresh(candidate)
-        return candidate
     # Last resort — create one.
     row = Watchlist(
         owner_user_id=user_id,
-        name="Next Watch",
-        description="Future viewing queue.",
+        name="My Next Watch",
+        description="Titles you want to watch next.",
         is_default=True,
         is_system_list=True,
         system_role="next_watch",
     )
     db.add(row)
+    db.flush()
+    _reconcile_legacy_queue(db, user_id, row)
     if commit:
         db.commit()
     else:
@@ -152,11 +96,47 @@ def ensure_next_watch_list(db: Session, user_id: UUID, *, commit: bool = True) -
     return row
 
 
+def _reconcile_legacy_queue(db, user_id, queue):
+    """Catch legacy writes during rolling deployment without resurrecting unsaves.
+
+    Each source membership has a durable import receipt. Originals and their
+    audiences remain intact. Private source items never enter a public queue.
+    """
+    from app.models.social import WatchlistQueueImport
+    if queue.visibility != "private":
+        return
+    legacy_names = {"my picks", "want to watch", "next watch", "my next watch"}
+    sources = [row for row in db.scalars(select(Watchlist).where(
+        Watchlist.owner_user_id == user_id, Watchlist.id != queue.id)).all()
+        if row.merged_into_id == queue.id or (
+            row.merged_into_id is None and row.is_system_list and row.name.strip().casefold() in legacy_names)]
+    if not sources:
+        return
+    ids = [source.id for source in sources]
+    pending = db.scalars(select(WatchlistItem).outerjoin(WatchlistQueueImport,
+        WatchlistQueueImport.source_item_id == WatchlistItem.id).where(
+        WatchlistItem.watchlist_id.in_(ids), WatchlistQueueImport.source_item_id.is_(None))
+        .order_by(WatchlistItem.created_at, WatchlistItem.id)).all()
+    existing = set(db.scalars(select(WatchlistItem.content_title_id).where(WatchlistItem.watchlist_id == queue.id)))
+    for item in pending:
+        if item.content_title_id not in existing:
+            db.add(WatchlistItem(watchlist_id=queue.id, content_title_id=item.content_title_id,
+                added_via="queue_migration", notes=item.notes, position=item.position, created_at=item.created_at))
+            existing.add(item.content_title_id)
+        db.add(WatchlistQueueImport(source_item_id=item.id, source_list_id=item.watchlist_id, queue_id=queue.id))
+    for source in sources:
+        source.merged_into_id = queue.id
+        source.is_default = False
+        source.is_system_list = False
+        source.system_role = None
+    if pending:
+        from app.services.taste_invalidation import invalidate_taste
+        invalidate_taste(db, user_id)
+    db.flush()
+
+
 def list_watchlists(db: Session, user_id: UUID) -> list[Watchlist]:
-    ensure_default_watchlists(db, user_id)
-    return db.scalars(
-        select(Watchlist).where(Watchlist.owner_user_id == user_id).order_by(Watchlist.is_default.desc(), Watchlist.created_at.asc())
-    ).all()
+    return ensure_default_watchlists(db, user_id)
 
 
 def get_watchlist(db: Session, user_id: UUID, list_id: UUID) -> Watchlist:
@@ -217,8 +197,8 @@ def update_watchlist(
         clean_name = name.strip()
         if len(clean_name) < 2:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="List name must be at least 2 characters")
-        if watchlist.is_default and clean_name.lower() != "my picks":
-            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="My Picks cannot be renamed")
+        if watchlist.system_role == "next_watch" and clean_name != watchlist.name:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="My Next Watch keeps its name so it is easy to find")
         watchlist.name = clean_name
     if description is not None:
         watchlist.description = description.strip() if description.strip() else None
@@ -239,8 +219,11 @@ def update_watchlist(
 
 
 def delete_watchlist(db: Session, watchlist: Watchlist) -> None:
-    if watchlist.is_default:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Default My Picks list cannot be deleted")
+    if watchlist.system_role in {"next_watch", "favorites"} or watchlist.is_system_list:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This built-in collection cannot be deleted; you can remove its titles")
+    from app.models.social import ListSave
+    db.query(ListShare).filter(ListShare.watchlist_id == watchlist.id).delete(synchronize_session=False)
+    db.query(ListSave).filter(ListSave.watchlist_id == watchlist.id).delete(synchronize_session=False)
     db.query(WatchlistItem).filter(WatchlistItem.watchlist_id == watchlist.id).delete(synchronize_session=False)
     db.delete(watchlist)
     from app.services.taste_invalidation import invalidate_taste

@@ -312,6 +312,7 @@ def get_discovery_feed(
 
 @router.get("/recommendations/for-me", response_model=list[RecommendationResponse])
 def get_my_recommendations(
+    background_tasks: BackgroundTasks,
     current_user: CurrentUser,
     db: DbSession,
     limit: int = Query(default=24, ge=6, le=60),
@@ -326,7 +327,10 @@ def get_my_recommendations(
 ) -> list[RecommendationResponse]:
     from app.services.for_you import for_you_recommendations
     try:
-        return for_you_recommendations(db, current_user.id, limit=limit, preferred_type=preferred_type, genre=genre)
+        result = for_you_recommendations(db, current_user.id, limit=limit, preferred_type=preferred_type, genre=genre)
+        from app.services.catalog_enrichment import enrich_for_you
+        background_tasks.add_task(enrich_for_you, current_user.id, [row.title.id for row in result], preferred_type, genre, sparse=len(result) < 5)
+        return result
     except (TmdbConfigurationError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=503, detail="Your picks could not load right now. Please retry.") from exc
 
@@ -353,7 +357,21 @@ def undo_title_swipe(
 ) -> SwipeUndoResponse:
     from app.services.discovery_decisions import undo_decision
     from app.services.swipe_refresh import refresh_after_swipe
-    result = undo_decision(db, current_user.id, swipe_id, refresh_derived=False)
+    import logging
+    from uuid import uuid4
+    try:
+        result = undo_decision(db, current_user.id, swipe_id, refresh_derived=False)
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as error:
+        db.rollback()
+        reference = uuid4().hex[:12]
+        # No prompts, title/account identifiers, SQL parameters, or tokens.
+        code = getattr(getattr(error, "orig", None), "sqlstate", None)
+        logging.getLogger("seensnap.swipe").error("undo_failed reference=%s type=%s db_code=%s", reference, type(error).__name__, code)
+        raise HTTPException(503, detail={"code": "undo_unavailable", "retryable": True,
+            "reference": reference, "message": "Could not undo yet. Your choice has been kept; retry safely."}) from error
     background_tasks.add_task(refresh_after_swipe, current_user.id)
     return SwipeUndoResponse(**result)
 

@@ -107,7 +107,8 @@ SWIPE_DIRECTION_WEIGHTS: dict[str, float] = {
 SWIPE_UP_V1_WEIGHT: float = 3.0
 
 
-def refresh_taste_profile(db: Session, user_id: UUID) -> UserTasteProfile:
+def refresh_taste_profile(db: Session, user_id: UUID, *, commit: bool = True) -> UserTasteProfile:
+    source_version = db.scalar(select(User.taste_version).where(User.id == user_id)) or 0
     profile = db.scalar(select(UserTasteProfile).where(UserTasteProfile.user_id == user_id))
     if profile is None:
         profile = UserTasteProfile(user_id=user_id)
@@ -115,7 +116,9 @@ def refresh_taste_profile(db: Session, user_id: UUID) -> UserTasteProfile:
         db.flush()
 
     genre_scores, title_refs, release_years = _collect_title_signals(db, user_id)
-    themes = _derive_themes(genre_scores)
+    # Favorite identity is a positive projection; signed evidence remains in the scorer.
+    positive_genres = {genre: value for genre, value in genre_scores.items() if value > 0}
+    themes = _derive_themes(positive_genres)
     platforms = _derive_platforms(db, user_id)
     eras = _derive_eras(release_years)
     labels = _derive_labels(genre_scores, themes)
@@ -126,7 +129,7 @@ def refresh_taste_profile(db: Session, user_id: UUID) -> UserTasteProfile:
     if not current_obsessions:
         current_obsessions = _derive_current_obsessions(title_refs)
     posters = [item["poster_url"] for item in current_obsessions if item.get("poster_url")][:4]
-    most_saved_genre = max(genre_scores.items(), key=lambda item: item[1])[0] if genre_scores else None
+    most_saved_genre = max(positive_genres.items(), key=lambda item: item[1])[0] if positive_genres else None
     signal_counts = _signal_counts(db, user_id)
 
     profile.top_genres = _serialize_genres(genre_scores)
@@ -139,19 +142,24 @@ def refresh_taste_profile(db: Session, user_id: UUID) -> UserTasteProfile:
     profile.top_posters = posters
     profile.most_saved_genre = most_saved_genre
     profile.signal_counts = signal_counts
+    profile.source_version = source_version
     profile.updated_at = datetime.now(timezone.utc)
 
     _refresh_wrapped_stat(db, user_id, profile)
-    db.commit()
-    db.refresh(profile)
+    if commit:
+        db.commit()
+        db.refresh(profile)
+    else:
+        db.flush()
     return profile
 
 
-def get_taste_profile(db: Session, user_id: UUID, *, force_refresh: bool = False) -> UserTasteProfile:
+def get_taste_profile(db: Session, user_id: UUID, *, force_refresh: bool = False, commit: bool = True) -> UserTasteProfile:
     from app.services.swipe_refresh import newer_discovery
+    source_version = db.scalar(select(User.taste_version).where(User.id == user_id)) or 0
     profile = db.scalar(select(UserTasteProfile).where(UserTasteProfile.user_id == user_id))
-    if profile is None or force_refresh or _is_stale(profile.updated_at, hours=12) or newer_discovery(db, user_id, profile.updated_at):
-        return refresh_taste_profile(db, user_id)
+    if profile is None or profile.source_version != source_version or force_refresh or _is_stale(profile.updated_at, hours=12) or newer_discovery(db, user_id, profile.updated_at):
+        return refresh_taste_profile(db, user_id, commit=commit)
     return profile
 
 
@@ -432,7 +440,7 @@ def _source_picks_similarity(
         select(WatchlistItem, Watchlist, ContentTitle)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
         .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id)
+        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
     ).all()
     if not rows:
         return []
@@ -555,7 +563,7 @@ def _source_picks_cluster(
         select(WatchlistItem, ContentTitle)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
         .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id)
+        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
         .limit(24)
     ).all()
     saved = [t for _, t in rows if t is not None]
@@ -649,7 +657,7 @@ def _source_scene_dna_match(
         obsession_ids = list(db.scalars(
             select(WatchlistItem.content_title_id)
             .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-            .where(Watchlist.owner_user_id == user_id)
+            .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
             .order_by(WatchlistItem.created_at.desc())
             .limit(8)
         ).all())
@@ -774,7 +782,7 @@ def _source_creator_affinity(
         select(WatchlistItem, ContentTitle)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
         .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id)
+        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
         .limit(20)
     ).all()
     saved = [t for _, t in rows if t is not None]
@@ -932,7 +940,7 @@ def _source_taste_neighbors(
     my_saves = set(db.scalars(
         select(WatchlistItem.content_title_id)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .where(Watchlist.owner_user_id == user_id)
+        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
     ).all())
     if len(my_saves) < 3:
         # Not enough taste signal to define "neighbors" — skip.
@@ -1461,7 +1469,7 @@ def get_social_recommendations(
     saved_ids = set(db.scalars(
         select(WatchlistItem.content_title_id)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .where(Watchlist.owner_user_id == user_id)
+        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
     ).all())
     # Only exclude RECENT left-swipes. Older dismisses accumulate over time and,
     # for heavy users (demo especially), end up blocking every candidate every
@@ -1810,7 +1818,7 @@ def _build_scene_dna_feedback(
         select(WatchlistItem, ContentTitle)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
         .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id)
+        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
         .order_by(WatchlistItem.created_at.desc())
         .limit(40)
     ).all()
@@ -2076,6 +2084,8 @@ def record_swipe(
         if item.added_via == marker:
             before["added_queue_item"] = {"id": str(item.id), "added_via": marker}
     create_decision(db, record, before, source_surface)
+    from app.services.taste_invalidation import invalidate_taste
+    invalidate_taste(db, user_id)
     db.commit()
     # The HTTP path acknowledges the durable decision before derived work.
     if refresh_derived:
@@ -2152,7 +2162,7 @@ def _derive_platforms(db: Session, user_id: UUID) -> list[str]:
         .join(ContentTitle, ContentTitle.id == ContentAvailability.content_title_id)
         .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .where(Watchlist.owner_user_id == user_id)
+        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
     ).all()
     for (provider_name,) in rows:
         if provider_name:
@@ -2181,6 +2191,7 @@ def _derive_eras(years: list[int]) -> list[str]:
 
 
 def _derive_labels(genre_scores: dict[str, float], themes: list[str]) -> list[dict]:
+    genre_scores = {genre: value for genre, value in genre_scores.items() if value > 0}
     if not genre_scores:
         return []
     genre_total = sum(genre_scores.values()) or 1
@@ -2216,101 +2227,22 @@ def _derive_current_obsessions(title_refs: list[dict]) -> list[dict]:
 def _derive_current_obsessions_recent(
     db: Session, user_id: UUID, *, days: int = 30, limit: int = 4
 ) -> list[dict]:
-    """"Currently obsessing over" — the copy on the SceneDNA card promises
-    titles "living rent-free in your head," which reads as RECENT focus, not
-    lifetime top saves. Prior implementation returned the top-4 by cumulative
-    interaction weight (never changed unless the user's whole history
-    shifted). This version scores per-title weight from interactions in the
-    last {days} days only, with recency + explicit-signal boosts, so the rail
-    genuinely reflects what the user is engaging with RIGHT NOW.
+    """Recent positive evidence, using the same precedence as SceneDNA.
 
-    Signals used (recency-weighted per SceneDNA brief §27):
-      * Save (past N days)          → +6
-      * Rating 9-10                 → +8
-      * Rating 7-8                  → +4
-      * Swipe right in session      → +3
-      * Swipe up / "more like this" → +5
-
-    Returns [] when the user has no qualifying recent interactions."""
-    from datetime import datetime, timedelta, timezone
-
+    A low rating or explicit dislike overrides a prior save. Watched alone,
+    disabled swipes and duplicate list memberships cannot manufacture interest.
+    """
+    from app.services.user_signals import _collect_interactions
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    weights: dict[UUID, float] = defaultdict(float)
-    title_index: dict[UUID, ContentTitle] = {}
-
-    saves = db.execute(
-        select(WatchlistItem, ContentTitle)
-        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id, WatchlistItem.created_at >= cutoff)
-    ).all()
-    for item, title in saves:
-        if title is None:
-            continue
-        weights[title.id] += 6.0
-        title_index[title.id] = title
-
-    ratings = db.execute(
-        select(Rating, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        # S06: use updated_at — a user who re-rates an old title has
-        # supplied FRESH preference evidence; the original created_at
-        # is misleading. This also means invalidating a cached result
-        # when a rating is edited is automatic.
-        .where(Rating.user_id == user_id, Rating.updated_at >= cutoff)
-    ).all()
-    for rating, title in ratings:
-        if title is None:
-            continue
-        score = float(rating.score) if rating.score is not None else 0.0
-        if score >= 9:
-            weights[title.id] += 8.0
-        elif score >= 7:
-            weights[title.id] += 4.0
-        elif score <= 4:
-            weights[title.id] -= 4.0  # a recent bad rating IS a taste signal
-        title_index[title.id] = title
-
-    swipes = db.execute(
-        select(SwipeRecord, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == SwipeRecord.content_title_id)
-        .where(SwipeRecord.user_id == user_id, SwipeRecord.created_at >= cutoff)
-    ).all()
-    for swipe, title in swipes:
-        if title is None:
-            continue
-        # S04: v2 Up is a viewing fact, not an obsession signal. We
-        # keep legacy v1 Up at its original "more like this" weight
-        # so historical obsessions don't drop out of the rail.
-        version = getattr(swipe, "action_version", 1) or 1
-        if swipe.direction == "up":
-            weights[title.id] += 5.0 if version < 2 else 0.5
-        elif swipe.direction == "right":
-            weights[title.id] += 3.0
-        elif swipe.direction == "left":
-            weights[title.id] -= 2.0
-        title_index[title.id] = title
-
-    ordered = sorted(
-        ((tid, w) for tid, w in weights.items() if w > 0),
-        key=lambda pair: pair[1],
-        reverse=True,
-    )[:limit]
-
-    out: list[dict] = []
-    for tid, _ in ordered:
-        title = title_index.get(tid)
-        if title is None:
-            continue
-        out.append({
-            "title_id": str(title.id),
-            "title_name": title.title,
-            "poster_url": title.poster_url,
-        })
-    return out
+    recent = [(title, weight) for title, weight, at in _collect_interactions(db, user_id)
+        if weight > 0 and at is not None and at.replace(tzinfo=timezone.utc) >= cutoff]
+    recent.sort(key=lambda item: (-item[1], str(item[0].id)))
+    return [{"title_id": str(title.id), "title_name": title.title, "poster_url": title.poster_url}
+        for title, _weight in recent[:limit]]
 
 
 def _serialize_genres(genre_scores: dict[str, float]) -> list[dict]:
+    genre_scores = {genre: value for genre, value in genre_scores.items() if value > 0}
     if not genre_scores:
         return []
     top = sorted(genre_scores.items(), key=lambda item: item[1], reverse=True)[:4]
@@ -2341,7 +2273,7 @@ def _signal_counts(db: Session, user_id: UUID) -> dict:
             db.scalar(
                 select(func.count(WatchlistItem.id))
                 .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-                .where(Watchlist.owner_user_id == user_id)
+                .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
             )
             or 0
         ),
@@ -2375,7 +2307,7 @@ def _refresh_wrapped_stat(db: Session, user_id: UUID, profile: UserTasteProfile)
 def _is_stale(updated_at: datetime | None, *, hours: int) -> bool:
     if updated_at is None:
         return True
-    return (datetime.now(timezone.utc) - updated_at).total_seconds() > hours * 3600
+    return (datetime.now(timezone.utc) - updated_at.replace(tzinfo=timezone.utc)).total_seconds() > hours * 3600
 
 
 def _prune_old_swipes(db: Session, user_id: UUID, *, keep: int = 500) -> None:
@@ -2712,7 +2644,7 @@ def _load_user_interacted_titles(db: Session, user_id: UUID, limit: int = 30) ->
     saves_q = (
         select(WatchlistItem.content_title_id, WatchlistItem.created_at)
         .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .where(Watchlist.owner_user_id == user_id)
+        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))
     )
     ratings_q = (
         select(Rating.content_title_id, Rating.created_at)

@@ -33,6 +33,7 @@ REQUIRED_ROUTES = {
     "/api/v1/teams/{team_id}/titles/{title_id}/my-state": "put",
     "/api/v1/media-assets/{asset_id}/source": "get",
     "/api/v1/me/picks/collections/{category}": "get",
+    "/api/v1/me/picks/lists/{list_id}/titles": "get",
     "/api/v1/me/concierge/decision/{decision_id}": "get",
     "/api/v1/me/concierge/requests/{request_key}": "get",
     "/api/v1/titles/recommendations/feed": "get",

@@ -50,6 +50,9 @@ def follow_user(db: Session, follower_user_id: UUID, following_user_id: UUID) ->
                 followed_user_id=following_user_id,
                 is_demo=follower.is_demo,
             )
+        from app.services.taste_invalidation import invalidate_taste
+        for uid in sorted((follower_user_id, following_user_id), key=str):
+            invalidate_taste(db, uid)
         db.commit()
 
 
@@ -64,6 +67,9 @@ def unfollow_user(db: Session, follower_user_id: UUID, following_user_id: UUID) 
     if existing is None:
         return
     db.delete(existing)
+    from app.services.taste_invalidation import invalidate_taste
+    for uid in sorted((follower_user_id, following_user_id), key=str):
+        invalidate_taste(db, uid)
     db.commit()
 
 
