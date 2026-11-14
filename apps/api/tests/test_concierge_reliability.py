@@ -57,7 +57,7 @@ def test_followup_keeps_filters_and_resolves_the_second_actual_title(db, monkeyp
     c = concierge.ConciergeConstraints(genres=["comedy"], year_min=1980, year_max=1989, required_providers=["netflix"], original_language="en")
     monkeypatch.setattr(concierge, "_call_configured_model", lambda *a, **kw: {"updates": {"moods": ["light"], "runtime_max": 90}})
     result = refine_constraints(db, c, "Something lighter and under 90 minutes", [str(t.id) for t in rows])
-    assert result.moods == ["light"] and result.runtime_max == 90
+    assert result.moods == ["light"] and result.runtime_max == 89
     assert result.year_min == 1980 and result.required_providers == ["netflix"] and result.original_language == "en"
     result = refine_constraints(db, c, "more like the second one", [str(t.id) for t in rows])
     assert result.anchor_title_ids == [str(rows[1].id)] and result.genres == ["comedy"]
@@ -122,3 +122,9 @@ def test_explicit_rewatch_includes_unrated_watched_titles(db, monkeypatch):
     fake_review(monkeypatch)
     result = retrieval.retrieve(db, user_id=user.id, suggested_names=[], constraints=concierge.ConciergeConstraints(collection_scope="watched", rewatch_intent=True), context=concierge.PersonalContext())
     assert result.title_ids == [row.id]
+
+
+@pytest.mark.parametrize("prompt", ["Help me choose from one of my saved lists.", "Choose from my weekend list", "Only from my lists"])
+def test_suggested_saved_list_prompt_is_a_hard_source_constraint(prompt):
+    result = concierge._resolve_collection_scope(concierge.ConciergeConstraints(), prompt)
+    assert result.collection_scope == "named_list" and result.collection_list_id is None

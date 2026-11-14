@@ -1,3 +1,4 @@
+import { SHARE_BASE } from "@/lib/share";
 import { useCallback, useRef, useState } from "react";
 import { useFocusEffect, useLocalSearchParams, router } from "expo-router";
 import {
@@ -194,7 +195,7 @@ export default function TeamSettings() {
                   style={s.button}
                   onPress={() =>
                     void Share.share({
-                      message: `Join ${team.name} on SeenSnap: https://seensnap.app/teams/join?code=${encodeURIComponent(team.invite_code)}`,
+                      message: `Join ${team.name} on SeenSnap: ${SHARE_BASE}/teams/join?code=${encodeURIComponent(team.invite_code)}`,
                     }).catch(() => setError("Could not open sharing."))
                   }
                 >

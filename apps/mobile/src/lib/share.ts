@@ -49,11 +49,11 @@ async function shareOnWeb(url: string, title: string, message: string): Promise<
  *   - list_share_revoked     { list_id }
  */
 
-const DEFAULT_BASE = "https://seensnap.app";
+export const SHARE_BASE = (process.env.EXPO_PUBLIC_SHARE_BASE_URL || "https://seensnapalpha.netlify.app").replace(/\/$/, "");
 
 export function buildTitleShareUrl(tmdbId: number | string, mediaType: "movie" | "series" | "tv"): string {
   const t = mediaType === "series" ? "tv" : mediaType;
-  return `${DEFAULT_BASE}/titles/${t}/${tmdbId}`;
+  return `${SHARE_BASE}/titles/${t}/${tmdbId}`;
 }
 
 /** Native share for a single title. Copies to clipboard as fallback. */
@@ -114,7 +114,7 @@ export async function shareList(args: {
       `/me/watchlist/lists/${args.listId}/share`,
       { method: "POST", token: args.token, body: "{}" },
     );
-    url = resp.url;
+    url = `${SHARE_BASE}/lists/${encodeURIComponent(resp.token)}`;
   } catch (err) {
     Alert.alert("Couldn't share", err instanceof Error ? err.message : "Please try again.");
     return;

@@ -89,7 +89,7 @@ export default function AccountSettingsScreen() {
           <View style={styles.row}>
             <Ionicons name="trophy-outline" size={18} color={colors.accent} />
             <View style={{ flex: 1 }}>
-              <Text style={styles.rowTitle}>{entitlement?.tier === "premium" ? "SeenSnap Premium" : "Free Plan"}</Text>
+              <Text style={styles.rowTitle}>{!entitlement?.verified ? "Checking membership" : entitlement.tier === "premium" ? "SeenSnap Premium" : "Free Plan"}</Text>
               <Text style={styles.rowSub}>
                 {entitlement?.is_beta
                   ? "Granted during beta — no billing yet."
@@ -98,20 +98,18 @@ export default function AccountSettingsScreen() {
                   : "Upgrade for the full SceneDNA."}
               </Text>
             </View>
-            {entitlement?.tier !== "premium" ? (
-              <Pressable style={styles.upgradeBtn} onPress={() => setShowPaywall(true)}>
-                <Text style={styles.upgradeLabel}>Upgrade</Text>
-              </Pressable>
-            ) : null}
+            <Pressable accessibilityRole="button" style={[styles.upgradeBtn, { minHeight: 44, justifyContent: "center" }]} onPress={() => router.push("/settings/premium")}>
+              <Text style={styles.upgradeLabel}>View membership</Text>
+            </Pressable>
           </View>
 
           <Text style={styles.groupTitle}>Legal</Text>
-          <Pressable style={styles.rowBtn} onPress={() => Linking.openURL("https://seensnap.com/terms").catch(() => {})}>
+          <Pressable style={styles.rowBtn} onPress={() => Linking.openURL(process.env.EXPO_PUBLIC_TERMS_URL || "https://seensnap.app/terms").catch(() => {})}>
             <Ionicons name="document-text-outline" size={18} color={colors.ink} />
             <Text style={styles.rowBtnLabel}>Terms of Service</Text>
             <Ionicons name="open-outline" size={14} color={colors.muted2} />
           </Pressable>
-          <Pressable style={styles.rowBtn} onPress={() => Linking.openURL("https://seensnap.com/privacy").catch(() => {})}>
+          <Pressable style={styles.rowBtn} onPress={() => Linking.openURL(process.env.EXPO_PUBLIC_PRIVACY_URL || "https://seensnap.app/privacy").catch(() => {})}>
             <Ionicons name="shield-outline" size={18} color={colors.ink} />
             <Text style={styles.rowBtnLabel}>Privacy Policy</Text>
             <Ionicons name="open-outline" size={14} color={colors.muted2} />

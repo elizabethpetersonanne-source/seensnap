@@ -1,3 +1,4 @@
+import { swipeDirection } from "@/lib/swipe-gesture";
 import * as SessionStorage from "@/lib/session-storage";
 import { router, useLocalSearchParams } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -491,15 +492,18 @@ export default function OnboardingScreen() {
           : direction === "down"
             ? { x: 0, y: 420 }
             : { x: direction === "right" ? 420 : -420, y: 30 };
-      await new Promise<void>((resolve) =>
+      await new Promise<void>((resolve) => {
+        const watchdog = setTimeout(resolve, 450);
         Animated.timing(pan, {
           toValue,
           duration: 180,
           useNativeDriver: false,
-        }).start(() => resolve()),
-      );
-      setCalibrateIndex((i) => i + 1);
-      setSwipeCount((c) => c + 1);
+        }).start(() => { clearTimeout(watchdog); resolve(); });
+      });
+      calibrateIndexRef.current = idx + 1;
+      swipeCountRef.current += 1;
+      setCalibrateIndex(idx + 1);
+      setSwipeCount(swipeCountRef.current);
       if (direction === "up") setRatingTitle(card);
       else if (idx + 1 >= candidatesRef.current.length) advance("dna");
     } catch {
@@ -532,7 +536,8 @@ export default function OnboardingScreen() {
       position: idx + 1,
       reason: "card_skip",
     });
-    setCalibrateIndex((i) => i + 1);
+    calibrateIndexRef.current = idx + 1;
+    setCalibrateIndex(idx + 1);
     if (idx + 1 >= candidatesRef.current.length) {
       advance("dna");
     }
@@ -543,35 +548,20 @@ export default function OnboardingScreen() {
   // animateSwipe closure runs. No useMemo recreation, no state deps.
   const panResponder = useRef(
     PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onStartShouldSetPanResponderCapture: () => true,
-      onMoveShouldSetPanResponder: () => true,
+      onStartShouldSetPanResponder: () => false,
+      onStartShouldSetPanResponderCapture: () => false,
+      onMoveShouldSetPanResponder: (_, gesture) => !actionBusy.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8,
       onMoveShouldSetPanResponderCapture: (_, gesture) =>
-        Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8,
+        !actionBusy.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8,
       onPanResponderTerminationRequest: () => false,
       onShouldBlockNativeResponder: () => true,
-      onPanResponderMove: Animated.event([null, { dx: pan.x, dy: pan.y }], {
-        useNativeDriver: false,
-      }),
+      onPanResponderMove: (_, gesture) => {
+        if (!actionBusy.current) pan.setValue({ x: gesture.dx, y: gesture.dy });
+      },
       onPanResponderRelease: (_, gesture) => {
-        if (
-          Math.abs(gesture.dy) > SWIPE_THRESHOLD &&
-          Math.abs(gesture.dy) > Math.abs(gesture.dx)
-        ) {
-          void animateSwipeRef.current(
-            gesture.dy < 0 ? "up" : "down",
-            "gesture",
-          );
-          return;
-        }
-        if (gesture.dx > SWIPE_THRESHOLD) {
-          void animateSwipeRef.current("right", "gesture");
-          return;
-        }
-        if (gesture.dx < -SWIPE_THRESHOLD) {
-          void animateSwipeRef.current("left", "gesture");
-          return;
-        }
+        if (actionBusy.current) return;
+        const direction = swipeDirection(gesture.dx, gesture.dy, SWIPE_THRESHOLD, SWIPE_THRESHOLD);
+        if (direction) { void animateSwipeRef.current(direction, "gesture"); return; }
         Animated.spring(pan, {
           toValue: { x: 0, y: 0 },
           friction: 8,

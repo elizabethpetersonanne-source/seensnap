@@ -260,7 +260,19 @@ def _pick_language_neutral_backdrop(images_response: dict[str, Any]) -> str | No
     return None
 
 
+def _fresh_stamp(value, hours=24):
+    try:
+        stamp = datetime.fromisoformat(value)
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        return timedelta(0) <= datetime.now(timezone.utc) - stamp < timedelta(hours=hours)
+    except (ValueError, TypeError):
+        return False
+
+
 def refresh_title_details(db: Session, title: ContentTitle) -> ContentTitle:
+    if _fresh_stamp((title.metadata_raw or {}).get("_seensnap_details_at")):
+        return title
     endpoint = f"/movie/{title.tmdb_id}" if title.content_type == "movie" else f"/tv/{title.tmdb_id}"
     with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
         response = client.get(
@@ -392,12 +404,14 @@ def fetch_title_videos(title: ContentTitle, *, client: "httpx.Client | None" = N
 
 
 def fetch_title_gallery(title: ContentTitle, limit: int = 12) -> list[dict[str, Any]]:
-    endpoint = f"/movie/{title.tmdb_id}/images" if title.content_type == "movie" else f"/tv/{title.tmdb_id}/images"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
-        response = client.get(endpoint)
-        response.raise_for_status()
-
-    data = response.json()
+    meta = title.metadata_raw or {}
+    data = meta.get("images") if _fresh_stamp(meta.get("_seensnap_details_at")) else None
+    if not isinstance(data, dict):
+        endpoint = f"/movie/{title.tmdb_id}/images" if title.content_type == "movie" else f"/tv/{title.tmdb_id}/images"
+        with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(8)) as client:
+            response = client.get(endpoint)
+            response.raise_for_status()
+        data = response.json()
     gallery: list[dict[str, Any]] = []
     seen_urls: set[str] = set()
 
@@ -437,8 +451,17 @@ def fetch_title_gallery(title: ContentTitle, limit: int = 12) -> list[dict[str, 
 
 
 def fetch_related_titles(db: Session, title: ContentTitle, limit: int = 10) -> list[ContentTitle]:
+    from uuid import UUID
+    cache = (title.metadata_raw or {}).get("_seensnap_related", {})
+    if isinstance(cache, dict) and _fresh_stamp(cache.get("at"), hours=6):
+        try:
+            ids = [UUID(key) for key in cache["ids"]]
+            by_id = {row.id: row for row in db.scalars(select(ContentTitle).where(ContentTitle.id.in_(ids))).all()}
+            return [by_id[key] for key in ids if key in by_id][:limit]
+        except (ValueError, TypeError, KeyError):
+            pass
     endpoint_root = "movie" if title.content_type == "movie" else "tv"
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(5)) as client:
         rec_response = client.get(
             f"/{endpoint_root}/{title.tmdb_id}/recommendations",
             params={"language": "en-US", "page": 1},
@@ -461,11 +484,14 @@ def fetch_related_titles(db: Session, title: ContentTitle, limit: int = 10) -> l
         row = _upsert_title_from_tmdb_result(db, item)
         if row is not None:
             hydrated.append(row)
-        if len(hydrated) >= limit:
+        if len(hydrated) >= 40:
             break
 
+    title.metadata_raw = {**(title.metadata_raw or {}), "_seensnap_related": {
+        "at": datetime.now(timezone.utc).isoformat(), "ids": [str(row.id) for row in hydrated],
+    }}
     db.commit()
-    return hydrated
+    return hydrated[:limit]
 
 
 def fetch_trending_titles(db: Session, limit: int = 20) -> list[ContentTitle]:
@@ -527,6 +553,7 @@ def fetch_popular_titles(
     max_pages: int = 8,
     media_type_filter: str | None = None,
     genre_filter: str | None = None,
+    timeout_seconds: float = 15,
 ) -> list[ContentTitle]:
     """Fetch popular movies + TV shows across multiple TMDB pages. Used
     as the deep cold-start pool so a brand-new user with no personalized
@@ -559,14 +586,24 @@ def fetch_popular_titles(
         endpoints = (("movie", "/movie/popular"),) if want_server_type == "movie" else (("tv", "/tv/popular"),)
     else:
         endpoints = (("movie", "/movie/popular"), ("tv", "/tv/popular"))
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(15)) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(timeout_seconds)) as client:
         for offset in range(max_pages):
             page = ((start_page - 1 + offset) % 500) + 1  # wrap at TMDB's max
             for media_type, path in endpoints:
                 if len(hydrated) >= limit:
                     break
+                requested_genre = wanted_genre_lower
+                params = {"language": "en-US", "page": page, "include_adult": "false"}
+                if requested_genre:
+                    from app.services.discovery_feed import canonical_genre
+                    requested_genre = canonical_genre(media_type, requested_genre)
+                    genre_id = _match_genre_id(_fetch_genre_map(media_type), requested_genre)
+                    if genre_id is None:
+                        continue
+                    path = f"/discover/{media_type}"
+                    params["with_genres"] = str(genre_id)
                 try:
-                    response = client.get(path, params={"language": "en-US", "page": page})
+                    response = client.get(path, params=params)
                     response.raise_for_status()
                 except httpx.HTTPError:
                     continue
@@ -588,8 +625,8 @@ def fetch_popular_titles(
                     # Oct-18 brief §4: enforce genre filter here too so
                     # the deep popular pool can't bypass it. Case-
                     # insensitive membership against ContentTitle.genres.
-                    if wanted_genre_lower is not None:
-                        if wanted_genre_lower not in [str(g).lower() for g in (row.genres or [])]:
+                    if requested_genre is not None:
+                        if requested_genre not in [str(g).lower() for g in (row.genres or [])]:
                             continue
                     hydrated.append(row)
                     if len(hydrated) >= limit:

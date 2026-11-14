@@ -107,7 +107,7 @@ def test_coverage_and_sign_are_conservative_and_versioned():
     ).score_features(candidate)
     assert 50 < positive.percentage < 100 and 0 < negative.percentage < 50
     assert positive.confidence >= 0.35 and positive.evidence_count == 12
-    assert positive.score_version == "scenedna_title_v1"
+    assert positive.score_version == "scenedna_title_v2"
     cold = TitleScorer({}, 0, {}).score_features(candidate)
     assert cold.score is None and cold.percentage is None and cold.confidence == 0
     custom = dict(WEIGHTS)
@@ -213,7 +213,7 @@ def test_tv_for_you_responds_to_two_real_users_and_keeps_movie_pool_out(db):
     assert all(r.title.content_type == "series" for r in a + b)
     assert all("Comedy" in r.title.genres for r in a)
     assert all("Documentary" in r.title.genres for r in b)
-    assert a[0].title.scenedna.score_version == "scenedna_title_v1"
+    assert a[0].title.scenedna.score_version == "scenedna_title_v2"
     again = scorer_for_user(db, comedy_user.id, [db.get(ContentTitle, a[0].title.id)]).score(
         db.get(ContentTitle, a[0].title.id)
     )
@@ -361,3 +361,29 @@ def test_legacy_mode_response_keeps_shared_score_and_honest_cold_start(db):
     assert len(result) == 1 and result[0]["confidence"] == "cold-start"
     assert result[0]["scenedna"].score is None and result[0]["scenedna"].percentage is None
     assert result[0]["score"] == 0.5
+
+
+def test_unseen_attributes_do_not_borrow_confidence_from_unrelated_titles():
+    titles = [title(i) for i in range(12)]
+    scorer = TitleScorer({t.id: Evidence(t.id, 1, "rating") for t in titles}, 12,
+                         {t.id: title_features(t) for t in titles})
+    unknown = scorer.score_features({"actors": {"99999": 1.0}})
+    assert unknown.score is None and unknown.confidence == 0
+    assert unknown.available_dimensions == []
+    assert unknown.learning_reason == "limited_title_evidence"
+    known = scorer.score_features({"actors": {"10": 1.0}})
+    partial = scorer.score_features({"actors": {"10": .5, "99999": .5}})
+    assert partial.confidence == pytest.approx(known.confidence / 2)
+    assert partial.breakdown[0].evidence_count == 12
+
+
+def test_metadata_coverage_does_not_shrink_a_regularized_match_twice():
+    titles = [title(i) for i in range(12)]
+    scorer = TitleScorer({t.id: Evidence(t.id, .25, "rating") for t in titles}, 12,
+                         {t.id: title_features(t) for t in titles})
+    result = scorer.score_features({"genres": {"comedy": 1}, "format": {"series": 1},
+                                   "language": {"en": 1}, "decade": {"2020": 1}})
+    assert result.percentage == 61  # v1 compressed the same evidence to ~55.
+    assert result.confidence == .44
+    bad = scorer.score_features({"genres": {"crime": 1}, "format": {"movie": 1}})
+    assert bad.percentage is None and bad.score is None

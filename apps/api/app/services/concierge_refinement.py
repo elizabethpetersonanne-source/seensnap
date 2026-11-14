@@ -3,7 +3,7 @@ from copy import deepcopy
 from dataclasses import asdict
 import json
 import re
-from app.services.concierge_contract import ConciergeIntent
+from app.services.concierge_contract import ConciergeIntent, explicit_runtime_bounds
 
 
 def refine_constraints(db, current, prompt, titles):
@@ -53,6 +53,7 @@ def refine_constraints(db, current, prompt, titles):
     updates = raw.get("updates")
     if not isinstance(updates, dict) or set(updates) - allowed:
         raise ValueError("Invalid refinement fields")
+    updates = {**updates, **explicit_runtime_bounds(prompt)}
     merged = {key: value for key, value in values.items() if key in allowed}
     # Resolved people carry verified IDs internally; the provider contract
     # accepts only names/roles. Keep the internal IDs when unchanged.

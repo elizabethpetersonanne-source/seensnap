@@ -1,8 +1,50 @@
 """Validated provider output. Invalid output must never become an open search."""
 
 from typing import Literal
+from math import ceil, floor
+import re
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+def explicit_runtime_bounds(prompt: str) -> dict[str, int]:
+    """Translate explicit durations into the catalog's inclusive integer bounds.
+
+    The model sometimes treats "under 90" as <= 90. Resolve numeric duration
+    wording before validation so retrieval, relevance and follow-ups all see
+    the same limit. Unrecognized wording remains the model's responsibility.
+    """
+    operators = {
+        "under": ("runtime_max", False), "below": ("runtime_max", False),
+        "less than": ("runtime_max", False), "shorter than": ("runtime_max", False),
+        "at most": ("runtime_max", True), "up to": ("runtime_max", True),
+        "no more than": ("runtime_max", True), "not more than": ("runtime_max", True),
+        "no longer than": ("runtime_max", True),
+        "over": ("runtime_min", False), "above": ("runtime_min", False),
+        "more than": ("runtime_min", False), "longer than": ("runtime_min", False),
+        "at least": ("runtime_min", True), "no less than": ("runtime_min", True),
+        "not less than": ("runtime_min", True),
+    }
+    pattern = (r"\b(" + "|".join(sorted(operators, key=len, reverse=True))
+               + r")\s+(\d+(?:\.\d+)?)\s*(minutes?|mins?|m|hours?|hrs?|h)\b")
+    bounds = {}
+    for match in re.finditer(pattern, prompt.lower()):
+        # Do not turn "not under 90 minutes" into an upper bound.
+        if re.search(r"\b(?:not|never|avoid)\s+$", prompt[:match.start()].lower()):
+            continue
+        field, inclusive = operators[match[1]]
+        minutes = float(match[2]) * (60 if match[3].startswith("h") else 1)
+        if match[3].startswith("h"):
+            extra = re.match(r"\s*(?:and\s+)?(\d+(?:\.\d+)?)\s*(?:minutes?|mins?|m)\b", prompt[match.end():].lower())
+            if extra:
+                minutes += float(extra[1])
+        if field == "runtime_max":
+            value = floor(minutes) if inclusive else ceil(minutes) - 1
+            bounds[field] = min(bounds.get(field, value), value)
+        else:
+            value = ceil(minutes) if inclusive else floor(minutes) + 1
+            bounds[field] = max(bounds.get(field, value), value)
+    return bounds
 
 
 class PersonConstraint(BaseModel):

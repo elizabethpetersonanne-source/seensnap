@@ -49,7 +49,7 @@ export function SceneDnaBadge({ titleId }: { titleId: string }) {
   const label =
     !match.learning && match.percentage !== null
       ? `${match.percentage}% SceneDNA`
-      : "Learning your taste";
+      : match.learning_reason === "limited_title_evidence" ? "Limited match data" : "Learning your taste";
   return (
     <Text
       accessibilityLabel={label}

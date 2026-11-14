@@ -38,14 +38,15 @@ def for_you_recommendations(
     if genre:
         wanted = canonical_genre("tv" if want == "series" else "movie", genre.strip().casefold())
         pool = [t for t in pool if wanted in {g.casefold() for g in t.genres or []}]
-    # Enrich a thin local catalog from the actual requested TMDB media endpoint.
-    # Failure is truthful if there is no usable local catalog to fall back to.
-    if len(pool) < offset + limit:
+    # Return usable local results without serial upstream padding. Only a true
+    # cold start waits for one bounded page of the requested TMDB media.
+    if not pool:
         try:
             extras = fetch_popular_titles(
                 db,
-                limit=max(60, limit * 3),
-                max_pages=3,
+                limit=max(20, limit),
+                max_pages=1,
+                timeout_seconds=4,
                 media_type_filter=preferred_type,
                 genre_filter=genre,
                 exclude_title_ids=excluded | {t.id for t in pool},

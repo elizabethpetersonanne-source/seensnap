@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from uuid import UUID
 
 from sqlalchemy import select
@@ -155,6 +156,13 @@ def _enqueue_push(db: Session, notification: Notification) -> None:
     ).all()
 
     for device in devices:
+        # Repeated delivery calls (including grouped reactions) must not create
+        # a second push for a notification/device pair.
+        if db.scalar(select(NotificationOutbox.id).where(
+            NotificationOutbox.notification_id == notification.id,
+            NotificationOutbox.device_id == device.id,
+        )):
+            continue
         db.add(
             NotificationOutbox(
                 notification_id=notification.id,
@@ -303,29 +311,42 @@ def notify_social_like(
     post_summary: str | None = None,
     is_demo: bool = False,
 ) -> None:
-    """Fired when someone likes your post. Not deduped by liker — repeat
-    likes (unlike + relike) create a fresh notification so the recipient
-    sees the current state."""
+    """Group routine likes per unread post/day; direct comments remain separate."""
+    if liker.id == post_author_id:
+        return
+    # Serialize groups for this recipient, including the first insert.
+    db.scalar(select(User.id).where(User.id == post_author_id).with_for_update())
     profile = db.scalar(select(UserProfile).where(UserProfile.user_id == liker.id))
     name = profile.display_name if profile else "Someone"
-    summary = post_summary.strip()[:80] if post_summary else "your post"
-    notification = _create_notification(
-        db,
-        recipient_id=post_author_id,
-        actor_id=liker.id,
-        notification_type="social_like_on_your_post",
-        title=f"{name} liked your post.",
-        body=f'"{summary}"' if summary else "New like on your post.",
-        entity_type="social_post",
-        entity_id=post_id,
-        route=f"/post/{post_id}",
-        # Rolling dedupe key by liker + post so a rapid like/unlike/like loop
-        # doesn't multiply notifications.
-        dedupe_key=f"like:{liker.id}:{post_id}",
-        is_demo=is_demo,
-    )
-    if notification is not None:
-        _enqueue_push(db, notification)
+    notification = db.scalar(select(Notification).where(
+        Notification.user_id == post_author_id,
+        Notification.notification_type == "social_like_on_your_post",
+        Notification.entity_id == post_id,
+        Notification.read_at.is_(None),
+        Notification.created_at >= datetime.now(timezone.utc) - timedelta(hours=24),
+    ).order_by(Notification.created_at.desc()).limit(1))
+    if notification:
+        payload = dict(notification.payload or {})
+        actors = set(payload.get("actor_ids", []))
+        if notification.actor_user_id:
+            actors.add(str(notification.actor_user_id))
+        if str(liker.id) in actors:
+            return
+        actors.add(str(liker.id))
+        notification.payload = {**payload, "actor_ids": sorted(actors)}
+        notification.actor_user_id = liker.id
+        notification.title = f"{name[:70]} and {len(actors)-1} others liked your post."
+    else:
+        notification = _create_notification(
+            db, recipient_id=post_author_id, actor_id=liker.id,
+            notification_type="social_like_on_your_post",
+            title=f"{name[:90]} liked your post.",
+            body=f'"{post_summary.strip()[:80]}"' if post_summary else "New likes on your post.",
+            entity_type="social_post", entity_id=post_id, route=f"/post/{post_id}",
+            is_demo=is_demo,
+        )
+        notification.payload = {"actor_ids": [str(liker.id)]}
+    _enqueue_push(db, notification)
 
 
 def notify_social_comment(

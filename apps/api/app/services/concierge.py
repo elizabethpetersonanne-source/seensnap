@@ -425,7 +425,7 @@ def resolve_concierge_decision(
     # the default matches the brief: "on my subscription" must not
     # silently mean paid rental.
     low = intent.lower()
-    if effective_constraints is None and any(p in low for p in ("my services", "my subscriptions", "services i subscribe")):
+    if effective_constraints is None and any(p in low for p in ("my services", "my subscriptions", "services i subscribe", "my selected streaming services", "my streaming services")):
         constraints.required_providers = list(context.selected_services)
         if not constraints.required_providers:
             return ConciergeDecision(None, constraints, "Choose your streaming services first, or search without a service filter.",
@@ -497,7 +497,9 @@ def resolve_concierge_decision(
         return ConciergeDecision(
             decision_id=None,
             constraints=constraints,
-            rationale=rationale,
+            # Interpretation happens before retrieval; its prose cannot claim
+            # that any titles were selected when the verified result is empty.
+            rationale="",
             title_ids=[],
             status="error" if retrieval.partial_reason in {"metadata_unavailable", "upstream_failure"} else "empty",
             status_detail=(retrieval.partial_reason if retrieval.partial_reason in {
@@ -604,7 +606,7 @@ def _resolve_collection_scope(constraints: ConciergeConstraints, intent: str) ->
             constraints.collection_scope = "my_next_watch"
             return constraints
     import re
-    if re.search(r"\bfrom my .{1,80}\blist\b", low):
+    if re.search(r"\b(?:from|in|choose)\b.{0,45}\bmy\b.{0,45}\blists?\b", low):
         constraints.collection_scope = "named_list"
         return constraints
     for p in _NAMED_LIST_PATTERNS:
@@ -1016,7 +1018,8 @@ def _ground_suggestions(
 
 
 def _constraints_from_raw(raw: dict, intent: str) -> ConciergeConstraints:
-    parsed = ConciergeIntent.model_validate(raw)
+    from app.services.concierge_contract import explicit_runtime_bounds
+    parsed = ConciergeIntent.model_validate({**raw, **explicit_runtime_bounds(intent)})
     values = parsed.model_dump(exclude={"suggested_titles", "rationale"})
     for key in ("genres", "moods", "exclusions"):
         values[key] = [v.strip().lower() for v in values[key]]

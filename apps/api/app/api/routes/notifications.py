@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Header, HTTPException, Query, Response, status
-from sqlalchemy import func, select, update
+from sqlalchemy import and_, or_, func, select, update
 
 from app.api.dependencies import CurrentUser, DbSession
 from app.db.session import SessionLocal
@@ -48,15 +48,18 @@ def list_notifications(
             Notification.user_id == current_user.id,
             Notification.is_demo.is_(False),
         )
-        .order_by(Notification.created_at.desc())
+        .order_by(Notification.created_at.desc(), Notification.id.desc())
     )
 
     if cursor is not None:
         try:
-            cursor_dt = datetime.fromisoformat(cursor)
-            query = query.where(Notification.created_at < cursor_dt)
+            timestamp, separator, identifier = cursor.partition("|")
+            cursor_dt = datetime.fromisoformat(timestamp)
+            query = query.where(or_(Notification.created_at < cursor_dt,
+                and_(Notification.created_at == cursor_dt, Notification.id < UUID(identifier)))
+                if separator else Notification.created_at < cursor_dt)
         except ValueError:
-            pass
+            raise HTTPException(400, detail="Invalid notification cursor")
 
     query = query.limit(limit + 1)
     rows = db.scalars(query).all()
@@ -72,7 +75,7 @@ def list_notifications(
         )
     ) or 0
 
-    next_cursor = items[-1].created_at.isoformat() if has_more and items else None
+    next_cursor = f"{items[-1].created_at.isoformat()}|{items[-1].id}" if has_more and items else None
 
     return NotificationListResponse(
         items=[_to_response(n) for n in items],

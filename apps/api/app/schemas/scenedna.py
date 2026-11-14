@@ -22,4 +22,5 @@ class TitleCompatibility(BaseModel):
     available_dimensions: list[str] = Field(default_factory=list)
     breakdown: list[SceneDnaDimension] = Field(default_factory=list)
     learning: bool = True
+    learning_reason: str | None = None
     explanation: str = "Learning your taste"
