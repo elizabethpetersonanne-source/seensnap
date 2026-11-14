@@ -116,6 +116,14 @@ class Watchlist(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class WatchlistQueueImport(Base):
+    """Import each legacy membership once, even while old revisions drain."""
+    __tablename__ = "watchlist_queue_imports"
+    source_item_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    source_list_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("watchlists.id", ondelete="CASCADE"))
+    queue_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("watchlists.id", ondelete="CASCADE"))
+
+
 class WatchlistItem(Base):
     __tablename__ = "watchlist_items"
     __table_args__ = (UniqueConstraint("watchlist_id", "content_title_id", name="uq_watchlist_item"),)

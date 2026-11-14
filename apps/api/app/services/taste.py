@@ -2227,98 +2227,18 @@ def _derive_current_obsessions(title_refs: list[dict]) -> list[dict]:
 def _derive_current_obsessions_recent(
     db: Session, user_id: UUID, *, days: int = 30, limit: int = 4
 ) -> list[dict]:
-    """"Currently obsessing over" — the copy on the SceneDNA card promises
-    titles "living rent-free in your head," which reads as RECENT focus, not
-    lifetime top saves. Prior implementation returned the top-4 by cumulative
-    interaction weight (never changed unless the user's whole history
-    shifted). This version scores per-title weight from interactions in the
-    last {days} days only, with recency + explicit-signal boosts, so the rail
-    genuinely reflects what the user is engaging with RIGHT NOW.
+    """Recent positive evidence, using the same precedence as SceneDNA.
 
-    Signals used (recency-weighted per SceneDNA brief §27):
-      * Save (past N days)          → +6
-      * Rating 9-10                 → +8
-      * Rating 7-8                  → +4
-      * Swipe right in session      → +3
-      * Swipe up / "more like this" → +5
-
-    Returns [] when the user has no qualifying recent interactions."""
-    from datetime import datetime, timedelta, timezone
-
+    A low rating or explicit dislike overrides a prior save. Watched alone,
+    disabled swipes and duplicate list memberships cannot manufacture interest.
+    """
+    from app.services.user_signals import _collect_interactions
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
-    weights: dict[UUID, float] = defaultdict(float)
-    title_index: dict[UUID, ContentTitle] = {}
-
-    saves = db.execute(
-        select(WatchlistItem, ContentTitle)
-        .join(Watchlist, Watchlist.id == WatchlistItem.watchlist_id)
-        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)
-        .where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None), WatchlistItem.created_at >= cutoff)
-    ).all()
-    for item, title in saves:
-        if title is None:
-            continue
-        weights[title.id] += 6.0
-        title_index[title.id] = title
-
-    ratings = db.execute(
-        select(Rating, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == Rating.content_title_id)
-        # S06: use updated_at — a user who re-rates an old title has
-        # supplied FRESH preference evidence; the original created_at
-        # is misleading. This also means invalidating a cached result
-        # when a rating is edited is automatic.
-        .where(Rating.user_id == user_id, Rating.updated_at >= cutoff)
-    ).all()
-    for rating, title in ratings:
-        if title is None:
-            continue
-        score = float(rating.score) if rating.score is not None else 0.0
-        if score >= 9:
-            weights[title.id] += 8.0
-        elif score >= 7:
-            weights[title.id] += 4.0
-        elif score <= 4:
-            weights[title.id] -= 4.0  # a recent bad rating IS a taste signal
-        title_index[title.id] = title
-
-    swipes = db.execute(
-        select(SwipeRecord, ContentTitle)
-        .join(ContentTitle, ContentTitle.id == SwipeRecord.content_title_id)
-        .where(SwipeRecord.user_id == user_id, SwipeRecord.created_at >= cutoff)
-    ).all()
-    for swipe, title in swipes:
-        if title is None:
-            continue
-        # S04: v2 Up is a viewing fact, not an obsession signal. We
-        # keep legacy v1 Up at its original "more like this" weight
-        # so historical obsessions don't drop out of the rail.
-        version = getattr(swipe, "action_version", 1) or 1
-        if swipe.direction == "up":
-            weights[title.id] += 5.0 if version < 2 else 0.5
-        elif swipe.direction == "right":
-            weights[title.id] += 3.0
-        elif swipe.direction == "left":
-            weights[title.id] -= 2.0
-        title_index[title.id] = title
-
-    ordered = sorted(
-        ((tid, w) for tid, w in weights.items() if w > 0),
-        key=lambda pair: pair[1],
-        reverse=True,
-    )[:limit]
-
-    out: list[dict] = []
-    for tid, _ in ordered:
-        title = title_index.get(tid)
-        if title is None:
-            continue
-        out.append({
-            "title_id": str(title.id),
-            "title_name": title.title,
-            "poster_url": title.poster_url,
-        })
-    return out
+    recent = [(title, weight) for title, weight, at in _collect_interactions(db, user_id)
+        if weight > 0 and at is not None and at.replace(tzinfo=timezone.utc) >= cutoff]
+    recent.sort(key=lambda item: (-item[1], str(item[0].id)))
+    return [{"title_id": str(title.id), "title_name": title.title, "poster_url": title.poster_url}
+        for title, _weight in recent[:limit]]
 
 
 def _serialize_genres(genre_scores: dict[str, float]) -> list[dict]:

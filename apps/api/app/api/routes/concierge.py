@@ -221,6 +221,8 @@ def post_concierge_decision(payload: ConciergeDecisionRequest, current_user: Cur
     if payload.refinement_of_decision_id:
         # All refinements must use stored constraints and optimistic versions.
         raise HTTPException(400, detail="Use the decision's refinement endpoint to update this search.")
+    from app.services.watchlists import ensure_next_watch_list
+    ensure_next_watch_list(db, current_user.id)
     entitlement = resolve_entitlement(db, current_user.id)
     request, run, allowance = claim(db, current_user.id, payload)
     if allowance is not None and not allowance.allowed:

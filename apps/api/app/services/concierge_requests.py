@@ -35,12 +35,12 @@ def claim(db, user_id, payload, *, reserve_allowance=True):
     live = db.scalar(select(func.count()).select_from(ConciergeRequest).where(
         ConciergeRequest.user_id == user_id, ConciergeRequest.state == "processing",
         ConciergeRequest.lease_expires_at > now)) or 0
-    recent = db.scalar(select(func.count()).select_from(ConciergeRequest).where(
-        ConciergeRequest.user_id == user_id, ConciergeRequest.created_at > now - timedelta(minutes=1))) or 0
+    recent = db.scalar(select(func.sum(ConciergeRequest.attempt)).where(
+        ConciergeRequest.user_id == user_id, ConciergeRequest.updated_at > now - timedelta(minutes=1))) or 0
     if live >= max(1, settings.concierge_max_concurrent_per_user):
         raise HTTPException(429, detail={"code": "search_busy", "retryable": True,
             "message": "Your previous search is still running. Please try again shortly."}, headers={"Retry-After": "3"})
-    if request is None and recent >= max(1, settings.concierge_requests_per_minute):
+    if recent >= max(1, settings.concierge_requests_per_minute):
         raise HTTPException(429, detail={"code": "search_rate_limited", "retryable": True,
             "message": "Please wait a moment before starting another search."}, headers={"Retry-After": "60"})
     # Reservation retries (including a worker lost after commit) must not leak

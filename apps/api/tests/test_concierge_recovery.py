@@ -168,7 +168,7 @@ def test_budget_and_structured_diagnostics(caplog):
         with caplog.at_level(logging.INFO): report(runtime, status="error", code="request_timed_out", count=0, attempt=2)
     data = json.loads(caplog.records[-1].message)
     assert data["event"] == "concierge_request" and data["attempt"] == 2
-    assert set(data) == {"event", "request_id", "status", "code", "result_count", "attempt", "elapsed_ms", "stages_ms"}
+    assert set(data) == {"event", "request_id", "status", "code", "result_count", "attempt", "elapsed_ms", "stages_ms", "retrieval_counts"}
 
 
 def test_recovered_results_recheck_deleted_list_ownership(db, monkeypatch):

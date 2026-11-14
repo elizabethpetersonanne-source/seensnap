@@ -37,12 +37,8 @@ def _ensure_public_share(db: Session, watchlist: Watchlist) -> None:
 
 def ensure_default_watchlists(db: Session, user_id: UUID) -> list[Watchlist]:
     ensure_next_watch_list(db, user_id, commit=False)
-    # Favorites is an independent collection; do not recreate legacy queues.
-    favorite = db.scalar(select(Watchlist).where(Watchlist.owner_user_id == user_id,
-        Watchlist.name == "Favorites", Watchlist.merged_into_id.is_(None)))
-    if favorite is None:
-        db.add(Watchlist(owner_user_id=user_id, name="Favorites", description="Your favorite titles.",
-            is_default=False, is_system_list=True, system_role="favorites", visibility="private"))
+    # Favorites is a rating-derived section. Preserve historical lists,
+    # but do not create another physical Favorites destination for new users.
     db.commit()
     return db.scalars(select(Watchlist).where(Watchlist.owner_user_id == user_id,
         Watchlist.merged_into_id.is_(None)).order_by(Watchlist.is_default.desc(), Watchlist.created_at)).all()
@@ -58,7 +54,7 @@ def get_next_watch_list(db: Session, user_id: UUID) -> Watchlist | None:
     system_role='next_watch' or None if the user has none yet.
 
     Callers that need to CREATE the queue should use the ensure flow
-    which stamps system_role on the historical default list.
+    which creates a private queue when the migration did not find one.
     """
     return db.scalar(
         select(Watchlist).where(
@@ -69,15 +65,16 @@ def get_next_watch_list(db: Session, user_id: UUID) -> Watchlist | None:
 
 
 def ensure_next_watch_list(db: Session, user_id: UUID, *, commit: bool = True) -> Watchlist:
-    """QUEUE01: resolve or back-fill the Next Watch system list. If
-    the migration already stamped a row we return it; otherwise we
-    promote the owner's default (name-matched) list; if neither
-    exists we create a new one.
+    """Resolve the canonical role, or create it under the owner lock.
+
+    Legacy consolidation belongs to the migration, never a name-based read.
     """
     from app.models.user import User
     db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     existing = get_next_watch_list(db, user_id)
     if existing is not None:
+        _reconcile_legacy_queue(db, user_id, existing)
+        if commit: db.commit()
         return existing
     # Last resort — create one.
     row = Watchlist(
@@ -89,12 +86,53 @@ def ensure_next_watch_list(db: Session, user_id: UUID, *, commit: bool = True) -
         system_role="next_watch",
     )
     db.add(row)
+    db.flush()
+    _reconcile_legacy_queue(db, user_id, row)
     if commit:
         db.commit()
     else:
         db.flush()
     db.refresh(row)
     return row
+
+
+def _reconcile_legacy_queue(db, user_id, queue):
+    """Catch legacy writes during rolling deployment without resurrecting unsaves.
+
+    Each source membership has a durable import receipt. Originals and their
+    audiences remain intact. Private source items never enter a public queue.
+    """
+    from app.models.social import WatchlistQueueImport
+    if queue.visibility != "private":
+        return
+    legacy_names = {"my picks", "want to watch", "next watch", "my next watch"}
+    sources = [row for row in db.scalars(select(Watchlist).where(
+        Watchlist.owner_user_id == user_id, Watchlist.id != queue.id)).all()
+        if row.merged_into_id == queue.id or (
+            row.merged_into_id is None and row.is_system_list and row.name.strip().casefold() in legacy_names)]
+    if not sources:
+        return
+    ids = [source.id for source in sources]
+    pending = db.scalars(select(WatchlistItem).outerjoin(WatchlistQueueImport,
+        WatchlistQueueImport.source_item_id == WatchlistItem.id).where(
+        WatchlistItem.watchlist_id.in_(ids), WatchlistQueueImport.source_item_id.is_(None))
+        .order_by(WatchlistItem.created_at, WatchlistItem.id)).all()
+    existing = set(db.scalars(select(WatchlistItem.content_title_id).where(WatchlistItem.watchlist_id == queue.id)))
+    for item in pending:
+        if item.content_title_id not in existing:
+            db.add(WatchlistItem(watchlist_id=queue.id, content_title_id=item.content_title_id,
+                added_via="queue_migration", notes=item.notes, position=item.position, created_at=item.created_at))
+            existing.add(item.content_title_id)
+        db.add(WatchlistQueueImport(source_item_id=item.id, source_list_id=item.watchlist_id, queue_id=queue.id))
+    for source in sources:
+        source.merged_into_id = queue.id
+        source.is_default = False
+        source.is_system_list = False
+        source.system_role = None
+    if pending:
+        from app.services.taste_invalidation import invalidate_taste
+        invalidate_taste(db, user_id)
+    db.flush()
 
 
 def list_watchlists(db: Session, user_id: UUID) -> list[Watchlist]:

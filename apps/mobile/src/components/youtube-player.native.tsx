@@ -14,6 +14,7 @@ import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "re
 import { ActivityIndicator, Pressable, Text, View } from "react-native";
 import YoutubePlayer, { type YoutubeIframeRef } from "react-native-youtube-iframe";
 
+import { trailerDiagnostic } from "@/lib/trailer-diagnostics";
 import { TrailerProgress } from "@/lib/trailer-playback";
 import { colors } from "@/constants/theme";
 
@@ -120,10 +121,11 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
         }}
         onReady={() => {
           if (resumeAt.current > 0) inner.current?.seekTo(resumeAt.current, true);
+          trailerDiagnostic("ready", attempt);
           setReady(true);
         }}
-        onChangeState={(state: string) => { playbackState.current = state === "paused" ? 2 : state === "ended" ? 0 : state === "playing" ? 1 : 3; setPlaying(state === "playing"); if (state === "playing") { started.current = true; setError(null); } }}
-        onError={() => setError("This trailer is unavailable. Retry or swipe to the next title.")}
+        onChangeState={(state: string) => { playbackState.current = state === "paused" ? 2 : state === "ended" ? 0 : state === "playing" ? 1 : 3; setPlaying(state === "playing"); if (state === "playing") { if (!started.current) trailerDiagnostic("started", attempt); started.current = true; setError(null); } }}
+        onError={() => { trailerDiagnostic("player_error", attempt); setError("This trailer is unavailable. Retry or swipe to the next title."); }}
         onFullScreenChange={(isFull: boolean) => {
           onFullScreenChange?.(isFull);
         }}
@@ -136,7 +138,7 @@ const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProp
       ) : null}
       {error && isActive ? <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.85)", padding: 8 }}>
         <Text style={{ color: "white", fontSize: 12 }}>{error}</Text>
-        <Pressable accessibilityRole="button" onPress={() => setAttempt(n => n + 1)} style={{ minHeight: 44, justifyContent: "center" }}>
+        <Pressable accessibilityRole="button" onPress={() => { trailerDiagnostic("retry", attempt); setAttempt(n => n + 1); }} style={{ minHeight: 44, justifyContent: "center" }}>
           <Text style={{ color: "white" }}>Retry trailer</Text>
         </Pressable>
       </View> : null}

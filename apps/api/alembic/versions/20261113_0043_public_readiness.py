@@ -25,6 +25,7 @@ def reconcile_queues(connection):
     metadata = sa.MetaData()
     lists = sa.Table("watchlists", metadata, autoload_with=connection)
     items = sa.Table("watchlist_items", metadata, autoload_with=connection)
+    imports = sa.Table("watchlist_queue_imports", metadata, autoload_with=connection)
     names = {"my picks", "want to watch", "next watch", "my next watch"}
     rows = connection.execute(sa.select(lists).order_by(lists.c.created_at, lists.c.id)).mappings().all()
     by_owner = {}
@@ -53,6 +54,7 @@ def reconcile_queues(connection):
         existing = set(connection.execute(sa.select(items.c.content_title_id).where(items.c.watchlist_id == canonical_id)).scalars())
         source_ids = [r["id"] for r in sources if r["id"] != canonical_id]
         for item in connection.execute(sa.select(items).where(items.c.watchlist_id.in_(source_ids)).order_by(items.c.created_at, items.c.id)).mappings():
+            connection.execute(imports.insert().values(source_item_id=item["id"], source_list_id=item["watchlist_id"], queue_id=canonical_id))
             if item["content_title_id"] in existing:
                 continue
             connection.execute(items.insert().values(id=uuid4(), watchlist_id=canonical_id,
@@ -72,18 +74,24 @@ def upgrade():
             server_default="-1" if field.endswith("version") else "0"))
     op.add_column("watchlists", sa.Column("merged_into_id", sa.UUID(), nullable=True))
     op.create_foreign_key("fk_watchlist_merged_into", "watchlists", "watchlists", ["merged_into_id"], ["id"], ondelete="SET NULL")
+    op.create_table("watchlist_queue_imports",
+        sa.Column("source_item_id", sa.UUID(), primary_key=True),
+        sa.Column("source_list_id", sa.UUID(), sa.ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=False),
+        sa.Column("queue_id", sa.UUID(), sa.ForeignKey("watchlists.id", ondelete="CASCADE"), nullable=False))
     reconcile_queues(op.get_bind())
     stale = datetime(1970, 1, 1, tzinfo=timezone.utc)
     for name, field in (("user_taste_profiles", "updated_at"), ("user_signals", "last_updated"), ("compatibility_scores", "updated_at")):
         table = sa.table(name, sa.column(field, sa.DateTime(timezone=True)))
         op.get_bind().execute(table.update().values({field: stale}))
-    op.create_index("ux_watchlist_default_per_owner", "watchlists", ["owner_user_id"], unique=True, postgresql_where=sa.text("is_default = TRUE"))
+    # The canonical role already has a unique index. Do not add a unique
+    # is_default constraint: the previous API may still write legacy defaults
+    # while traffic drains, or after an emergency traffic rollback.
 
 
 def downgrade():
     # Data consolidation is deliberately not reversed: that would discard new
     # saves or restore duplicate defaults. Original source lists remain intact.
-    op.drop_index("ux_watchlist_default_per_owner", table_name="watchlists")
+    op.drop_table("watchlist_queue_imports")
     op.drop_constraint("fk_watchlist_merged_into", "watchlists", type_="foreignkey")
     op.drop_column("watchlists", "merged_into_id")
     for field in ("user_a_version", "user_b_version", "rated_count_a", "rated_count_b"):

@@ -501,55 +501,24 @@ def get_taste_matches(
             ),
         )
 
-    # M03: deterministic candidate selection by signal overlap, not
-    # UUID slice. Users with the most rated titles are the most
-    # scorable; among those, we prefer users whose top rated-genres
-    # overlap with the viewer's. A strong candidate beyond the old
-    # first-60 is now reachable.
-    from app.models.taste import UserSignal
-    from sqlalchemy import func as _f2
-
-    # Viewer's own top genre signals (positive score).
-    viewer_genre_names = [
-        row[0] for row in db.execute(
-            select(UserSignal.signal_name)
-            .where(
-                UserSignal.user_id == current_user.id,
-                UserSignal.signal_type == "genre",
-                UserSignal.score > 0,
-            )
-            .order_by(UserSignal.score.desc())
-            .limit(8)
-        ).all()
-    ]
-
-    # Rank every eligible candidate by (overlap_count, rated_count).
-    # Overlap count = number of their top genre signals that intersect
-    # the viewer's. Rated count = watched + rated titles. Deterministic
-    # tie-break by UUID string.
-    rated_counts: dict[UUID, int] = {
-        row[0]: int(row[1]) for row in db.execute(
-            select(_Rating.user_id, _f2.count())
-            .where(
-                _Rating.user_id.in_(eligible),
-                _Rating.watched_state == "watched",
-            )
-            .group_by(_Rating.user_id)
-        ).all()
-    }
-    overlap_counts: dict[UUID, int] = {}
+    # Select candidates from current positive ratings, not stale derived
+    # UserSignal rows. Score at most 60 pairs after SQL aggregation.
+    from collections import Counter
+    from sqlalchemy import func as _f2, cast, String, or_
+    from app.models.content import ContentTitle
+    viewer_titles = db.scalars(select(ContentTitle).join(_Rating, _Rating.content_title_id == ContentTitle.id)
+        .where(_Rating.user_id == current_user.id, _Rating.score >= 7)
+        .order_by(_Rating.updated_at.desc()).limit(100)).all()
+    viewer_genre_names = [name for name, _ in Counter(g for title in viewer_titles for g in (title.genres or [])).most_common(8)]
+    rated_counts = dict(db.execute(select(_Rating.user_id, _f2.count()).where(
+        _Rating.user_id.in_(eligible), _Rating.watched_state == "watched", _Rating.score.is_not(None))
+        .group_by(_Rating.user_id)).all())
+    overlap_counts = {}
     if viewer_genre_names:
-        signal_rows = db.execute(
-            select(UserSignal.user_id, UserSignal.signal_name)
-            .where(
-                UserSignal.user_id.in_(eligible),
-                UserSignal.signal_type == "genre",
-                UserSignal.score > 0,
-                UserSignal.signal_name.in_(viewer_genre_names),
-            )
-        ).all()
-        for uid, _name in signal_rows:
-            overlap_counts[uid] = overlap_counts.get(uid, 0) + 1
+        matches_genre = or_(*(_f2.lower(cast(ContentTitle.genres, String)).contains('"' + name.casefold() + '"', autoescape=True) for name in viewer_genre_names))
+        overlap_counts = dict(db.execute(select(_Rating.user_id, _f2.count()).join(ContentTitle, ContentTitle.id == _Rating.content_title_id)
+            .where(_Rating.user_id.in_(eligible), _Rating.score >= 7, matches_genre)
+            .group_by(_Rating.user_id)).all())
 
     def _rank_key(cid: UUID) -> tuple[int, int, str]:
         # Negative so sort(reverse=False) places best first.

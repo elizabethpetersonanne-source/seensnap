@@ -81,6 +81,7 @@ export default function MyPicksScreen() {
   const [teamTarget, setTeamTarget] = useState<PickTitle | null>(null);
   const [pageErrors, setPageErrors] = useState<Record<string, string>>({});
   const pageBusy = useRef(new Set<string>());
+  const [headerHeights, setHeaderHeights] = useState<Record<string, number>>({});
   const [featured, setFeatured] = useState<Record<string, string>>({});
   const [sectionHeight, setSectionHeight] = useState(Math.max(320, height - 160));
   const dataRef = useRef<PicksCollections | null>(null);
@@ -283,12 +284,15 @@ export default function MyPicksScreen() {
           showsVerticalScrollIndicator={false}
           renderItem={({ item }) => {
             const hero = item.titles.find(t => t.id === featured[item.key]) ?? item.titles[0];
-            const posterHeight = Math.max(220, sectionHeight - 52);
+            const posterHeight = Math.max(220, sectionHeight - (headerHeights[item.key] ?? 52));
             return <View style={{ height: sectionHeight }}>
-              <View style={[styles.sectionKicker, { minHeight: 52, flexWrap: "wrap", gap: 8 }]}>
-                <Pressable disabled={!item.listMeta} onPress={() => router.push(`/favorites/list/${item.listMeta!.id}`)} style={{ flex: 1, minWidth: 110, minHeight: 44, justifyContent: "center" }}>
+              <View onLayout={event => { const measured = event.nativeEvent.layout.height; setHeaderHeights(prior => prior[item.key] === measured ? prior : { ...prior, [item.key]: measured }); }} style={[styles.sectionKicker, { minHeight: 52, flexWrap: "wrap", gap: 8 }]}>
+                <Pressable onPress={() => { if (item.listMeta) router.push(`/favorites/list/${item.listMeta.id}`); }} style={{ flex: 1, minWidth: 110, minHeight: 44, justifyContent: "center" }}>
                   <Text style={styles.sectionKickerLabel} numberOfLines={2}>{item.label}</Text>
-                  <Text style={styles.sectionKickerCount}>{item.total} {item.key === "my_lists" ? "lists" : "titles"}</Text>
+                  {item.category === "ranked_favorites" && (data?.rated_unplaced_count ?? 0) > 0 ?
+                    <Pressable accessibilityRole="button" accessibilityLabel="Add rated titles to your ranking" onPress={() => router.push("/favorites/unplaced")}>
+                      <Text style={[styles.sectionKickerCount, { color: colors.accent }]}>{item.total} titles · {data?.rated_unplaced_count} rated titles to add</Text>
+                    </Pressable> : <Text style={styles.sectionKickerCount}>{item.total} {item.key === "my_lists" ? "lists" : "titles"}</Text>}
                 </Pressable>
                 {item.category === "ranked_favorites" ? <Pressable accessibilityRole="button" accessibilityLabel="Edit ranking order" onPress={() => router.push("/favorites/ranked")} style={[styles.editOrderBtn, { minHeight: 44 }]}><Text style={styles.editOrderBtnLabel}>Edit order</Text></Pressable> : null}
                 {item.key === "my_lists" ? <Pressable accessibilityRole="button" onPress={() => router.push("/favorites/new-list")} style={[styles.newListBtn, { minHeight: 44 }]}><Text style={styles.newListBtnLabel}>New list</Text></Pressable> : null}

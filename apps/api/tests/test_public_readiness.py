@@ -174,8 +174,65 @@ def test_account_deletion_with_owned_team_analytics(db):
     user, member = person(db), person(db)
     team = Team(owner_user_id=user.id, name='Team', slug='team', invite_code='team')
     db.add(team); db.flush()
-    db.add_all([TeamAnalyticsSnapshot(team_id=team.id, member_ids=[str(user.id), str(member.id)]), TeamMember(team_id=team.id, user_id=member.id)])
+    db.add_all([TeamAnalyticsSnapshot(team_id=team.id, member_ids=[str(user.id), str(member.id)]), TeamMember(team_id=team.id, user_id=member.id, role="member")])
     db.commit(); uid, tid = user.id, team.id
     delete_account(user, db); db.expire_all()
     assert db.get(User, uid) is None and db.get(Team, tid) is None
     assert db.get(TeamAnalyticsSnapshot, tid) is None and db.get(User, member.id) is not None
+
+
+def test_late_legacy_saves_import_once_without_resurrecting_an_unsave(db):
+    from app.services.watchlists import ensure_next_watch_list
+    from app.services.title_state import unsave_title
+    owner, movie = person(db), title(db)
+    source = Watchlist(owner_user_id=owner.id, name="My Picks", is_default=True, is_system_list=True, visibility="private")
+    db.add(source); db.flush()
+    db.add(WatchlistItem(watchlist_id=source.id, content_title_id=movie.id, added_via="old-api")); db.commit()
+    queue = ensure_next_watch_list(db, owner.id)
+    assert queue.id != source.id and source.merged_into_id == queue.id
+    assert db.scalar(select(WatchlistItem.id).where(WatchlistItem.watchlist_id == queue.id))
+    unsave_title(db, owner.id, movie.id)
+    ensure_next_watch_list(db, owner.id)
+    assert not db.scalar(select(WatchlistItem.id).where(WatchlistItem.watchlist_id == queue.id))
+    other = title(db, 2)
+    db.add(WatchlistItem(watchlist_id=source.id, content_title_id=other.id, added_via="old-api")); db.commit()
+    ensure_next_watch_list(db, owner.id)
+    assert list(db.scalars(select(WatchlistItem.content_title_id).where(WatchlistItem.watchlist_id == queue.id))) == [other.id]
+
+
+def test_current_obsessions_respect_low_rating_over_prior_save(db):
+    owner, movie = person(db), title(db)
+    save_title(db, owner.id, movie.id)
+    db.add(Rating(user_id=owner.id, content_title_id=movie.id, score=2, watched_state="watched")); db.commit()
+    assert taste._derive_current_obsessions_recent(db, owner.id) == []
+
+
+def test_for_you_bounds_catalog_materialization_and_filters_genre_first(db, monkeypatch):
+    from app.services import for_you
+    user = person(db)
+    db.add_all(ContentTitle(tmdb_id=i, content_type="series", title=f"Comedy {i}", genres=["Comedy"],
+        overview="A comedy", poster_url="https://example.invalid/poster", release_date=date(2020, 1, 1)) for i in range(1200))
+    db.add(ContentTitle(tmdb_id=2000, content_type="series", title="Crime", genres=["Crime"], overview="Crime", poster_url="https://example.invalid/poster", release_date=date(2026, 1, 1)))
+    db.commit()
+    original = for_you.scorer_for_user
+    sizes = []
+    def capture(db, uid, candidates):
+        sizes.append(len(candidates)); assert all("Comedy" in row.genres for row in candidates)
+        return original(db, uid, candidates)
+    monkeypatch.setattr(for_you, "scorer_for_user", capture)
+    result = for_you.for_you_recommendations(db, user.id, preferred_type="show", genre="Comedy", limit=5)
+    assert sizes == [800] and len(result) == 5
+
+
+def test_profile_cache_tracks_current_taste_version(db):
+    from app.services.taste_invalidation import invalidate_taste
+    user, movie = person(db), title(db)
+    db.add(Rating(user_id=user.id, content_title_id=movie.id, score=10, watched_state="watched")); db.commit()
+    first = taste.get_taste_profile(db, user.id)
+    assert first.top_genres and first.source_version == user.taste_version
+    rating = db.scalar(select(Rating)); rating.score = 1
+    invalidate_taste(db, user.id); db.commit()
+    # Even a stale worker writing a recent timestamp cannot hide its old version.
+    first.updated_at = datetime.now(timezone.utc); db.commit()
+    refreshed = taste.get_taste_profile(db, user.id)
+    assert refreshed.source_version == user.taste_version and refreshed.top_genres == []

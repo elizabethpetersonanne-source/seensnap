@@ -9,6 +9,7 @@ import { router } from "expo-router";
 import { useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Alert,
   Linking,
   Pressable,
   ScrollView,
@@ -104,12 +105,12 @@ export default function AccountSettingsScreen() {
           </View>
 
           <Text style={styles.groupTitle}>Legal</Text>
-          <Pressable style={styles.rowBtn} onPress={() => Linking.openURL(process.env.EXPO_PUBLIC_TERMS_URL || "https://seensnap.app/terms").catch(() => {})}>
+          <Pressable style={styles.rowBtn} onPress={() => Linking.openURL(process.env.EXPO_PUBLIC_TERMS_URL || "https://seensnap.app/terms").catch(() => Alert.alert("Couldn’t open this page", "Please check your connection and try again."))}>
             <Ionicons name="document-text-outline" size={18} color={colors.ink} />
             <Text style={styles.rowBtnLabel}>Terms of Service</Text>
             <Ionicons name="open-outline" size={14} color={colors.muted2} />
           </Pressable>
-          <Pressable style={styles.rowBtn} onPress={() => Linking.openURL(process.env.EXPO_PUBLIC_PRIVACY_URL || "https://seensnap.app/privacy").catch(() => {})}>
+          <Pressable style={styles.rowBtn} onPress={() => Linking.openURL(process.env.EXPO_PUBLIC_PRIVACY_URL || "https://seensnap.app/privacy").catch(() => Alert.alert("Couldn’t open this page", "Please check your connection and try again."))}>
             <Ionicons name="shield-outline" size={18} color={colors.ink} />
             <Text style={styles.rowBtnLabel}>Privacy Policy</Text>
             <Ionicons name="open-outline" size={14} color={colors.muted2} />

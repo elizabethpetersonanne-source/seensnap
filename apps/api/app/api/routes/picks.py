@@ -172,6 +172,8 @@ def get_collection_page(
 @router.get("/collections", response_model=PicksCollections)
 def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksCollections:
     uid = current_user.id
+    from app.services.watchlists import ensure_next_watch_list
+    ensure_next_watch_list(db, uid)
     pages = {
         key: _section_page(db, uid, key, 100, 0)
         for key in ("ranked_favorites", "my_next_watch", "favorites", "watched")
@@ -188,7 +190,7 @@ def get_my_picks_collections(current_user: CurrentUser, db: DbSession) -> PicksC
     )
     lists = db.scalars(
         select(Watchlist)
-        .where(Watchlist.owner_user_id == uid)
+        .where(Watchlist.owner_user_id == uid, or_(Watchlist.system_role.is_(None), Watchlist.system_role != "next_watch"))
         .order_by(Watchlist.updated_at.desc())
     ).all()
     my_lists = []
