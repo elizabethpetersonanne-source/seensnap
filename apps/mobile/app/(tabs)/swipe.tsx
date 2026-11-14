@@ -109,10 +109,13 @@ export default function SwipeTab() {
     at: number;
   } | null>(null);
   const [undoToast, setUndoToast] = useState<string | null>(null);
+  const undoToastTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   function showUndoToast(message: string) {
+    if (undoToastTimer.current) clearTimeout(undoToastTimer.current);
     setUndoToast(message);
-    setTimeout(() => setUndoToast(null), 3000);
+    undoToastTimer.current = setTimeout(() => setUndoToast(null), 3000);
   }
+  useEffect(() => () => { if (undoToastTimer.current) clearTimeout(undoToastTimer.current); }, []);
   const [flipped, setFlipped] = useState(false);
   const flippedRef = useRef(flipped); flippedRef.current = flipped;
   const detailRequestRef = useRef(0);
@@ -480,7 +483,7 @@ export default function SwipeTab() {
       if (generation !== generationRef.current) return;
       await new Promise<void>((resolve) => {
         const animation = Animated.timing(pan, {
-          toValue: direction === "left" ? { x: -420, y: 30 } : direction === "right" ? { x: 420, y: 30 } : { x: 0, y: direction === "up" ? -420 : 420 },
+          toValue: direction === "left" ? { x: -420, y: 0 } : direction === "right" ? { x: 420, y: 0 } : { x: 0, y: direction === "up" ? -420 : 420 },
           duration: 180, useNativeDriver: false,
         });
         // A backgrounded/interrupted animation must not retain the input lock.
@@ -994,26 +997,7 @@ export default function SwipeTab() {
               <Ionicons name="arrow-down" size={11} color={colors.muted} />
               <Text style={styles.swipeLegendLabel}>Watched · didn't like</Text>
             </Pressable>
-            {lastSwipe ? (
-              <Pressable
-                disabled={swipeBusy || !!swipeError}
-                onPress={() => void undoLastSwipe()}
-                hitSlop={4}
-                style={({ pressed }) => [styles.swipeUndoPill, pressed && { opacity: 0.7 }]}
-                accessibilityRole="button"
-                accessibilityLabel={`Undo last swipe: ${lastSwipe.direction}`}
-              >
-                <Ionicons name="arrow-undo-outline" size={11} color={colors.background} />
-                <Text style={styles.swipeUndoLabel}>Undo</Text>
-              </Pressable>
-            ) : null}
           </View>
-
-          {undoToast ? (
-            <View style={styles.undoToast}>
-              <Text style={styles.undoToastLabel}>{undoToast}</Text>
-            </View>
-          ) : null}
 
       {loading ? (
         <View style={styles.loadingState}>
@@ -1030,12 +1014,6 @@ export default function SwipeTab() {
         </View>
       ) : null}
 
-      {swipeBusy ? (
-        <View accessibilityRole="progressbar" accessibilityLabel="Saving swipe" style={{ flexDirection: "row", gap: 10, alignItems: "center", justifyContent: "center", padding: 12 }}>
-          <ActivityIndicator color={colors.accent} />
-          <Text style={{ color: colors.ink }}>Saving your choice…</Text>
-        </View>
-      ) : null}
       {swipeError ? (
         <View accessibilityRole="alert" style={styles.errorBanner}>
           <Text style={styles.errorText}>{swipeError}</Text>
@@ -1068,7 +1046,6 @@ export default function SwipeTab() {
         </View>
       ) : null}
 
-      {loadingMore ? <Text style={{ color: colors.muted, textAlign: "center", padding: 16 }}>Finding more picks…</Text> : null}
       {/* Narrow mode (mobile): one unified bordered card containing
           hero backdrop + title identity + metadata + Why It's Here +
           provider strip. Pan responder wraps the hero area so swipes
@@ -1480,6 +1457,36 @@ export default function SwipeTab() {
       ) : null}
         </View>
       </ScrollView>
+      {/* Feedback never participates in the deck's layout. Only Undo captures
+          touches; the poster and navigation remain in their original positions. */}
+      {swipeBusy || undoToast || lastSwipe || loadingMore ? (
+        <View pointerEvents="box-none" style={[styles.swipeStatus, { bottom: RESERVED_BOTTOM_NAV + safeInsets.bottom + 8 }]}>
+          <View pointerEvents="box-none" style={styles.swipeStatusContent}>
+            {swipeBusy ? (
+              <View pointerEvents="none" accessibilityRole="progressbar" accessibilityLabel="Saving swipe" style={styles.swipeStatusMessage}>
+                <ActivityIndicator color={colors.accent} size="small" />
+                <Text style={styles.undoToastLabel}>Saving your choice…</Text>
+              </View>
+            ) : undoToast || loadingMore ? (
+              <Text pointerEvents="none" accessibilityLiveRegion="polite" style={[styles.undoToastLabel, { flexShrink: 1 }]}>
+                {undoToast ?? "Finding more picks…"}
+              </Text>
+            ) : null}
+            {lastSwipe ? (
+              <Pressable
+                disabled={swipeBusy || !!swipeError}
+                onPress={() => void undoLastSwipe()}
+                style={({ pressed }) => [styles.swipeUndoPill, (pressed || swipeBusy || !!swipeError) && { opacity: 0.5 }]}
+                accessibilityRole="button"
+                accessibilityLabel={`Undo last swipe: ${lastSwipe.direction}`}
+              >
+                <Ionicons name="arrow-undo-outline" size={14} color={colors.background} />
+                <Text style={styles.swipeUndoLabel}>Undo</Text>
+              </Pressable>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
     </SafeAreaView>
   );
 }
@@ -1625,7 +1632,9 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 999,
     backgroundColor: colors.accent,
-    marginLeft: "auto",
+    minHeight: 44,
+    minWidth: 64,
+    justifyContent: "center",
   },
   swipeUndoLabel: {
     fontSize: 10,
@@ -1633,16 +1642,26 @@ const styles = StyleSheet.create({
     color: colors.background,
     fontFamily: fonts.sansSemiBold,
   },
-  undoToast: {
-    marginHorizontal: spacing.lg,
-    marginTop: 6,
+  swipeStatus: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+    alignItems: "center",
+    zIndex: 20,
+  },
+  swipeStatusContent: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    maxWidth: 520,
     paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
-    backgroundColor: "rgba(0,0,0,0.78)",
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: "rgba(0,0,0,0.92)",
     borderWidth: StyleSheet.hairlineWidth,
     borderColor: "rgba(255,255,255,0.14)",
   },
+  swipeStatusMessage: { flexDirection: "row", alignItems: "center", gap: 8, flexShrink: 1, minHeight: 44 },
   undoToastLabel: {
     fontFamily: fonts.sans,
     color: colors.ink,

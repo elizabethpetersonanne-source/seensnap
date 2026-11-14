@@ -28,7 +28,7 @@ import { colors, fonts, radii, spacing } from "@/constants/theme";
 
 type SharedTitle = {
   title_id: string;
-  title: string;
+  title_name: string;
   poster_url: string | null;
 };
 
@@ -110,7 +110,7 @@ export function CompatibilitySheet({
                     <Text style={styles.scoreBadgeText}>{compat}%</Text>
                   </View>
                   <Text style={styles.scoreCaption}>
-                    Canonical compatibility across shared genres, favorite titles and themes.
+                    How your tastes align across genres, favorite titles and themes.
                   </Text>
                 </View>
               ) : (
@@ -166,7 +166,7 @@ export function CompatibilitySheet({
                             <Ionicons name="film-outline" size={18} color={colors.muted2} />
                           </View>
                         )}
-                        <Text style={styles.titleName} numberOfLines={2}>{t.title}</Text>
+                        <Text style={styles.titleName} numberOfLines={2}>{t.title_name}</Text>
                       </View>
                     ))}
                   </ScrollView>

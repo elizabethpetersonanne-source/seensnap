@@ -114,7 +114,6 @@ export function ConciergeListPicker({
                       <Text style={styles.rowName} numberOfLines={1}>{item.name}</Text>
                       <Text style={styles.rowMeta}>
                         {item.title_count} {item.title_count === 1 ? "title" : "titles"}
-                        {item.is_default ? "  ·  default" : ""}
                         {item.visibility && item.visibility !== "private" ? `  ·  ${item.visibility}` : ""}
                       </Text>
                     </View>

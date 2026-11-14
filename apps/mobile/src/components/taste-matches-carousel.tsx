@@ -184,11 +184,6 @@ export function TasteMatchesCarousel() {
           <Pressable onPress={copy.onPress} style={styles.emptyCta}>
             <Text style={styles.emptyCtaLabel}>{copy.cta}</Text>
           </Pressable>
-          {data?.diagnostics ? (
-            <Text style={styles.diagLine}>
-              {data.diagnostics.eligible_total} discoverable · {data.diagnostics.scored_with_evidence} matched · you've rated {data.diagnostics.viewer_rated_count}
-            </Text>
-          ) : null}
         </View>
       </View>
     );

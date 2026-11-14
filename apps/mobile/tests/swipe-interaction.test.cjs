@@ -240,3 +240,26 @@ test('a confirmed right swipe broadcasts the saved state and advances to the nex
     assert.ok(h.button('Flip title 1 to details'));
   } finally { await h.close(); }
 });
+
+test('saving and saved feedback stay outside the scrolling deck and Undo remains reachable', async () => {
+  const h = await mount(), request = deferred(); h.sendWith(() => request.promise);
+  const outsideDeck = node => {
+    let hasOverlay = false;
+    for (let parent = node.parent; parent; parent = parent.parent) {
+      assert.notEqual(parent.type, 'ScrollView', 'Feedback must not add height above the poster');
+      const styles = [parent.props.style].flat().filter(Boolean);
+      if (styles.some(style => style.position === 'absolute')) hasOverlay = true;
+    }
+    assert.ok(hasOverlay, 'Feedback must use the fixed overlay');
+  };
+  try {
+    await h.click('Next Watch');
+    outsideDeck(h.screen.root.findByProps({ accessibilityLabel: 'Saving swipe' }));
+    await act(async () => request.resolve({ swipe_id: 'receipt', saved: true }));
+    outsideDeck(h.screen.root.findAllByType('Text').find(n => n.props.children === 'Added to My Next Watch'));
+    outsideDeck(h.button('Undo last swipe: right'));
+    assert.equal(h.button('Undo last swipe: right').props.disabled, false);
+    assert.ok(h.button('Flip title 1 to details'));
+    assert.equal(h.screen.root.findByType('SaveToListSheet').props.visible, false);
+  } finally { await h.close(); }
+});
