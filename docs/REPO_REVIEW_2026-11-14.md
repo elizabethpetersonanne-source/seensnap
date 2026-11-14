@@ -12,7 +12,11 @@ This is a source review of product flows, client/API contracts, taste and recomm
 - Replaced the misleading Ranked Favorites “Top 20” empty-state copy with instructions to rate and reorder titles.
 - Corrected shared-favorite names in the compatibility sheet: the API returns `title_name`, while the client read `title`. Replaced “Canonical compatibility” with ordinary product language.
 
-Validation: 45 client tests pass, including a new regression asserting that pending/saved feedback stays outside the scrolling deck, Undo is reachable, and a right swipe does not open the list picker. TypeScript passes. Production/device observations should be recorded separately from these checks.
+Validation: the initial 45 client tests pass, including a new regression asserting that pending/saved feedback stays outside the scrolling deck, Undo is reachable, and a right swipe does not open the list picker. The follow-up adds successful and failed Undo/retry coverage. TypeScript passes.
+
+Production observation after the initial release: the poster remained at exactly `top=332px`, `height=520px` before and after a confirmed right swipe, and My Next Watch contained the saved title. Visual inspection caught an extra bottom-navigation offset in the overlay; the follow-up removes that duplicate offset because the tab navigator already reserves the navigation area.
+
+**Additional live defect:** Undo returned the retry message on two attempts. The current card/receipt remained available, but the server-side reversal was not confirmed. Local mocked-client and API tests do not reproduce this production failure. Investigate the deployed Undo response and Cloud Run logs before calling Undo accepted. The follow-up logs only the HTTP status (no account, token, title or raw response) and adds clear conflict/missing-receipt messages. This diagnostic change is not a claimed backend fix.
 
 ## Recommended order for remaining work
 
