@@ -355,6 +355,12 @@ export default function DiscoverScreen() {
   const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
   const [titleModalVisible, setTitleModalVisible] = useState(false);
   const [titleLoading, setTitleLoading] = useState(false);
+  const titleRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setUniversalTitle(null);
+    setTitleModalVisible(false);
+    return () => titleRequest.current?.abort();
+  }, [sessionToken]);
 
   // Oct-18 §4 Concierge
   const entitlement = useEntitlement(sessionToken);
@@ -681,8 +687,8 @@ export default function DiscoverScreen() {
       Keyboard.dismiss();
       router.push({ pathname: "/person/[tmdbId]", params: { tmdbId: item.entity_id } });
     } else if (item.entity_type === "collection") {
-      deactivateSearch();
-      // Navigate to collection screen (future route)
+      Keyboard.dismiss();
+      router.push({ pathname: "/collections/[slug]", params: { slug: item.entity_id } });
     } else {
       deactivateSearch();
     }
@@ -692,16 +698,21 @@ export default function DiscoverScreen() {
 
   async function openTitleModal(titleId: string) {
     if (!sessionToken) return;
+    titleRequest.current?.abort();
+    const controller = new AbortController();
+    titleRequest.current = controller;
+    Keyboard.dismiss();
+    setUniversalTitle(null);
     setSelectedTitleId(titleId);
     setTitleLoading(true);
     setTitleModalVisible(true);
     try {
-      const ut = await fetchUniversalTitle(sessionToken, titleId);
-      setUniversalTitle(ut);
+      const ut = await fetchUniversalTitle(sessionToken, titleId, null, { signal: controller.signal });
+      if (!controller.signal.aborted) setUniversalTitle(ut);
     } catch {
-      setTitleModalVisible(false);
+      // The modal provides a truthful error state and a close/retry path.
     } finally {
-      setTitleLoading(false);
+      if (!controller.signal.aborted) setTitleLoading(false);
     }
   }
 
@@ -1173,6 +1184,7 @@ export default function DiscoverScreen() {
           title={universalTitle}
           loading={titleLoading}
           onClose={() => {
+            titleRequest.current?.abort();
             setTitleModalVisible(false);
             setUniversalTitle(null);
             setSelectedTitleId(null);

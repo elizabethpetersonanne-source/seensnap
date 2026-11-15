@@ -9,7 +9,7 @@ const renderer = require('react-test-renderer');
 global.IS_REACT_ACT_ENVIRONMENT = true;
 const { act } = React;
 
-async function renderSearch(file) {
+async function renderSearch(file, extraResults = {}) {
   const navigation = [], titleRequests = [], timers = new Map();
   let timerId = 0, keyboardDismissals = 0;
   const actor = { entity_type: 'person', entity_id: '31', title: 'Tom Hanks',
@@ -17,7 +17,7 @@ async function renderSearch(file) {
   const movie = { entity_type: 'movie', entity_id: 'local-title-uuid',
     title: 'Tom Hanks: The Nomad', route: '/titles/123', source: 'tmdb' };
   const results = { query: 'Tom Hanks', movies: [movie], series: [], people: [actor],
-    collections: [], my_stuff: [] };
+    collections: [], my_stuff: [], ...extraResults };
   const native = Object.fromEntries(['ActivityIndicator', 'Image', 'KeyboardAvoidingView',
     'Pressable', 'ScrollView', 'Text', 'TextInput', 'View'].map(name => [name, name]));
   native.StyleSheet = { create: styles => styles };
@@ -51,7 +51,7 @@ async function renderSearch(file) {
   vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
   }).outputText, {
-    exports, setTimeout: callback => { timers.set(++timerId, callback); return timerId; },
+    exports, AbortController, setTimeout: callback => { timers.set(++timerId, callback); return timerId; },
     clearTimeout: id => timers.delete(id),
     require: name => {
       if (name.startsWith('@/components/')) return new Proxy({}, { get: (_, exportName) => exportName });
@@ -118,5 +118,18 @@ test('dedicated Search uses the same TMDB actor identity and retains its query',
     assert.equal(view.navigation[0], '/person/31');
     assert.equal(view.titleRequests.length, 0);
     assert.equal(view.input().props.value, 'Tom Hanks');
+  } finally { await view.close(); }
+});
+
+test('Discover collection search opens the existing collection and keeps the query for Back', async () => {
+  const view = await renderSearch('app/(tabs)/index.tsx', {
+    collections: [{ entity_type: 'collection', entity_id: 'weekend-comedies', title: 'Weekend comedies', source: 'local' }],
+  });
+  try {
+    await view.pressResult('Weekend comedies');
+    assert.equal(view.navigation[0].pathname, '/collections/[slug]');
+    assert.equal(view.navigation[0].params.slug, 'weekend-comedies');
+    assert.equal(view.input().props.value, 'Tom Hanks');
+    assert.equal(view.titleRequests.length, 0);
   } finally { await view.close(); }
 });

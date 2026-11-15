@@ -18,6 +18,7 @@ type Title = {
   title: string;
   poster_url: string | null;
   content_type: string;
+  release_date?: string | null;
 };
 export function OnboardingTitleSearch({
   onRate,
@@ -36,9 +37,16 @@ export function OnboardingTitleSearch({
     [retry, setRetry] = useState(0);
   const lock = useRef(false),
     generation = useRef(0);
+  const saveRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setChosen(null); setSaved(null); setSaving(false); setSaveError(null);
+    lock.current = false;
+    return () => saveRequest.current?.abort();
+  }, [sessionToken]);
   useEffect(() => {
     let active = true;
     const version = ++generation.current;
+    const controller = new AbortController();
     setItems([]);
     setError(null);
     setLoading(false);
@@ -47,7 +55,7 @@ export function OnboardingTitleSearch({
     const timer = setTimeout(() => {
       void apiRequest<Title[]>(
         `/titles/search?q=${encodeURIComponent(query.trim())}`,
-        { token: sessionToken, timeoutMs: 30000 },
+        { token: sessionToken, timeoutMs: 30000, signal: controller.signal },
       )
         .then((next) => {
           if (active && version === generation.current) setItems(next);
@@ -62,6 +70,7 @@ export function OnboardingTitleSearch({
     return () => {
       active = false;
       clearTimeout(timer);
+      controller.abort();
     };
   }, [sessionToken, query, retry]);
   async function chooseFirst() {
@@ -69,37 +78,39 @@ export function OnboardingTitleSearch({
     lock.current = true;
     setSaving(true);
     setSaveError(null);
-    const version = generation.current;
+    const controller = new AbortController();
+    saveRequest.current = controller;
     try {
       try {
         await apiRequest("/me/favorites/ranked", {
           token: sessionToken,
+          signal: controller.signal,
           method: "POST",
           body: JSON.stringify({ title_id: chosen.id, position: 1 }),
         });
       } catch (e) {
         if (
-          !(e instanceof ApiError) ||
+          controller.signal.aborted || !(e instanceof ApiError) ||
           e.status !== 409 ||
           e.detail !== "Already in ranked favorites"
         )
           throw e;
         await apiRequest(`/me/favorites/ranked/${chosen.id}/move`, {
           token: sessionToken,
+          signal: controller.signal,
           method: "POST",
           body: JSON.stringify({ to_position: 1 }),
         });
       }
-      if (version === generation.current) {
+      if (!controller.signal.aborted) {
         setSaved(chosen.title);
         setChosen(null);
       }
     } catch {
-      if (version === generation.current)
+      if (!controller.signal.aborted)
         setSaveError("Could not save your #1. Please try again.");
     } finally {
-      lock.current = false;
-      setSaving(false);
+      if (!controller.signal.aborted) { lock.current = false; setSaving(false); }
     }
   }
   return (
@@ -178,10 +189,11 @@ export function OnboardingTitleSearch({
             <View style={{ flex: 1 }}>
               <Text style={{ color: colors.ink, fontSize: 15 }}>{t.title}</Text>
               <Text style={{ color: colors.muted, fontSize: 12 }}>
-                {t.content_type === "movie" ? "Film" : "Series"}
+                {[t.content_type === "movie" ? "Film" : "Series", t.release_date?.slice(0, 4)].filter(Boolean).join(" · ")}
               </Text>
             </View>
             <Pressable
+              accessibilityRole="button"
               accessibilityLabel={`Rate ${t.title}`}
               style={{ minHeight: 44, minWidth: 44, justifyContent: "center" }}
               onPress={() => { Keyboard.dismiss(); onRate(t); }}
@@ -189,6 +201,7 @@ export function OnboardingTitleSearch({
               <Text style={{ color: colors.accent }}>Rate</Text>
             </Pressable>
             <Pressable
+              accessibilityRole="button"
               disabled={saving}
               accessibilityLabel={`Choose ${t.title} as your number one`}
               style={{ minHeight: 44, minWidth: 44, justifyContent: "center" }}

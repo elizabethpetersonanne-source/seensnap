@@ -22,6 +22,7 @@ import {
 import { safeReturnPath } from "@/lib/return-path";
 import { Ionicons } from "@expo/vector-icons";
 import { useOnboardingDraft } from "@/lib/onboarding-draft";
+import { useOnboardingProgress } from "@/lib/use-onboarding-progress";
 import { CountrySelector } from "@/components/country-selector";
 import { OnboardingTitleSearch } from "@/components/onboarding-title-search";
 import { RatingEditor } from "@/components/rating-editor";
@@ -207,7 +208,6 @@ export default function OnboardingScreen() {
   const [error, setError] = useState<string | null>(null);
   const [country, setCountry] = useState("US");
   const [ratingTitle, setRatingTitle] = useState<Title | null>(null);
-  const [ratedCount, setRatedCount] = useState(0);
   const [calibrationMode, setCalibrationMode] = useState<"search" | "swipe">("search");
   const [lastRatedTitle, setLastRatedTitle] = useState<string | null>(null);
   const actionBusy = useRef(false);
@@ -240,6 +240,8 @@ export default function OnboardingScreen() {
       setSelectedServices(new Set(saved.streaming_services));
     },
   );
+  const progress = useOnboardingProgress(sessionToken, draft.ready && (step === "calibrate" || step === "dna"));
+  const ratedCount = progress.progress?.rated_count ?? 0;
   // Handle (unique username). Live-checked against
   // GET /me/username-check as the user types (small debounce).
   const [handleStatus, setHandleStatus] = useState<
@@ -306,6 +308,12 @@ export default function OnboardingScreen() {
   const [calibrateIndex, setCalibrateIndex] = useState(0);
   const [swipeCount, setSwipeCount] = useState(0);
   const [loadingCandidates, setLoadingCandidates] = useState(false);
+  const candidateRequest = useRef<AbortController | null>(null);
+  useEffect(() => {
+    setCandidates([]); setCalibrateIndex(0); setSwipeCount(0); setLoadingCandidates(false);
+    setRatingTitle(null); setLastRatedTitle(null);
+    return () => candidateRequest.current?.abort();
+  }, [sessionToken]);
 
   // Step animation — translateX-only "slide in from the right" so
   // even if the animation callback silently no-ops on RN-Web (which
@@ -354,58 +362,54 @@ export default function OnboardingScreen() {
     });
   }
 
-  // Fetch calibration titles + resume from server-persisted swipe count.
+  // Suggestions are optional; searching/rating does not wait for this request.
   const fetchCandidates = useCallback(async () => {
     if (!sessionToken) return;
+    candidateRequest.current?.abort();
+    const controller = new AbortController();
+    candidateRequest.current = controller;
     setLoadingCandidates(true);
     try {
-      // Resume from previously-recorded calibration swipes so kill/relaunch doesn't reset progress.
-      try {
-        const progress = await apiRequest<{
-          signal_count: number;
-          rated_count: number;
-          target: number;
-          completed: boolean;
-        }>("/me/onboarding-progress", { token: sessionToken });
-        setRatedCount(progress.rated_count ?? 0);
-        if (progress.signal_count > 0) {
-          setSwipeCount(progress.signal_count);
-        }
-      } catch {
-        // Best-effort — if the endpoint fails, start from zero (no regression).
-      }
-
       const results = await apiRequest<Title[]>(
         "/titles/calibration-candidates",
         {
           token: sessionToken,
+          signal: controller.signal,
         },
       );
+      if (controller.signal.aborted) return;
       setCandidates(results);
+      setCalibrateIndex(0);
       trackEvent("taste_calibration_started", {});
     } catch {
+      if (controller.signal.aborted) return;
       // Fallback to trending if calibration endpoint fails
       try {
         const trending = await apiRequest<Title[]>(
           "/titles/trending?limit=25",
           {
             token: sessionToken,
+            signal: controller.signal,
           },
         );
-        setCandidates(trending);
+        if (!controller.signal.aborted) { setCandidates(trending); setCalibrateIndex(0); }
       } catch {
         // Can't load calibration — skip step
       }
     } finally {
-      setLoadingCandidates(false);
+      if (!controller.signal.aborted) setLoadingCandidates(false);
     }
   }, [sessionToken]);
 
   useEffect(() => {
-    if (step === "calibrate" && candidates.length === 0) {
+    if (step === "calibrate" && calibrationMode === "swipe" && candidates.length === 0) {
       void fetchCandidates();
     }
-  }, [step, candidates.length, fetchCandidates]);
+  }, [step, calibrationMode, fetchCandidates]);
+
+  useEffect(() => {
+    if (progress.progress) setSwipeCount(current => Math.max(current, progress.progress!.signal_count));
+  }, [progress.progress]);
 
   useEffect(() => {
     if (!displayName && user?.display_name) {
@@ -1005,8 +1009,7 @@ export default function OnboardingScreen() {
                   </Text>
                 </View>
                 <Text style={styles.featureProgress}>
-                  {Math.min(ratedCount, CALIBRATION_TARGET)}/
-                  {CALIBRATION_TARGET} rated
+                  {progress.loading && !progress.progress ? "Checking ratings…" : `${Math.min(ratedCount, CALIBRATION_TARGET)}/${CALIBRATION_TARGET} rated`}
                 </Text>
               </View>
 
@@ -1019,6 +1022,12 @@ export default function OnboardingScreen() {
                 ))}
               </View>
               {lastRatedTitle ? <Text accessibilityLiveRegion="polite" style={styles.featureSubtitle}>Rating saved for {lastRatedTitle}.</Text> : null}
+              {progress.error ? <View style={{ gap: 4 }}>
+                <Text accessibilityRole="alert" style={styles.featureSubtitle}>Your saved ratings are safe. We couldn't refresh your progress.</Text>
+                <Pressable accessibilityRole="button" accessibilityLabel="Retry rating progress" style={{ minHeight: 44, justifyContent: "center" }} onPress={() => void progress.refresh()}>
+                  <Text style={{ color: colors.accent }}>Refresh progress</Text>
+                </Pressable>
+              </View> : null}
               {calibrationMode === "search" ? <OnboardingTitleSearch
                 onRate={(t) =>
                   setRatingTitle({
@@ -1271,7 +1280,9 @@ export default function OnboardingScreen() {
                 </Text>
               </View>
               <Text style={styles.body}>
-                {swipeCount >= 5
+                {ratedCount > 0
+                  ? `You've rated ${ratedCount} ${ratedCount === 1 ? "title" : "titles"}. Your ratings help shape picks across Discover, Swipe and Concierge. Keep rating as you watch to sharpen them.`
+                  : swipeCount >= 5
                   ? `You made ${swipeCount} decisions — that's a real head start. The more you rate, save, and swipe, the more personal your recommendations become.`
                   : "The more you rate, save, and swipe, the more personal your recommendations become."}
               </Text>
@@ -1298,7 +1309,7 @@ export default function OnboardingScreen() {
                   advance("calibrate");
                 }}
               >
-                <Text style={styles.skipLinkText}>Keep swiping</Text>
+                <Text style={styles.skipLinkText}>Keep shaping my taste</Text>
               </Pressable>
             </Animated.View>
           ) : null}
@@ -1349,22 +1360,11 @@ export default function OnboardingScreen() {
         titleName={ratingTitle?.title}
         initial={null}
         onClose={() => setRatingTitle(null)}
-        onChanged={() => {
-          setLastRatedTitle(ratingTitle?.title ?? null);
-          if (sessionToken)
-            void apiRequest<{ rated_count: number }>(
-              "/me/onboarding-progress",
-              { token: sessionToken },
-            )
-              .then((progress) => {
-                setRatedCount(progress.rated_count);
-                if (progress.rated_count >= CALIBRATION_TARGET) advance("dna");
-              })
-              .catch(() =>
-                setError(
-                  "Your rating is saved. Reconnect to refresh your progress.",
-                ),
-              );
+        onChanged={(snapshot) => {
+          setLastRatedTitle(snapshot.score != null ? ratingTitle?.title ?? null : null);
+          void progress.refresh().then(next => {
+            if (next && next.rated_count >= CALIBRATION_TARGET) advance("dna");
+          });
         }}
       />
     </SafeAreaView>
