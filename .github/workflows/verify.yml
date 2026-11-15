@@ -54,6 +54,8 @@ jobs:
           cache: npm
           cache-dependency-path: apps/mobile/package-lock.json
       - run: npm ci --no-audit --no-fund
+      - run: npx expo install --check
+      - run: npx expo-modules-autolinking verify
       - run: npm run test:client
       - run: npm run typecheck
       - run: npm run web:build

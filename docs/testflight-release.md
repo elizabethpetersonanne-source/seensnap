@@ -6,7 +6,7 @@
 - Explicit bundle: `com.seensnap.app`; app name SeenSnap.
 - App Store Connect app ID: `6835181142`; SKU `SEENSNAP-IOS-001`.
 - Sign in with Apple, push, associated domains and in-app purchase capabilities are registered.
-- No signed binary has been built, uploaded or reviewed yet.
+- First signed iOS archive succeeded on November 15, 2026: version `1.0.0 (1)`, EAS build `fee15abc-47db-4af8-8b8b-cd4a0a701d60`, commit `57912ccc1e561da3c5db99f27d9f00035135e9e1`. It has **not** been uploaded to App Store Connect or reviewed. Build 1 is superseded by the dependency repairs below; build a replacement before submission.
 
 ## Implemented in this branch
 
@@ -30,8 +30,9 @@
 - The project was created successfully and the repository now links to it through `extra.eas.projectId`. The TestFlight profile also declares the same public owner/project identifiers. No dependency on `gregtusar` remains in the app configuration.
 - Seven public variables are saved in the project's EAS `preview` environment: owner, project ID, release-build flag, dev-auth disabled, staging environment label, the existing staging API URL and the iOS Google client ID below. RevenueCat is not configured yet.
 - The Expo GitHub app is authorized for only `elizabethpetersonanne-source/seensnap`, and that repository is connected to this project. The saved base directory is `/apps/mobile`. No automatic build trigger has been enabled.
-- Expo's iOS credentials page has no configured distribution certificate or provisioning profile yet. The first signed build/upload has not been started.
-- Browser sign-in does not authenticate the local EAS CLI. CLI/build authentication and Apple signing still need setup before starting a build. Google sign-in must be verified on a device after the backend receives the same client ID.
+- Elizabeth authenticated the Cloud Shell EAS CLI as `lizzy456` and configured the SeenSnap Apple distribution certificate, provisioning profile and APNs key. The first store-distribution archive succeeded. The assistant's separate local CLI is not authenticated.
+- The downloaded archive confirms bundle `com.seensnap.app`, version `1.0.0 (1)`, iOS 15.1 minimum, iPhone/iPad families, photo permission text and the expected Google callback. Archive success does not prove on-device authentication, purchases, push delivery or usability.
+- Backend `57912ccc1e561da3c5db99f27d9f00035135e9e1` is deployed, with migration and structural checks passed. `/health` confirmed the same commit. The iOS Google client flag was included in that rollout. Netlify production remains unchanged while PR #18 is a draft.
 
 ## Account setup still required
 
@@ -58,7 +59,7 @@ On November 15, Elizabeth supplied this public iOS client ID after completing Go
 
 It is saved in Expo's `preview` environment as `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`. The expected native callback scheme is `com.googleusercontent.apps.451179869201-io7v9k8pv43ap31h8p7nq01jnrlshtt8`. Local release configuration and callback generation are checked with this ID; this does not prove provider authentication works.
 
-Google Cloud Console could not be loaded by the setup browser, so the client's iOS type, bundle ID and consent audience have not been independently inspected. The API update and real-device sign-in remain pending. If the Google consent screen is in testing, ensure the intended Google testers are allowed before device acceptance.
+Google Cloud Console could not be loaded by the setup browser, so the client's iOS type, bundle ID and consent audience have not been independently inspected. The API update completed; real-device sign-in remains pending. If the Google consent screen is in testing, ensure the intended Google testers are allowed before device acceptance.
 
 Reference: https://developers.google.com/identity/sign-in/ios/api-access
 
@@ -85,14 +86,24 @@ RevenueCat integration is implemented but **disabled until configured**. No acco
 
    ```sh
    npm ci
+   npx --yes eas-cli@latest env:pull preview --non-interactive
    npm run release:check
-   npx eas-cli build --platform ios --profile testflight
-   npx eas-cli submit --platform ios --profile testflight
+   npx --yes eas-cli@latest build --platform ios --profile testflight --no-wait
+   # After this exact build succeeds and its logs are reviewed:
+   npx --yes eas-cli@latest submit --platform ios --profile testflight --id <verified-build-id>
    ```
 
-   Use the exact successful build for submission, not an unrelated previously built artifact. These commands are instructions; no build or upload has been run in this session. Configuration preflight needs the public EAS environment variables available locally as well as on the build worker.
+   Use the exact successful build for submission, not an unrelated previously built artifact. The first signed build exists, but no upload has been confirmed. Submission credentials are separate from distribution signing and may still require Apple account setup. Configuration preflight needs the public EAS environment variables available locally as well as on the build worker.
 5. Wait for Apple's processing; resolve export compliance based on the app's audited encryption use. Do not assume an exemption without checking the final archive and SDKs. Native privacy manifests are aggregated by CocoaPods; inspect the archive's Privacy Report before completing App Privacy disclosures.
 6. Add internal testers, verify on an actual iPhone and iPad, then complete Test Information and submit for external TestFlight review. Reviewer access must use a real supported login, not re-enabled email-only authentication.
+
+## Native build repairs after the first archive
+
+The first EAS build succeeded but Expo Doctor identified an incompatible duplicate font module (`expo-font` 57 alongside 14), a missing direct font dependency, a non-square app-config icon and older SDK patches. The replacement uses a direct SDK-54-compatible `expo-font` dependency, updated SDK 54/auth-session/web-browser patches, and the existing 1024-square native icon as its shared config asset. The icon artwork itself is unchanged. Font-loading errors now allow the app to open with fallback fonts instead of leaving an endless startup spinner. CI checks Expo package compatibility and duplicate native modules before compiling bundles.
+
+Expo Doctor now passes 17 of 18 checks locally. Its remaining warning is expected for this **committed native iOS project**: EAS does not automatically synchronize native config fields from app.json. Do not hide that warning or regenerate the iOS project blindly. The native identity, orientation, appearance, icon, launch artwork, permission text and entitlements must be maintained alongside app config; the Google scheme is applied by the checked-in post-install script. The new icon asset is byte-identical to the committed Xcode AppIcon.
+
+These are mobile/build changes; do not rerun the API database rollout solely for them. Build a new signed archive from the repaired commit and inspect its EAS logs before submitting that exact build ID. The refreshed lockfile plus the compatible `shell-quote` patch remove both previously reported critical audit findings. The remaining audit findings need a separate reviewed compatibility update; do not run `npm audit fix --force` or accept an accidental SDK-major migration to resolve them.
 
 ## Device acceptance before external testing
 
@@ -109,4 +120,4 @@ RevenueCat integration is implemented but **disabled until configured**. No acco
 - Apple server-to-server consent revocation/account deletion notifications and native credential-state recovery need a separate end-to-end lifecycle pass. One-use reauthorization covers user-initiated in-app deletion in this branch; it is not a substitute for every Apple account event.
 - A dedicated billing reconciliation/alerting job should recover from webhook delivery exhaustion and detect provider errors. Current access naturally expires and sync retries on purchase/restore or membership return, but dormant renewal recovery depends on successful webhook delivery.
 - The website cannot perform native Apple reauthorization; Apple-linked deletion directs users to their iPhone/iPad. Add a web Apple reauthorization flow if Apple accounts must be fully managed from web.
-- Final archive signing, native SDK/pod compilation and real-device behavior cannot be certified by TypeScript/web/unit checks in Linux. No claim of TestFlight readiness until the signed archive and device gates pass.
+- Initial archive signing and native compilation succeeded. The repaired replacement still requires a fresh signed archive, App Store Connect processing and real-device acceptance. Linux TypeScript/web/unit checks cannot certify those device gates.

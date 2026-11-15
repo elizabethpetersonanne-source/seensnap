@@ -7,7 +7,7 @@
     "version": "1.0.0",
     "orientation": "default",
     "userInterfaceStyle": "dark",
-    "icon": "./assets/branding/seensnap-logo.png",
+    "icon": "./assets/branding/app-icon.png",
     "splash": {
       "image": "./assets/branding/seensnap-logo.png",
       "resizeMode": "contain",
@@ -59,7 +59,7 @@
     "android": {
       "package": "com.seensnap.app",
       "adaptiveIcon": {
-        "foregroundImage": "./assets/branding/seensnap-logo.png",
+        "foregroundImage": "./assets/branding/app-icon.png",
         "backgroundColor": "#0b1424"
       },
       "googleServicesFile": "./google-services.json",

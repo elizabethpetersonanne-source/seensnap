@@ -20,6 +20,33 @@ test('release preflight refuses missing identity, development auth, and insecure
   assert.ok(checkRelease({...env, EXPO_PUBLIC_API_BASE_URL: 'http://localhost:8000/api/v1'}).length);
 });
 
+test('a rejected startup font load still opens the app instead of spinning forever', async () => {
+  let fontResult = [false, null];
+  const mocks = Object.fromEntries([
+    'expo-router', 'expo-notifications', '@/lib/session-storage',
+    '@expo-google-fonts/bodoni-moda', '@expo-google-fonts/ibm-plex-mono',
+    '@/lib/return-path', '@/components/detail-navigation', '@/components/did-you-watch-prompt',
+    '@/lib/api', '@/lib/backdrop-pool', '@/lib/onboarding', '@/lib/unread-notifications',
+    '@/lib/unread-messages', '@/lib/notifications',
+  ].map(name => [name, {}]));
+  const mod = load('app/_layout.tsx', {
+    ...mocks, react: React, 'react/jsx-runtime': require('react/jsx-runtime'),
+    '@expo-google-fonts/instrument-sans': { useFonts: () => fontResult },
+    'react-native': { StyleSheet: {create: x => x}, View: 'View', ActivityIndicator: 'ActivityIndicator' },
+    '@/constants/theme': {colors: {}},
+    '@/lib/auth': {AuthProvider: () => React.createElement('Application')},
+  });
+  let screen;
+  try {
+    await act(async () => { screen = renderer.create(React.createElement(mod.default)); });
+    assert.equal(screen.root.findAllByType('ActivityIndicator').length, 1);
+    fontResult = [false, new Error('Font failed to load')];
+    await act(async () => screen.update(React.createElement(mod.default)));
+    assert.equal(screen.root.findAllByType('ActivityIndicator').length, 0);
+    assert.equal(screen.root.findAllByType('Application').length, 1);
+  } finally { if (screen) await act(async () => screen.unmount()); }
+});
+
 test('native purchase identity stays bound throughout a purchase and account switch', async () => {
   const first = '11111111-1111-4111-8111-111111111111', second = '22222222-2222-4222-8222-222222222222';
   let uid, releasePurchase; const events = [];
