@@ -50,9 +50,20 @@ export default function TeamHomeScreen() {
   const { sessionToken } = useAuth();
   const router = useRouter();
   const { teamId } = useLocalSearchParams<{ teamId: string }>();
-  const [data, setData] = useState<TeamHomeSections | null>(null),
+  const [filters, setFilters] = useState<Partial<Record<SectionKey, boolean>>>({});
+  const scope = `${sessionToken}|${teamId}|${!!filters.both_want_to_watch}|${!!filters.watched}`;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+  const requests = useRef<AbortController | null>(null);
+  const [storedData, setData] = useState<TeamHomeSections | null>(null),
     [loading, setLoading] = useState(true),
     [error, setError] = useState<string | null>(null);
+  const data = loadedScope === scope && !loading ? storedData : null;
+  const teamList = useRef<FlatList<{ key: SectionKey; label: string }>>(null);
+  const scrollScope = `${sessionToken}|${teamId}`;
+  const scroll = useRef({ scope: scrollScope, y: 0 });
+  if (scroll.current.scope !== scrollScope) scroll.current = { scope: scrollScope, y: 0 };
   const [selected, setSelected] = useState<Partial<Record<SectionKey, string>>>(
     {},
   );
@@ -71,10 +82,11 @@ export default function TeamHomeScreen() {
     detailGeneration = useRef(0),
     mutating = useRef(false),
     loadingPages = useRef(new Set<SectionKey>()),
-    dataRef = useRef(data);
-  dataRef.current = data;
+    dataRef = useRef(storedData);
+  dataRef.current = loadedScope === scope ? storedData : null;
   useEffect(() => {
     setData(null);
+    setFilters(old => Object.keys(old).length ? {} : old);
     setSelected({});
     setStatusTitle(null);
     setDetailId(null);
@@ -86,15 +98,28 @@ export default function TeamHomeScreen() {
   useFocusEffect(
     useCallback(() => {
       const version = ++generation.current;
+      const previous = dataRef.current;
+      const request = new AbortController();
+      requests.current = request;
       loadingPages.current.clear();
       setError(null);
       setLoading(true);
-      if (!sessionToken || !teamId) return;
+      if (!sessionToken || !teamId) {
+        setData(null); setLoading(false);
+        return () => { request.abort(); generation.current++; };
+      }
       (async () => {
         try {
-          const next = await fetchTeamHome(sessionToken, teamId);
+          const next = await fetchTeamHome(sessionToken, teamId, request.signal);
+          for (const key of ["both_want_to_watch", "watched"] as const) {
+            if (!filters[key]) continue;
+            const page = await fetchTeamPage(sessionToken, teamId, key, 0, { allMembers: true, signal: request.signal });
+            if (version !== generation.current || scopeRef.current !== scope) return;
+            next[key] = page.items;
+            next.totals[key] = page.total;
+            next.next_offsets[key] = page.next_offset;
+          }
           // Preserve access to a selected title beyond page one after returning.
-          const previous = dataRef.current;
           if (previous?.team_id === teamId)
             for (const { key } of SECTIONS) {
               while (
@@ -106,6 +131,7 @@ export default function TeamHomeScreen() {
                   teamId,
                   key,
                   next.next_offsets[key]!,
+                  { allMembers: filters[key], signal: request.signal },
                 );
                 if (version !== generation.current) return;
                 next[key].push(...page.items);
@@ -113,11 +139,10 @@ export default function TeamHomeScreen() {
                 next.totals[key] = page.total;
               }
             }
-          if (version === generation.current) setData(next);
+          if (version === generation.current && scopeRef.current === scope) { setData(next); setLoadedScope(scope); }
         } catch (e) {
           if (version === generation.current) {
-            if (e instanceof ApiError && [403, 404].includes(e.status))
-              setData(null);
+            setData(null);
             setError(
               "Could not load this team. Check your connection and membership, then retry.",
             );
@@ -127,10 +152,11 @@ export default function TeamHomeScreen() {
         }
       })();
       return () => {
+        request.abort();
         generation.current++;
         detailGeneration.current++;
       };
-    }, [teamId, sessionToken, reload]),
+    }, [teamId, sessionToken, reload, scope, filters]),
   );
   async function more(key: SectionKey) {
     const offset = data?.next_offsets[key];
@@ -139,7 +165,7 @@ export default function TeamHomeScreen() {
     const version = generation.current;
     loadingPages.current.add(key);
     try {
-      const page = await fetchTeamPage(sessionToken, teamId, key, offset);
+      const page = await fetchTeamPage(sessionToken, teamId, key, offset, { allMembers: filters[key], signal: requests.current?.signal });
       if (version !== generation.current) return;
       setData((old) =>
         old
@@ -155,9 +181,11 @@ export default function TeamHomeScreen() {
             }
           : old,
       );
-    } catch {
-      if (version === generation.current)
-        setError("Could not load more titles. Scroll again to retry.");
+    } catch (failure) {
+      if (version === generation.current) {
+        if (failure instanceof ApiError && [401, 403, 404].includes(failure.status)) setData(null);
+        setError("Could not load more titles. Check your membership and retry.");
+      }
     } finally {
       if (version === generation.current) loadingPages.current.delete(key);
     }
@@ -335,23 +363,44 @@ export default function TeamHomeScreen() {
           <ActivityIndicator color={colors.accent} />
         ) : data ? (
           <FlatList
+            ref={teamList}
+            contentOffset={{ x: 0, y: scroll.current.y }}
+            onScroll={event => { scroll.current.y = event.nativeEvent.contentOffset.y; }}
+            scrollEventThrottle={100}
+            onLayout={() => teamList.current?.scrollToOffset({ offset: scroll.current.y, animated: false })}
             data={SECTIONS}
             keyExtractor={(s) => s.key}
             snapToInterval={viewport}
             decelerationRate="fast"
             showsVerticalScrollIndicator={false}
             renderItem={({ item: section }) => {
+              const filterable = data.member_count > 2 && ["both_want_to_watch", "watched"].includes(section.key);
+              const allMembers = !!filters[section.key];
               const titles = data[section.key],
                 hero =
                   titles.find((t) => t.id === selected[section.key]) ??
                   titles[0];
               return (
                 <View style={{ height: viewport }}>
+                  {filterable ? <View style={styles.filters}>
+                    {([false, true] as const).map(all => (
+                      <Pressable key={String(all)} accessibilityRole="button"
+                        accessibilityLabel={`${section.key === "watched" ? "Watched" : "Want to watch"}: ${all ? "all members" : section.key === "watched" ? "any member" : "at least two members"}`}
+                        accessibilityState={{ selected: allMembers === all }}
+                        style={[styles.filter, allMembers === all && styles.filterSelected]}
+                        onPress={() => {
+                          setSelected(old => ({ ...old, [section.key]: undefined }));
+                          setFilters(old => ({ ...old, [section.key]: all }));
+                        }}>
+                        <Text style={styles.accent}>{all ? "All members" : section.key === "watched" ? "Any member" : "At least two"}</Text>
+                      </Pressable>
+                    ))}
+                  </View> : null}
                   {hero ? (
                     <>
                       <FullBleedPosterSection
-                        heroHeight={Math.max(220, viewport - 56)}
-                        sectionKicker={`${section.key === "both_want_to_watch" && data.member_count > 2 ? "MEMBERS WANT TO WATCH" : section.label} · ${data.totals[section.key]}`}
+                        heroHeight={Math.max(180, viewport - 56 - (filterable ? 56 : 0))}
+                        sectionKicker={`${allMembers ? section.key === "watched" ? "WATCHED BY ALL" : "ALL WANT TO WATCH" : section.key === "both_want_to_watch" && data.member_count > 2 ? "MEMBERS WANT TO WATCH" : section.label} · ${data.totals[section.key]}`}
                         hero={hero}
                         four={titles}
                         railActions={rail(hero)}
@@ -380,7 +429,9 @@ export default function TeamHomeScreen() {
                     <View style={styles.empty}>
                       <Text style={styles.title}>{section.label}</Text>
                       <Text style={styles.body}>
-                        {section.key === "both_want_to_watch"
+                        {allMembers
+                          ? "No titles have this status shared by every current team member yet. Personal saves and ratings stay private until shared with the team."
+                          : section.key === "both_want_to_watch"
                           ? "Titles appear here when at least two members explicitly share Want to Watch."
                           : section.key === "watched"
                             ? "Titles appear here when a member shares Watched with this team."
@@ -438,7 +489,7 @@ export default function TeamHomeScreen() {
         onClose={() => setAction(null)}
       />
       <Modal
-        visible={!!statusTitle}
+        visible={!!data && !!statusTitle}
         transparent
         animationType="fade"
         onRequestClose={() => {
@@ -553,6 +604,9 @@ export default function TeamHomeScreen() {
 const styles = StyleSheet.create({
   root: { flex: 1, backgroundColor: colors.background },
   row: { flexDirection: "row" },
+  filters: { flexDirection: "row", gap: 8, paddingHorizontal: 16, height: 56, alignItems: "center" },
+  filter: { minHeight: 44, paddingHorizontal: 12, justifyContent: "center", borderRadius: 22, borderWidth: 1, borderColor: colors.muted },
+  filterSelected: { borderColor: colors.accent, backgroundColor: colors.surface },
   icon: {
     width: 44,
     height: 44,
