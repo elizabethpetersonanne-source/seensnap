@@ -105,6 +105,17 @@ Expo Doctor now passes 17 of 18 checks locally. Its remaining warning is expecte
 
 These are mobile/build changes; do not rerun the API database rollout solely for them. Build a new signed archive from the repaired commit and inspect its EAS logs before submitting that exact build ID. The refreshed lockfile plus the compatible `shell-quote` patch remove both previously reported critical audit findings. The remaining audit findings need a separate reviewed compatibility update; do not run `npm audit fix --force` or accept an accidental SDK-major migration to resolve them.
 
+## Verified replacement build — November 15, 2026
+
+- Source commit: `fde29693d268b1db4ae4ca800f371af03415c9b9`.
+- EAS build: `3e95bb1a-b6bb-413f-9d6b-fbc584934596`, version **1.0.0 (2)**, store distribution, `testflight` profile / `preview` environment.
+- Result: **Succeeded**, signed IPA available; 3m 55s build time, 4m 19s total. Dashboard: https://expo.dev/accounts/lizzy456/projects/seensnap/builds/3e95bb1a-b6bb-413f-9d6b-fbc584934596
+- Cloud Expo Doctor confirms 17/18 checks; only the documented committed-native-config warning remains.
+- GitHub Actions run `43760591310` passed deployment safety, API/migrations and mobile/web checks. Client tests, typecheck, dependency compatibility, autolinking and both bundle exports passed.
+- Dependency audit: 0 critical, 13 high, 18 moderate, 2 low; these counts are package findings, not an assessment of runtime exploitability. Further audit triage remains required.
+- A follow-up download of build 2 timed out, then browser URL security blocked inspection. Build success and availability were observed in Expo; the replacement IPA itself was not independently inspected locally.
+- No App Store Connect upload has been confirmed. From the authenticated Cloud Shell EAS session, submit **this exact build ID** using `npx --yes eas-cli@latest submit --platform ios --profile testflight --id 3e95bb1a-b6bb-413f-9d6b-fbc584934596 --no-wait --no-auto-testflight-setup`. Apple upload credentials may still need configuration; signing credentials alone do not confirm submission access.
+
 ## Device acceptance before external testing
 
 - Existing Google user retains picks, rankings and teams; new Apple user (including Hide My Email) completes onboarding. Sign-out/account switch and a canceled/error login leave usable controls.
@@ -120,4 +131,4 @@ These are mobile/build changes; do not rerun the API database rollout solely for
 - Apple server-to-server consent revocation/account deletion notifications and native credential-state recovery need a separate end-to-end lifecycle pass. One-use reauthorization covers user-initiated in-app deletion in this branch; it is not a substitute for every Apple account event.
 - A dedicated billing reconciliation/alerting job should recover from webhook delivery exhaustion and detect provider errors. Current access naturally expires and sync retries on purchase/restore or membership return, but dormant renewal recovery depends on successful webhook delivery.
 - The website cannot perform native Apple reauthorization; Apple-linked deletion directs users to their iPhone/iPad. Add a web Apple reauthorization flow if Apple accounts must be fully managed from web.
-- Initial archive signing and native compilation succeeded. The repaired replacement still requires a fresh signed archive, App Store Connect processing and real-device acceptance. Linux TypeScript/web/unit checks cannot certify those device gates.
+- Initial archive signing and native compilation succeeded. The repaired replacement archive also succeeded. App Store Connect upload/processing and real-device acceptance remain pending. Linux TypeScript/web/unit checks cannot certify those device gates.
