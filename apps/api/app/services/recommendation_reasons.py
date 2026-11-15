@@ -5,6 +5,7 @@ connection. A save is interest, not proof of enjoyment; broad format/language
 overlap alone is not a personal recommendation. Never infer mood from a genre.
 """
 from collections import defaultdict
+from app.services.taste_semantics import semantic_similarity
 
 
 def action_phrase(signal, title):
@@ -80,8 +81,11 @@ class PersonalReasons:
                     if attr not in self.labels[key][dim]:
                         continue
                     other = self.scorer.features.get(key, {})
-                    strength = 0.
-                    for dimension, weight in (("exemplars", .6), ("directors", .25), ("actors", .15)):
+                    theme_overlap = semantic_similarity(features.get("exemplars", {}), other.get("exemplars", {}))
+                    if dim == "exemplars" and not theme_overlap:
+                        continue
+                    strength = .6 * theme_overlap
+                    for dimension, weight in (("directors", .25), ("actors", .15)):
                         a, b = set(features.get(dimension, {})), set(other.get(dimension, {}))
                         if a and b:
                             strength += weight * len(a & b) / len(a | b)

@@ -223,9 +223,60 @@ def test_old_generic_session_is_invalidated_without_recording_a_swipe(db, monkey
     monkeypatch.setattr(feed, "private_sources", lambda *a: ([], []))
     monkeypatch.setattr(feed, "catalog_page", lambda *a: {"rows": [data(500, 100)], "done": True, "cap": False})
     new_algorithm = feed.ALGORITHM
-    monkeypatch.setattr(feed, "ALGORITHM", "discovery_v4:scenedna_title_v2")
+    monkeypatch.setattr(feed, "ALGORITHM", "discovery_v5:scenedna_title_v3")
     old = feed.get_feed(db, viewer.id, preferred_type="movie")
     monkeypatch.setattr(feed, "ALGORITHM", new_algorithm)
     with pytest.raises(HTTPException) as error:
         feed.get_feed(db, viewer.id, preferred_type="movie", cursor=old["resume_cursor"])
     assert error.value.status_code == 409
+
+
+def themed_title(number, keywords):
+    return ContentTitle(id=uuid4(), tmdb_id=number, title=f"Title {number}",
+                        content_type="movie", genres=["Drama"], release_date=date(2020, 1, 1),
+                        metadata_raw={"original_language": "en", "keywords": {"keywords": keywords}})
+
+
+@pytest.mark.parametrize("weak_name", ["sequel", "friendship", "new york city", "ambiguous",
+                                       "intense", "based on novel or book"])
+def test_generic_keyword_does_not_retrieve_or_outvote_actual_taste_matches(weak_name):
+    weak = {"id": 99, "name": weak_name}
+    themes = [{"id": 101, "name": "found family"}, {"id": 102, "name": "family road trip"}]
+    favorites = [themed_title(n, [weak, *themes]) for n in range(8)]
+    generic = [themed_title(n, [weak]) for n in range(100, 105)]
+    # Rich descriptions should not lose to a sparse record with one generic tag.
+    good = [themed_title(n, themes + [{"id": 200+j, "name": f"Distinct story detail {j}"}
+                                     for j in range(7)]) for n in range(200, 205)]
+    scorer = TitleScorer({t.id: Evidence(t.id, 1, "rating", rating=10) for t in favorites}, 8,
+                        {t.id: title_features(t) for t in favorites},
+                        titles={t.id: t for t in favorites})
+    candidates = {str(t.id): t for t in generic + good}
+    scores = {key: scorer.score(t) for key, t in candidates.items()}
+    selected, _ = personal.compose(candidates, scores, {}, 4)
+    assert sum(candidates[key] in good for key in selected) >= 3
+    for t in generic:
+        assert not personal.specific_match(scores[str(t.id)])
+        assert weak_name not in scores[str(t.id)].explanation
+        assert scorer.reasons.connection(t, title_features(t)) is None
+    planned = personal.plan_sources(scorer, favorites, {}, "movie")
+    assert all(j["params"].get("with_keywords") != "99" for j in planned)
+
+
+def test_incidental_theme_overlap_cannot_accumulate_across_many_favorites():
+    shared = {"id": 101, "name": "unexpected visitor"}
+    favorites = [themed_title(n, [shared] + [{"id": 1000+n*100+j, "name": f"Theme {n}-{j}"}
+                                             for j in range(10)]) for n in range(24)]
+    candidate = themed_title(900, [shared] + [{"id": 90000+j, "name": f"Other theme {j}"}
+                                             for j in range(10)])
+    scorer = TitleScorer({t.id: Evidence(t.id, 1, "rating", rating=10) for t in favorites}, 24,
+                        {t.id: title_features(t) for t in favorites},
+                        titles={t.id: t for t in favorites})
+    match = scorer.score(candidate)
+    assert not personal.specific_match(match)
+    assert "exemplars" not in match.available_dimensions
+    assert scorer.reasons.connection(candidate, title_features(candidate)) is None
+
+
+def test_missing_keyword_names_do_not_manufacture_semantic_evidence():
+    row = themed_title(1, [{"id": 3}, {"id": 4, "name": " "}, {"id": 5, "name": "found family"}])
+    assert title_features(row)["exemplars"] == {"keyword:5": 1.0}

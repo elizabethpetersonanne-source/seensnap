@@ -30,6 +30,7 @@ from app.models.taste import SwipeRecord, TitleFeatures
 from app.models.user import UserProfile
 from app.models.watch_handoff import WatchHandoff
 from app.schemas.scenedna import TitleCompatibility, SceneDnaDimension
+from app.services.taste_semantics import personal_keyword, semantic_similarity
 
 
 def _utc(value):
@@ -67,7 +68,7 @@ def title_features(title, enriched=None, providers=()):
     semantic = {
         "keyword:" + str(k["id"])
         for k in keywords
-        if isinstance(k, dict) and type(k.get("id")) is int and k["id"] > 0
+        if personal_keyword(k)
     }
     # tmdb_v0 tone/pacing/story labels are broad genre/runtime heuristics.
     # They cannot earn another 28% of apparent evidence for the same genre.
@@ -207,13 +208,7 @@ class TitleScorer:
                 for key in related:
                     signal = self.evidence[key]
                     other = self.features.get(key, {}).get("exemplars", {})
-                    union = set(attrs) | set(other)
-                    total = sum(max(attrs.get(k, 0), other.get(k, 0)) for k in union)
-                    similarity = (
-                        sum(min(attrs.get(k, 0), other.get(k, 0)) for k in union) / total
-                        if total
-                        else 0
-                    )
+                    similarity = semantic_similarity(attrs, other)
                     if similarity <= 0:
                         continue
                     weight = similarity * signal.boost
