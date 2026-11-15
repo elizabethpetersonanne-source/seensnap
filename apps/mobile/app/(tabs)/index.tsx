@@ -8,6 +8,7 @@ import {
   Animated,
   FlatList,
   Image,
+  Keyboard,
   Linking,
   Pressable,
   ScrollView,
@@ -220,6 +221,8 @@ function SearchResultRow({
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Open ${item.title}`}
       style={({ pressed }) => [styles.searchRow, pressed && styles.pressed]}
     >
       {item.artwork ? (
@@ -673,6 +676,10 @@ export default function DiscoverScreen() {
     void addRecentSearch(query.trim());
     if (item.entity_type === "movie" || item.entity_type === "series") {
       openTitleModal(item.entity_id);
+    } else if (item.entity_type === "person") {
+      // Keep the query, selected tab and results mounted for the return trip.
+      Keyboard.dismiss();
+      router.push({ pathname: "/person/[tmdbId]", params: { tmdbId: item.entity_id } });
     } else if (item.entity_type === "collection") {
       deactivateSearch();
       // Navigate to collection screen (future route)
