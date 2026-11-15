@@ -354,7 +354,11 @@ not a hidden alteration of the displayed SceneDNA percentage.
             return sum(h.get("anchor") == anchors[key] for h in recent[-9:]) if key in anchors else 0
         # Do not serve seven titles from one favorite when credible alternatives
         # exist. This diversifies the titles themselves, not just the wording.
-        alternatives = [key for key in choices if anchor_count(key) < 3]
+        best_score = max(scores[key].score if scores[key].score is not None else 50 for key in choices)
+        has_specific = target == "taste" and any(specific_match(scores[key]) for key in choices)
+        alternatives = [key for key in choices if anchor_count(key) < 3
+                        and (scores[key].score if scores[key].score is not None else 50) >= best_score - 8
+                        and (not has_specific or specific_match(scores[key]))]
         if alternatives:
             choices = alternatives
         def order(key):

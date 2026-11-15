@@ -175,6 +175,15 @@ def test_title_selection_limits_repeated_anchors_when_alternatives_exist():
         assert max(sum(anchors[k] == anchor for k in window) for anchor in anchors.values()) <= 3
 
 
+def test_anchor_diversity_does_not_promote_weak_picks_over_verified_matches():
+    titles = {str(n): ContentTitle(title=str(n), genres=["Drama"], release_date=date(2020, 1, 1)) for n in range(20)}
+    scores = {str(n): SimpleNamespace(score=85 if n < 10 else 51, confidence=.8,
+              breakdown=[SimpleNamespace(dimension="exemplars" if n < 10 else "genres", score=90)]) for n in range(20)}
+    anchors = {str(n): "strong-favorite" if n < 10 else f"weak-{n}" for n in range(20)}
+    selected, _ = personal.compose(titles, scores, {}, 8, anchors=anchors, related=set(titles))
+    assert all(int(key) < 10 for key in selected)
+
+
 def test_metadata_inspection_cannot_be_consumed_by_one_source(db):
     viewer = user(db)
     waiting, origins = {}, {}
