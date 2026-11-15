@@ -86,3 +86,51 @@ test('Google cancellation is quiet; successful code exchange uses the real endpo
   h=await authHarness({result:{type:'success',params:{code:'one-use-code'}}});
   try {await act(async()=>h.auth.signInWithGoogle());assert.deepEqual(h.requests,['/auth/google']);assert.equal(h.auth.sessionToken,'seen-token');}finally{await h.close();}
 });
+
+async function premiumHarness() {
+  let screen, token='account-a', answer={tier:'free',sources:[],is_beta:false,verified:true,expires_at:null}, sync=async()=>answer;
+  const config={available:true,purchases_enabled:true,purchase_allowed:true,product_ids:['monthly'],sandbox_tester:true};
+  const packageValue={identifier:'monthly',packageType:'MONTHLY',product:{identifier:'monthly',priceString:'$4.99',subscriptionPeriod:'P1M'}};
+  const native=Object.fromEntries(['ActivityIndicator','Pressable','ScrollView','Text','View'].map(x=>[x,x]));
+  native.AppState={addEventListener:()=>({remove(){}})};native.Linking={openURL:async()=>{}};
+  const mod=load('app/settings/premium.tsx',{
+    react:React,'react/jsx-runtime':require('react/jsx-runtime'),'react-native':native,
+    'expo-router':{useFocusEffect:callback=>React.useEffect(callback,[callback])},
+    'react-native-safe-area-context':{SafeAreaView:'SafeAreaView'},'@/components/headers/app-header':{AppHeader:'AppHeader'},
+    '@/constants/theme':{colors:{},fonts:{}},'@/lib/auth':{useAuth:()=>({sessionToken:token,user:{user_id:token}})},
+    '@/lib/api':{apiRequest:async(url)=>url==='/billing/config'?{...config}:sync()},
+    '@/lib/entitlement':{fetchEntitlement:async()=>({tier:'free',sources:[],is_beta:false,verified:true,expires_at:null})},
+    '@/lib/membership-events':{membershipChanged(){}},
+    '@/lib/purchases':{nativePurchasesAvailable:true,storePackages:async()=>[packageValue],buyPackage:async()=>{},restoreStorePurchases:async()=>{}},
+  },{process:{env:{}}});
+  await act(async()=>{screen=renderer.create(React.createElement(mod.default));});
+  const text=()=>JSON.stringify(screen.toJSON());
+  const button=label=>screen.root.findAllByType('Pressable').find(node=>node.findAllByType('Text').flatMap(x=>x.props.children).flat(Infinity).join('').includes(label));
+  return {screen,text,button,setSync(fn){sync=fn;},async switchAccount(){token='account-b';await act(async()=>screen.update(React.createElement(mod.default,{update:1})));},async close(){await act(async()=>screen.unmount());}};
+}
+
+test('Apple success cannot claim Premium until server verification; pending purchase keeps restore available',async()=>{
+  const h=await premiumHarness();
+  try {
+    await act(async()=>h.button('Monthly Premium').props.onPress());
+    assert.ok(h.text().includes('Verification is still pending'));
+    assert.ok(!h.text().includes('Premium is active'));
+    assert.equal(h.button('Monthly Premium').props.disabled,true);
+    assert.equal(h.button('Restore purchases').props.disabled,false);
+    h.setSync(async()=>({tier:'premium',sources:['purchase'],verified:true,is_beta:false,expires_at:'2026-12-15'}));
+    await act(async()=>h.button('Restore purchases').props.onPress());
+    assert.ok(h.text().includes('Premium is active'));
+  } finally {await h.close();}
+});
+
+test('late purchase confirmation cannot update the next account or leave its controls stuck',async()=>{
+  const h=await premiumHarness();let resolveSync;
+  try {
+    h.setSync(()=>new Promise(resolve=>resolveSync=resolve));
+    await act(async()=>h.button('Monthly Premium').props.onPress());
+    await h.switchAccount();
+    await act(async()=>resolveSync({tier:'premium',sources:['purchase'],verified:true,is_beta:false,expires_at:null}));
+    assert.ok(!h.text().includes('Premium is active'));
+    assert.equal(h.button('Monthly Premium').props.disabled,false);
+  } finally {await h.close();}
+});

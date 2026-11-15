@@ -22,13 +22,15 @@ export default function PremiumSettings() {
   const [busy, setBusy] = useState(false);
   const [verificationPending, setVerificationPending] = useState(false);
   const operation = useRef(false);
+  const reads = useRef(0);
   const currentAccount = useRef(sessionToken);
   currentAccount.current = sessionToken;
   useFocusEffect(useCallback(() => {
     let active = true;
-    const valid = () => active && currentAccount.current === sessionToken;
     setMembership(null); setBilling(null); setPackages([]); setError(null); setNotice(null); setBusy(operation.current); setVerificationPending(false);
     async function load() {
+      const generation = ++reads.current;
+      const valid = () => active && currentAccount.current === sessionToken && reads.current === generation;
       if (!sessionToken || !user) return;
       try {
         const ent = await fetchEntitlement(sessionToken);
@@ -59,6 +61,7 @@ export default function PremiumSettings() {
 
   async function transact(pack?: StorePackage) {
     if (!sessionToken || !user || operation.current || !billing?.available) return;
+    reads.current++;
     operation.current = true; setBusy(true); setError(null); setNotice(null);
     const token = sessionToken;
     const valid = () => currentAccount.current === token;
@@ -86,7 +89,7 @@ export default function PremiumSettings() {
         : "We couldn't verify the purchase or restore. If Apple confirmed payment, use Restore purchases to check again before trying another purchase.");
     } finally {
       operation.current = false;
-      if (valid()) setBusy(false);
+      setBusy(false);
     }
   }
   const purchased = membership?.sources.includes("purchase");
