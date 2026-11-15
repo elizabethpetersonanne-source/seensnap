@@ -170,6 +170,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
                 UUID(item.get("title_id") or item["title"]["id"]) for item in response["items"]
             ]))).all()
             scorer = scorer_for_user(db, user_id, rows)
+            rows_by_id = {str(row.id): row for row in rows}
             matches = {str(row.id):scorer.score(row).model_dump(mode="json") for row in rows}
             current_sources = source_labels(*private_sources(db, user_id, excluded))
             for item in response["items"]:
@@ -187,8 +188,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
                         item["reason"] = {**old_reason, "label": label} if isinstance(old_reason, dict) else label
                     else:
                         origin = session.state.get("served_origins", {}).get(key)
-                        fallback = matches[key]["explanation"] if matches[key]["score"] is not None else "Available to stream in your region · learning your taste"
-                        label = personal.personal_reason(db, scorer, origin) or fallback
+                        label = personal.personal_reason(db, scorer, origin, rows_by_id[key]) or matches[key]["explanation"]
                         item["reason"] = {**old_reason, "label": label} if isinstance(old_reason, dict) else label
             return response
         if requested_version != session.version:
@@ -386,8 +386,8 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
         origin = state.get("taste_waiting", {}).pop(key, None)
         if origin:
             state.setdefault("served_origins", {})[key] = origin
-        seed_reason = personal.personal_reason(db, scorer, origin)
-        reason = source_reasons.get(key) or seed_reason or (compatibility.explanation if matching else "Available to stream in your region · learning your taste")
+        seed_reason = personal.personal_reason(db, scorer, origin, title)
+        reason = seed_reason or source_reasons.get(key) or compatibility.explanation
         if surface == "preview":
             items.append({"feed_item_id": f"pfi-{title.id}", "title_id": str(title.id), "tmdb_id": title.tmdb_id,
                 "media_type": title.content_type, "title": title.title, "year": title.release_date.year,

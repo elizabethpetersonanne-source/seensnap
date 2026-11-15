@@ -119,13 +119,10 @@ def resume_discovery(payload: ResumeRequest, current_user: CurrentUser, db: DbSe
         order, _ = compose(tail, {key: scorer.score(row) for key, row in tail.items()}, {}, len(tail))
         rows = rows[:2] + [tail[key] for key in order]
     items = []
+    from app.services.discovery_personalization import personal_reason
     for row in rows:
         match = scorer.score(row)
-        reason = (
-            match.explanation
-            if match.score is not None
-            else "Available in your region · learning your taste"
-        )
+        reason = personal_reason(db, scorer, state.get("served_origins", {}).get(str(row.id)), row) or match.explanation
         if payload.surface == "swipe":
             dto = _to_title_response(row)
             dto.scenedna = match

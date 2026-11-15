@@ -46,6 +46,7 @@ import { useDiscoveryFilter } from "@/lib/discovery-filter";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 import { recordWatchHandoff } from "@/lib/watch-handoff";
 import { mergeDiscoveryRerank } from "@/lib/discovery-rerank";
+import { EditorialSheet } from "@/components/editorial-sheet";
 
 type RecommendationItem = {
   title: {
@@ -142,6 +143,7 @@ export default function SwipeTab() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [showFilters, setShowFilters] = useState(true);
   const [showHelp, setShowHelp] = useState(true);
+  const [showReason, setShowReason] = useState(false);
   const generationRef = useRef(0);
   const pageRequestRef = useRef<number | null>(null);
   const swipingRef = useRef(false);
@@ -391,6 +393,7 @@ export default function SwipeTab() {
   const deckExhausted = !activeCard;
   const nextCards = useMemo(() => deck.slice(currentIndex + 1, currentIndex + 3), [deck, currentIndex]);
   const currentDetail = activeCard ? detailCache[activeCard.title.id] ?? null : null;
+  useEffect(() => { setShowReason(false); }, [activeCard?.title.id, sessionToken]);
   useEffect(() => {
     // Hydrate the active card AND the next two in parallel. The user
     // reported that synopsis / streaming / "why it's here" popped in a
@@ -828,12 +831,16 @@ export default function SwipeTab() {
         </Text>
       ) : null}
       {activeCard.reason ? (
-        <View style={styles.detailsReasonBlock}>
+        <Pressable style={[styles.detailsReasonBlock, { minHeight: 44 }]}
+          accessibilityRole="button" accessibilityLabel={`Why this is for you: ${activeCard.reason}`}
+          accessibilityHint="Opens the full recommendation explanation"
+          onPress={() => setShowReason(true)}>
           <View style={styles.detailsReasonRule} />
           <View style={{ flex: 1 }}>
             <View style={styles.detailsReasonLabelRow}>
               <Ionicons name="albums" size={11} color={colors.accent} />
               <Text style={styles.detailsReasonLabel}>WHY IT'S HERE</Text>
+              <Ionicons name="chevron-forward" size={12} color={colors.muted} />
             </View>
             <Text
               style={styles.detailsReasonText}
@@ -842,7 +849,7 @@ export default function SwipeTab() {
               {humanizeReason(activeCard.reason)}
             </Text>
           </View>
-        </View>
+        </Pressable>
       ) : null}
       {activeStreaming.length > 0 ? (
         <View style={styles.providerStrip}>
@@ -1185,16 +1192,20 @@ export default function SwipeTab() {
               <View style={styles.unifiedDivider} />
 
               {activeCard.reason ? (
-                <View style={styles.unifiedWhyBlock}>
+                <Pressable style={[styles.unifiedWhyBlock, { minHeight: 44 }]}
+                  accessibilityRole="button" accessibilityLabel={`Why this is for you: ${activeCard.reason}`}
+                  accessibilityHint="Opens the full recommendation explanation"
+                  onPress={() => setShowReason(true)}>
                   <View style={styles.unifiedWhyRule} />
                   <View style={{ flex: 1 }}>
                     <View style={styles.unifiedWhyLabelRow}>
                       <Ionicons name="albums" size={11} color={colors.accent} />
                       <Text style={styles.unifiedWhyLabel}>WHY IT'S HERE</Text>
+                      <Ionicons name="chevron-forward" size={12} color={colors.muted} />
                     </View>
                     <Text style={styles.unifiedWhyText} numberOfLines={2}>{humanizeReason(activeCard.reason)}</Text>
                   </View>
-                </View>
+                </Pressable>
               ) : null}
 
               {activeStreaming.length > 0 ? (
@@ -1425,6 +1436,19 @@ export default function SwipeTab() {
         </View>
       ) : null}
 
+      <EditorialSheet visible={showReason && !!activeCard} onClose={() => setShowReason(false)}
+        title="Why this is for you" supporting={activeCard?.title.title}
+        contentStyle={{ maxHeight: "80%", width: "100%", maxWidth: 600, alignSelf: "center" }}
+        right={<Pressable accessibilityRole="button" accessibilityLabel="Close recommendation explanation"
+          onPress={() => setShowReason(false)} style={{ minWidth: 44, minHeight: 44, alignItems: "center", justifyContent: "center" }}>
+          <Ionicons name="close" size={22} color={colors.ink} />
+        </Pressable>}>
+        <ScrollView style={{ flexShrink: 1 }} contentContainerStyle={{ paddingBottom: spacing.lg }}>
+          <Text style={{ color: colors.ink, fontFamily: fonts.sans, fontSize: 17, lineHeight: 26 }}>
+            {activeCard?.reason}
+          </Text>
+        </ScrollView>
+      </EditorialSheet>
       <UniversalTitleModal
         visible={showDetails}
         loading={detailLoading}
