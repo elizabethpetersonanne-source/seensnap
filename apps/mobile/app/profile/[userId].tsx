@@ -1,3 +1,4 @@
+import { useRetainedScroll } from "@/lib/use-retained-scroll";
 import { SHARE_BASE } from "@/lib/share";
 /**
  * Oct-18 UI/UX rebuild: immersive public profile pod.
@@ -128,9 +129,8 @@ export default function PublicProfileScreen() {
   const ranked = loadedScope === scope ? storedRanked : [];
   const lists = loadedScope === scope ? storedLists : [];
   const posts = loadedScope === scope ? storedPosts : [];
-  const position = useRef({ scope, y: 0 });
-  if (position.current.scope !== scope) position.current = { scope, y: 0 };
-  const listRef = useRef<FlatList<{ key: PageKey }>>(null);
+  const scroll = useRetainedScroll<{ key: PageKey }>(scope, !!profile);
+  const listRef = scroll.ref;
 
   useFocusEffect(
     useCallback(() => {
@@ -266,11 +266,7 @@ export default function PublicProfileScreen() {
         </View>
       ) : (
         <FlatList
-          ref={listRef}
-          contentOffset={{ x: 0, y: position.current.y }}
-          onScroll={event => { position.current.y = event.nativeEvent.contentOffset.y; }}
-          scrollEventThrottle={100}
-          onLayout={() => listRef.current?.scrollToOffset({ offset: position.current.y, animated: false })}
+          {...scroll}
           data={pages}
           keyExtractor={(p) => p.key}
           snapToInterval={sectionHeight}

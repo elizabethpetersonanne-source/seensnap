@@ -112,6 +112,7 @@ test('profile refresh cannot retain old activity, rankings, or a late title resp
     '@/lib/universal-title':{fetchUniversalTitle:(_token,id,_seed,options)=>{const d=deferred();details.push({id,options,...d});return d.promise;}},
   };
   for(const [file,name] of [['headers/app-header','AppHeader'],['protected-image','ProtectedImage'],['avatar','Avatar'],['compatibility-sheet','CompatibilitySheet'],['full-bleed-poster-section','FullBleedPosterSection'],['universal-title-modal','UniversalTitleModal']]) mocks[`@/components/${file}`]={[name]:name};
+  mocks['@/lib/use-retained-scroll']=load('src/lib/use-retained-scroll.ts',mocks);
   const Component=load('app/profile/[userId].tsx',mocks).default;
   await act(async()=>{screen=renderer.create(React.createElement(Component));});
   const profile=id=>({user_id:id,display_name:id,username:id,taste_labels:[],favorite_genres:[],current_obsessions:[],top_posters:[]});
@@ -131,5 +132,33 @@ test('profile refresh cannot retain old activity, rankings, or a late title resp
     token='other-viewer';await act(async()=>screen.update(React.createElement(Component)));
     assert.equal(screen.root.findByType('AppHeader').props.title,'Profile');
     assert.equal(screen.root.findAllByType('FlatList').length,0);
+  } finally {await act(async()=>screen.unmount());}
+});
+
+test('return scroll ignores the temporary zero offset until virtual content has laid out',async()=>{
+  let focused=true,ready=true,scope='viewer|list',state,screen;
+  const moves=[];
+  const {useRetainedScroll}=load('src/lib/use-retained-scroll.ts',{'expo-router':{
+    useFocusEffect:callback=>React.useEffect(()=>focused?callback():undefined,[callback,focused]),
+  }});
+  function Harness(){state=useRetainedScroll(scope,ready);state.ref.current={scrollToOffset:position=>moves.push(position.offset)};return null;}
+  const update=()=>act(async()=>screen.update(React.createElement(Harness)));
+  await act(async()=>{screen=renderer.create(React.createElement(Harness));});
+  try {
+    state.onLayout({nativeEvent:{layout:{height:600}}});state.onContentSizeChange(390,10000);
+    state.onScroll({nativeEvent:{contentOffset:{y:8400}}});
+    focused=false;await update();focused=true;ready=false;await update();
+    state.onScroll({nativeEvent:{contentOffset:{y:0}}});
+    ready=true;await update();
+    state.onLayout({nativeEvent:{layout:{height:600}}});
+    assert.equal(moves.at(-1),0);
+    state.onContentSizeChange(390,10000);assert.equal(moves.at(-1),8400);
+    state.onScroll({nativeEvent:{contentOffset:{y:8400}}});
+    state.onScroll({nativeEvent:{contentOffset:{y:8300}}});
+    ready=false;await update();ready=true;await update();
+    state.onContentSizeChange(390,10000);state.onLayout({nativeEvent:{layout:{height:600}}});
+    assert.equal(moves.at(-1),8300);
+    scope='other-viewer|list';await update();state.onLayout({nativeEvent:{layout:{height:600}}});state.onContentSizeChange(390,10000);
+    assert.equal(moves.at(-1),0);
   } finally {await act(async()=>screen.unmount());}
 });

@@ -1,3 +1,4 @@
+import { useRetainedScroll } from "@/lib/use-retained-scroll";
 import { Ionicons } from "@expo/vector-icons";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -60,10 +61,7 @@ export default function TeamHomeScreen() {
     [loading, setLoading] = useState(true),
     [error, setError] = useState<string | null>(null);
   const data = loadedScope === scope && !loading ? storedData : null;
-  const teamList = useRef<FlatList<{ key: SectionKey; label: string }>>(null);
-  const scrollScope = `${sessionToken}|${teamId}`;
-  const scroll = useRef({ scope: scrollScope, y: 0 });
-  if (scroll.current.scope !== scrollScope) scroll.current = { scope: scrollScope, y: 0 };
+  const scroll = useRetainedScroll<{ key: SectionKey; label: string }>(`${sessionToken}|${teamId}`, !!data);
   const [selected, setSelected] = useState<Partial<Record<SectionKey, string>>>(
     {},
   );
@@ -363,11 +361,7 @@ export default function TeamHomeScreen() {
           <ActivityIndicator color={colors.accent} />
         ) : data ? (
           <FlatList
-            ref={teamList}
-            contentOffset={{ x: 0, y: scroll.current.y }}
-            onScroll={event => { scroll.current.y = event.nativeEvent.contentOffset.y; }}
-            scrollEventThrottle={100}
-            onLayout={() => teamList.current?.scrollToOffset({ offset: scroll.current.y, animated: false })}
+            {...scroll}
             data={SECTIONS}
             keyExtractor={(s) => s.key}
             snapToInterval={viewport}

@@ -10,7 +10,6 @@ import { AppHeader } from "@/components/headers/app-header";
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
-import { useRef } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -22,6 +21,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
+import { useRetainedScroll } from "@/lib/use-retained-scroll";
 import { useAudiencePages } from "@/lib/use-audience-pages";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
@@ -52,9 +52,7 @@ export default function PublicRankedScreen() {
   const { data, nextOffset, checking, busy, error, more, refresh, scope } = useAudiencePages<RankedResponse>(
     `/profiles/${userId}/favorites/ranked`, sessionToken, !!sessionToken && !!userId,
   );
-  const list = useRef<FlatList<RankedRow>>(null);
-  const position = useRef({ scope, y: 0 });
-  if (position.current.scope !== scope) position.current = { scope, y: 0 };
+  const scroll = useRetainedScroll<RankedRow>(scope, !!data);
 
   const ownerName = data?.owner_display_name ?? "This user";
 
@@ -94,12 +92,7 @@ export default function PublicRankedScreen() {
           </Pressable>
 
           <FlatList
-            ref={list}
-            key={scope}
-            onScroll={event => { position.current.y = event.nativeEvent.contentOffset.y; }}
-            contentOffset={{ x: 0, y: position.current.y }}
-            scrollEventThrottle={100}
-            onLayout={() => list.current?.scrollToOffset({ offset: position.current.y, animated: false })}
+            {...scroll}
             onEndReached={() => { if (!error) void more(); }}
             onEndReachedThreshold={0.5}
             ListHeaderComponent={<Text style={styles.emptyBody}>{data.total} ranked titles</Text>}
