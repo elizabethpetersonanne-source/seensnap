@@ -3,8 +3,7 @@
  *
  * No black circular backplates. No filled capsules. No text labels in
  * resting state. Outline icons spaced for comfortable thumbs, with
- * accessible labels + large invisible touch targets. Rating opens the
- * horizontal InlineRatingRail inline (never a modal here).
+ * accessible labels + large touch targets. Rating opens the shared editor.
  *
  * Variants:
  *   discovery  — Save · Send · Team · Rate
@@ -141,7 +140,6 @@ function RailButton({
     <Pressable
       onPress={onPress}
       disabled={!onPress}
-      hitSlop={12}
       accessibilityRole="button"
       accessibilityLabel={label}
       style={({ pressed }) => [styles.btn, pressed && { opacity: 0.65 }]}
@@ -154,8 +152,11 @@ function RailButton({
 const styles = StyleSheet.create({
   row: {
     flexDirection: "row",
+    flexWrap: "wrap",
     alignItems: "center",
-    gap: 20,
+    columnGap: 12,
+    rowGap: 8,
+    width: "100%",
   },
   btn: {
     // Invisible 44x44 touch target per brief §4 accessibility.
@@ -166,6 +167,7 @@ const styles = StyleSheet.create({
   },
   ratingSlot: {
     marginLeft: "auto",
+    minWidth: 44,
     minHeight: 44,
     justifyContent: "center",
   },

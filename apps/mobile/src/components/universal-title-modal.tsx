@@ -5,8 +5,8 @@ import * as WebBrowser from "expo-web-browser";
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Animated,
+  ActivityIndicator,
   PanResponder,
-  Dimensions,
   Image,
   Linking,
   Modal,
@@ -96,9 +96,6 @@ type Props = {
   onAddToTeam?: ((title: UniversalTitle) => void) | null;
 };
 
-const { width: screenWidth, height: screenHeight } = Dimensions.get("window");
-const HERO_HEIGHT = Math.min(480, Math.max(380, screenHeight * 0.5));
-
 export function UniversalTitleModal({
   visible,
   loading,
@@ -116,7 +113,11 @@ export function UniversalTitleModal({
   // native). Module-scope Dimensions.get was frozen at boot, so on
   // mobile web the slide width was often wrong and paging snapped to
   // the wrong offsets — user reported "can't swipe through posters".
-  const { width: liveWidth } = useWindowDimensions();
+  const { width: liveWidth, height: liveHeight, fontScale } = useWindowDimensions();
+  const heroHeight = Math.min(420, Math.max(250, liveHeight * 0.45));
+  const compact = liveWidth < 480 || fontScale > 1.3;
+  const posterWidth = compact ? 76 : 116;
+  const [galleryWidth, setGalleryWidth] = useState(liveWidth - 2);
   const [watchOptions, setWatchOptions] = useState<WatchOptionsResponse | null>(null);
   const [watchOptionsLoading, setWatchOptionsLoading] = useState(false);
   const [expandedDescription, setExpandedDescription] = useState(false);
@@ -152,8 +153,15 @@ export function UniversalTitleModal({
   const [trailerFetched, setTrailerFetched] = useState(false);
 
   const heroScrollRef = useRef<ScrollView | null>(null);
+  const contentScrollRef = useRef<ScrollView | null>(null);
+  const navigationRequest = useRef<AbortController | null>(null);
+  const trailerRequest = useRef<AbortController | null>(null);
+  const requestContext = useRef({ visible, token: sessionToken, source: title?.id, active: activeTitle?.id });
+  requestContext.current = { visible, token: sessionToken, source: title?.id, active: activeTitle?.id };
   const overlayOpacity = useRef(new Animated.Value(0)).current;
-  const sheetTranslateY = useRef(new Animated.Value(screenHeight)).current;
+  const sheetTranslateY = useRef(new Animated.Value(liveHeight)).current;
+  const viewportHeight = useRef(liveHeight);
+  viewportHeight.current = liveHeight;
   const heroOpacity = useRef(new Animated.Value(0)).current;
   const contentOpacity = useRef(new Animated.Value(0)).current;
   const contentTranslateY = useRef(new Animated.Value(22)).current;
@@ -178,16 +186,48 @@ export function UniversalTitleModal({
 
   useEffect(() => {
     setActiveTitle(title);
+  }, [title]);
+
+  // Each open/source/account owns its requests. Closing then reopening the
+  // same title must not admit a previous related-title or trailer response.
+  useEffect(() => {
+    setInternalLoading(false);
+    setShowSaveSheet(false);
+    setShowAddToTeam(false);
+    setShowShareToFeed(false);
+    setShowSendSheet(false);
+    setShowMoreSheet(false);
+    setShowRatingEditor(false);
+    setSelectedPerson(null);
+    setToast(null);
+    if (visible) setActiveTitle(title);
+    return () => {
+      navigationRequest.current?.abort();
+      trailerRequest.current?.abort();
+    };
+  }, [visible, sessionToken, title?.id]);
+
+  useEffect(() => {
     setExpandedDescription(false);
     setActiveImageIndex(0);
     setTrailerKey(null);
     setTrailerFetched(false);
+    setTrailerLoading(false);
     setWatchOptions(null);
-  }, [title]);
+    setRatingSnapshot(null);
+    trailerRequest.current?.abort();
+    heroScrollRef.current?.scrollTo({ x: 0, animated: false });
+    contentScrollRef.current?.scrollTo({ y: 0, animated: false });
+    scrollY.current = 0;
+  }, [activeTitle?.id, visible, sessionToken]);
 
   useEffect(() => {
-    setSavedState(Boolean(activeTitle?.id && savedTitleIds.has(activeTitle.id)) || isSaved);
-  }, [activeTitle?.id, isSaved, savedTitleIds]);
+    heroScrollRef.current?.scrollTo({ x: activeImageIndex * galleryWidth, animated: false });
+  }, [galleryWidth]);
+
+  useEffect(() => {
+    setSavedState(Boolean(activeTitle?.id && savedTitleIds.has(activeTitle.id)) || (activeTitle?.id === title?.id && isSaved));
+  }, [activeTitle?.id, title?.id, isSaved, savedTitleIds]);
 
   useEffect(() => {
     if (!toast) {
@@ -266,6 +306,7 @@ export function UniversalTitleModal({
   useEffect(() => {
     let isMounted = true;
     async function loadSavedTitles() {
+      setSavedTitleIds(new Set());
       if (!sessionToken || !visible) return;
       try {
         const ids = await apiRequest<string[]>("/me/watchlist/title-ids", { token: sessionToken });
@@ -282,18 +323,21 @@ export function UniversalTitleModal({
     if (visible) {
       setRendered(true);
       overlayOpacity.setValue(0);
-      sheetTranslateY.setValue(screenHeight);
+      sheetTranslateY.setValue(viewportHeight.current);
       heroOpacity.setValue(0);
       contentOpacity.setValue(0);
       contentTranslateY.setValue(22);
       actionsOpacity.setValue(0);
       actionsTranslateY.setValue(26);
 
-      Animated.parallel([
+      const entrance = Animated.parallel([
         Animated.timing(overlayOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
         Animated.spring(sheetTranslateY, { toValue: 0, damping: 20, mass: 0.95, stiffness: 170, useNativeDriver: true }),
-      ]).start(() => {
-        Animated.sequence([
+      ]);
+      let details: Animated.CompositeAnimation | undefined;
+      entrance.start(({ finished }) => {
+        if (!finished) return;
+        details = Animated.sequence([
           Animated.timing(heroOpacity, { toValue: 1, duration: 240, useNativeDriver: true }),
           Animated.parallel([
             Animated.timing(contentOpacity, { toValue: 1, duration: 260, useNativeDriver: true }),
@@ -303,26 +347,31 @@ export function UniversalTitleModal({
             Animated.timing(actionsOpacity, { toValue: 1, duration: 220, useNativeDriver: true }),
             Animated.timing(actionsTranslateY, { toValue: 0, duration: 220, useNativeDriver: true }),
           ]),
-        ]).start();
+        ]);
+        details.start();
       });
-      return;
+      return () => { entrance.stop(); details?.stop(); };
     }
 
-    Animated.parallel([
+    const exit = Animated.parallel([
       Animated.timing(actionsOpacity, { toValue: 0, duration: 120, useNativeDriver: true }),
       Animated.timing(contentOpacity, { toValue: 0, duration: 140, useNativeDriver: true }),
       Animated.timing(heroOpacity, { toValue: 0, duration: 140, useNativeDriver: true }),
       Animated.timing(overlayOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
-      Animated.timing(sheetTranslateY, { toValue: screenHeight, duration: 240, useNativeDriver: true }),
-    ]).start(() => setRendered(false));
+      Animated.timing(sheetTranslateY, { toValue: viewportHeight.current, duration: 240, useNativeDriver: true }),
+    ]);
+    exit.start(({ finished }) => { if (finished) setRendered(false); });
+    return () => exit.stop();
   }, [
     actionsOpacity, actionsTranslateY, contentOpacity, contentTranslateY,
     heroOpacity, overlayOpacity, sheetTranslateY, visible,
   ]);
 
-  const currentTitle = activeTitle;
-  const related = useRelatedTitles(sessionToken, visible ? currentTitle?.id ?? null : null);
   const isBusy = loading || internalLoading;
+  const currentTitle = isBusy ? null : activeTitle;
+  const currentRating = ratingSnapshot?.title_id === currentTitle?.id ? ratingSnapshot : null;
+  const currentWatchOptions = watchOptions?.content_id === currentTitle?.id ? watchOptions : null;
+  const related = useRelatedTitles(sessionToken, visible ? currentTitle?.id ?? null : null);
 
   const galleryImages = useMemo(() => {
     const entries = currentTitle?.imageGallery ?? [];
@@ -372,9 +421,7 @@ export function UniversalTitleModal({
   ], [currentTitle?.cast, currentTitle?.creators]);
 
   function handleImageScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
-    // Use LIVE viewport width, not the frozen module-scope screenWidth,
-    // so paging indices are correct after resize / rotation.
-    const nextIndex = Math.round(event.nativeEvent.contentOffset.x / Math.max(liveWidth, 1));
+    const nextIndex = Math.round(event.nativeEvent.contentOffset.x / Math.max(galleryWidth, 1));
     if (nextIndex !== activeImageIndex) setActiveImageIndex(nextIndex);
   }
 
@@ -424,18 +471,22 @@ export function UniversalTitleModal({
 
   async function openRelatedTitle(titleId: string) {
     if (!sessionToken || !titleId || currentTitle?.id === titleId) return;
+    navigationRequest.current?.abort();
+    trailerRequest.current?.abort();
+    setTrailerLoading(false);
+    const controller = new AbortController();
+    navigationRequest.current = controller;
+    const source = title?.id;
+    const isCurrent = () => !controller.signal.aborted && requestContext.current.visible && requestContext.current.token === sessionToken && requestContext.current.source === source;
     setInternalLoading(true);
-    setExpandedDescription(false);
-    setActiveImageIndex(0);
-    setWatchOptions(null);
     try {
-      const nextTitle = await fetchUniversalTitle(sessionToken, titleId);
+      const nextTitle = await fetchUniversalTitle(sessionToken, titleId, null, { signal: controller.signal });
+      if (!isCurrent()) return;
       setActiveTitle(nextTitle);
-      heroScrollRef.current?.scrollTo({ x: 0, animated: false });
     } catch {
-      setToast("Unable to open title");
+      if (isCurrent()) setToast("Unable to open title. Please try again.");
     } finally {
-      setInternalLoading(false);
+      if (isCurrent()) setInternalLoading(false);
     }
   }
 
@@ -465,12 +516,18 @@ export function UniversalTitleModal({
     if (trailerFetched) {
       return;
     }
+    trailerRequest.current?.abort();
+    const controller = new AbortController();
+    trailerRequest.current = controller;
+    const titleId = currentTitle.id;
+    const isCurrent = () => !controller.signal.aborted && requestContext.current.visible && requestContext.current.token === sessionToken && requestContext.current.active === titleId;
     setTrailerLoading(true);
     try {
       const videos = await apiRequest<Array<{ key: string; site: string; type: string; name: string }>>(
         `/titles/${currentTitle.id}/videos`,
-        { token: sessionToken }
+        { token: sessionToken, signal: controller.signal }
       );
+      if (!isCurrent()) return;
       const first = videos[0] ?? null;
       setTrailerFetched(true);
       if (first?.key) {
@@ -483,9 +540,9 @@ export function UniversalTitleModal({
         setToast("No trailer available for this title");
       }
     } catch {
-      setToast("Could not load trailer");
+      if (isCurrent()) setToast("Could not load trailer");
     } finally {
-      setTrailerLoading(false);
+      if (isCurrent()) setTrailerLoading(false);
     }
   }
 
@@ -498,16 +555,27 @@ export function UniversalTitleModal({
           <Animated.View style={[styles.overlay, { opacity: overlayOpacity }]} />
           <Pressable style={StyleSheet.absoluteFill} onPress={onClose} />
 
-          <Animated.View {...dismissGesture.panHandlers} style={[styles.shell, { transform: [{ translateY: Animated.add(sheetTranslateY, dragY) }] }]}>
+          <Animated.View {...dismissGesture.panHandlers} style={[styles.shell, { height: liveHeight, transform: [{ translateY: Animated.add(sheetTranslateY, dragY) }] }]}>
             <View style={[styles.handleWrap,{minHeight:44}]} accessibilityLabel="Swipe down to close title details">
               <View style={styles.handle} />
             </View>
 
-            <Pressable style={[styles.closeButton, { top: Math.max(insets.top + 8, 18) }]} onPress={onClose}>
+            <Pressable accessibilityRole="button" accessibilityLabel="Close title details" style={[styles.closeButton, { top: Math.max(insets.top + 8, 18) }]} onPress={onClose}>
               <Ionicons name="close" size={18} color={colors.ink} />
             </Pressable>
 
-            <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false} scrollEventThrottle={16} onScroll={e=>{scrollY.current=e.nativeEvent.contentOffset.y;}}>
+            <ScrollView ref={contentScrollRef} style={styles.scroll} contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 24 }]} showsVerticalScrollIndicator={false} scrollEventThrottle={16} onScroll={e=>{scrollY.current=e.nativeEvent.contentOffset.y;}}>
+              {isBusy ? (
+                <View style={[styles.loadingDetails, { minHeight: Math.max(240, liveHeight * 0.6) }]} accessibilityLiveRegion="polite">
+                  <ActivityIndicator color={colors.accent} />
+                  <Text style={styles.sectionTitle}>Loading title details…</Text>
+                </View>
+              ) : !currentTitle ? (
+                <View style={styles.loadingDetails}>
+                  <Text style={styles.sectionTitle}>Couldn't load this title.</Text>
+                  <Text style={styles.emptyText}>Close this card and tap the poster to try again.</Text>
+                </View>
+              ) : <>
               {/* Hero image carousel — swipeable through the TMDB
                    gallery (multiple backdrops + posters). Slide width
                    uses the LIVE viewport width so paging aligns after
@@ -515,10 +583,12 @@ export function UniversalTitleModal({
                    tells the browser to let horizontal drags reach the
                    ScrollView (RN-Native ignores it). */}
               <Animated.View
-                style={[styles.heroCard, { opacity: heroOpacity, touchAction: "pan-x" as unknown as undefined }]}
+                style={[styles.heroCard, { minHeight: heroHeight, opacity: heroOpacity }]}
+                onLayout={event => setGalleryWidth(event.nativeEvent.layout.width)}
               >
                 <ScrollView
                   ref={heroScrollRef}
+                  style={StyleSheet.absoluteFill}
                   horizontal
                   pagingEnabled
                   showsHorizontalScrollIndicator={false}
@@ -528,7 +598,7 @@ export function UniversalTitleModal({
                   decelerationRate="fast"
                 >
                   {(galleryImages.length ? galleryImages : [{ url: "", kind: "backdrop" }]).map((image, index) => (
-                    <View key={`${image.url}-${index}`} style={[styles.heroSlide, { width: liveWidth }]}>
+                    <View key={`${image.url}-${index}`} style={[styles.heroSlide, { width: galleryWidth }]}>
                       {image.url
                         ? <Image source={{ uri: image.url }} style={styles.heroImage} resizeMode="cover" />
                         : <View style={styles.heroFallback} />
@@ -539,9 +609,11 @@ export function UniversalTitleModal({
                   ))}
                 </ScrollView>
 
-                <View style={styles.heroContent}>
+                <View pointerEvents="box-none" style={[styles.heroContent, { minHeight: heroHeight, paddingTop: Math.max(insets.top + 60, 70) }]}>
                   <View style={styles.heroTopRow}>
                     <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel="Play trailer"
                       style={[styles.trailerButton, (trailerFetched && !trailerKey) && styles.trailerButtonDim]}
                       onPress={() => void openTrailer()}
                       disabled={trailerLoading || (trailerFetched && !trailerKey)}
@@ -563,15 +635,15 @@ export function UniversalTitleModal({
                       : null
                     }
                   </View>
-                  <View style={styles.heroBottomRow}>
+                  <View pointerEvents="box-none" style={styles.heroBottomRow}>
                     <View style={styles.posterWrap}>
                       {posterImage
-                        ? <Image source={{ uri: posterImage }} style={styles.poster} resizeMode="cover" />
-                        : <View style={styles.posterFallback}><Ionicons name="film-outline" size={28} color={colors.ink} /></View>
+                        ? <Image source={{ uri: posterImage }} style={[styles.poster, { width: posterWidth, height: posterWidth * 1.5 }]} resizeMode="cover" />
+                        : <View style={[styles.posterFallback, { width: posterWidth, height: posterWidth * 1.5 }]}><Ionicons name="film-outline" size={28} color={colors.ink} /></View>
                       }
                     </View>
                     <View style={styles.heroCopy}>
-                      <Text style={styles.heroTitle}>{currentTitle?.title ?? "Title"}</Text>
+                      <Text style={[styles.heroTitle, compact && { fontSize: 26, lineHeight: 32 }]}>{currentTitle.title}</Text>
                       {currentTitle ? <SceneDnaBadge titleId={currentTitle.id} /> : null}
                       <Text style={styles.heroFacts}>
                         {[
@@ -597,7 +669,7 @@ export function UniversalTitleModal({
                           credit = `A film by ${director}`;
                         }
                         return credit ? (
-                          <Text style={styles.heroCredit} numberOfLines={1}>{credit}</Text>
+                          <Text style={styles.heroCredit}>{credit}</Text>
                         ) : null;
                       })()}
                       <View style={styles.paginationRow}>
@@ -646,7 +718,7 @@ export function UniversalTitleModal({
                       if (!currentTitle) return;
                       setShowShareToFeed(true);
                     }}
-                    ratingSnapshot={ratingSnapshot}
+                    ratingSnapshot={currentRating}
                     onRatingChanged={setRatingSnapshot}
                   />
                   {currentTitle?.id ? (
@@ -654,7 +726,7 @@ export function UniversalTitleModal({
                       <WatchStatusToggle
                         token={sessionToken}
                         titleId={currentTitle.id}
-                        snapshot={ratingSnapshot}
+                        snapshot={currentRating}
                         onChanged={setRatingSnapshot}
                       />
                     </View>
@@ -679,10 +751,10 @@ export function UniversalTitleModal({
                   <Text style={styles.sectionTitle}>Where to Watch</Text>
                   {watchOptionsLoading ? (
                     <Text style={styles.emptyText}>Loading…</Text>
-                  ) : watchOptions ? (
+                  ) : currentWatchOptions ? (
                     <>
                       {WATCH_GROUP_CONFIG.map(({ key, label }) => {
-                        const providers = watchOptions.groups[key] ?? [];
+                        const providers = currentWatchOptions.groups[key] ?? [];
                         if (!providers.length) return null;
                         return (
                           <View key={key} style={styles.watchGroup}>
@@ -697,7 +769,7 @@ export function UniversalTitleModal({
                           </View>
                         );
                       })}
-                      {!WATCH_GROUP_CONFIG.some(({ key }) => (watchOptions.groups[key] ?? []).length > 0) ? (
+                      {!WATCH_GROUP_CONFIG.some(({ key }) => (currentWatchOptions.groups[key] ?? []).length > 0) ? (
                         <Text style={styles.emptyText}>Streaming availability isn't available for this title right now.</Text>
                       ) : null}
                       <Text style={styles.justWatchAttrib}>Streaming data provided by JustWatch</Text>
@@ -737,7 +809,7 @@ export function UniversalTitleModal({
                     <Text style={styles.sectionTitle}>More Like This</Text>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.relatedRail}>
                       {related.items.map((related) => (
-                        <Pressable key={related.id} style={styles.relatedCard} onPress={() => void openRelatedTitle(related.id)}>
+                        <Pressable key={related.id} accessibilityRole="button" accessibilityLabel={`Open related title ${related.title}`} style={styles.relatedCard} onPress={() => void openRelatedTitle(related.id)}>
                           {related.posterUrl ? (
                             <Image source={{ uri: resolveMediaUrl(related.posterUrl) ?? related.posterUrl }} style={styles.relatedPoster} />
                           ) : (
@@ -753,6 +825,7 @@ export function UniversalTitleModal({
                   </View>
                 ) : null}
               </Animated.View>
+              </>}
             </ScrollView>
 
             {/* Toast */}
@@ -769,7 +842,7 @@ export function UniversalTitleModal({
             token={sessionToken}
             titleId={currentTitle?.id ?? null}
             titleName={currentTitle?.title ?? null}
-            initial={ratingSnapshot}
+            initial={currentRating}
             onClose={() => setShowRatingEditor(false)}
             onChanged={setRatingSnapshot}
           />
@@ -948,7 +1021,8 @@ function PersonDetailSheet({
   onOpenTitle: (titleId: string) => void;
   sessionToken: string | null;
 }) {
-  const translateY = useRef(new Animated.Value(screenHeight)).current;
+  const { height } = useWindowDimensions();
+  const translateY = useRef(new Animated.Value(height)).current;
   const opacity = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
@@ -961,7 +1035,7 @@ function PersonDetailSheet({
   function close() {
     Animated.parallel([
       Animated.timing(opacity, { toValue: 0, duration: 180, useNativeDriver: true }),
-      Animated.timing(translateY, { toValue: screenHeight, duration: 220, useNativeDriver: true }),
+      Animated.timing(translateY, { toValue: height, duration: 220, useNativeDriver: true }),
     ]).start(onClose);
   }
 
@@ -978,7 +1052,7 @@ function PersonDetailSheet({
       <View style={styles.root}>
         <Animated.View style={[styles.overlay, { opacity }]} />
         <Pressable style={StyleSheet.absoluteFill} onPress={close} />
-        <Animated.View style={[styles.personSheet, { transform: [{ translateY }] }]}>
+        <Animated.View style={[styles.personSheet, { height: height * 0.88, transform: [{ translateY }] }]}>
           <View style={styles.handleWrap}><View style={styles.handle} /></View>
           <Pressable style={styles.closeButton} onPress={close}>
             <Ionicons name="close" size={18} color={colors.ink} />
@@ -1200,7 +1274,6 @@ const styles = StyleSheet.create({
   root: { flex: 1, justifyContent: "flex-end" },
   overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(4, 10, 18, 0.82)" },
   shell: {
-    height: screenHeight,
     backgroundColor: colors.background,
     borderTopLeftRadius: radii.xxl,
     borderTopRightRadius: radii.xxl,
@@ -1214,9 +1287,9 @@ const styles = StyleSheet.create({
     position: "absolute",
     right: 16,
     zIndex: 40,
-    width: 36,
-    height: 36,
-    borderRadius: 18,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: "rgba(6, 16, 29, 0.62)",
     borderWidth: 1,
     borderColor: "rgba(255,255,255,0.1)",
@@ -1227,14 +1300,14 @@ const styles = StyleSheet.create({
   // paddingBottom was 260 to make room for the removed floating actionTray.
   // With the toolbar now in-flow, only safe-area buffer is needed.
   scrollContent: { paddingBottom: 40 },
-  heroCard: { height: HERO_HEIGHT, backgroundColor: colors.surfaceMuted },
-  heroSlide: { width: screenWidth, height: HERO_HEIGHT, backgroundColor: colors.surfaceMuted },
+  loadingDetails: { padding: 32, minHeight: 240, gap: 16, alignItems: "center", justifyContent: "center" },
+  heroCard: { backgroundColor: colors.surfaceMuted },
+  heroSlide: { height: "100%", backgroundColor: colors.surfaceMuted },
   heroImage: { width: "100%", height: "100%" },
   heroFallback: { width: "100%", height: "100%", backgroundColor: colors.surfaceMuted },
   heroShade: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(5, 11, 20, 0.14)" },
   heroGradient: { position: "absolute", left: 0, right: 0, bottom: 0, height: 240, backgroundColor: "rgba(9,17,32,0.78)" },
   heroContent: {
-    position: "absolute", left: 0, right: 0, top: 0, bottom: 0,
     paddingTop: 54, paddingHorizontal: spacing.lg, paddingBottom: spacing.lg,
     justifyContent: "space-between",
   },
@@ -1247,6 +1320,7 @@ const styles = StyleSheet.create({
     backgroundColor: "rgba(244, 196, 48, 0.9)",
     paddingHorizontal: 13,
     paddingVertical: 8,
+    minHeight: 44,
     shadowColor: "#FFE600",
     shadowOpacity: 0.45,
     shadowRadius: 8,
@@ -1263,7 +1337,7 @@ const styles = StyleSheet.create({
     color: colors.ink, fontFamily: fonts.mono, fontSize: 12,
     backgroundColor: "rgba(6,16,29,0.52)", paddingHorizontal: 10, paddingVertical: 6, borderRadius: 999,
   },
-  heroBottomRow: { flexDirection: "row", alignItems: "flex-end", gap: spacing.md },
+  heroBottomRow: { flexDirection: "row", alignItems: "flex-end", gap: spacing.md, paddingTop: 24 },
   posterWrap: {
     borderRadius: radii.xxl, padding: 4,
     backgroundColor: "rgba(7, 15, 28, 0.52)",
@@ -1271,7 +1345,7 @@ const styles = StyleSheet.create({
   },
   poster: { width: 116, height: 174, borderRadius: 16, backgroundColor: colors.surface },
   posterFallback: { width: 116, height: 174, borderRadius: 16, backgroundColor: colors.surface, alignItems: "center", justifyContent: "center" },
-  heroCopy: { flex: 1, gap: spacing.sm, paddingBottom: 8 },
+  heroCopy: { flex: 1, minWidth: 0, gap: spacing.sm, paddingBottom: 8 },
   heroTitle: { color: colors.ink, fontFamily: fonts.serifBold, fontSize: 34, lineHeight: 40, letterSpacing: -0.3 },
   heroFacts: {
     color: "rgba(242,244,248,0.9)",
@@ -1343,10 +1417,11 @@ const styles = StyleSheet.create({
   providerLogoFallbackText: { color: colors.ink, fontFamily: fonts.monoSemiBold, fontSize: 11, letterSpacing: 0.3 },
   providerName: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 14 },
   providerCardName: { flex: 1 },
-  providerCardActions: { flexDirection: "row", gap: 6, alignItems: "center", flexShrink: 0 },
+  providerCardActions: { flexDirection: "row", flexWrap: "wrap", gap: 6, alignItems: "center", flexShrink: 1 },
   watchAction: {
     borderRadius: radii.pill, borderWidth: 1, borderColor: "rgba(255,255,255,0.12)",
     backgroundColor: "rgba(255,255,255,0.08)", paddingHorizontal: 10, paddingVertical: 7,
+    minHeight: 44, justifyContent: "center",
   },
   watchActionPrimary: { borderColor: colors.accent, backgroundColor: "rgba(255,230,0,0.14)" },
   watchActionLabel: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 12 },
@@ -1395,7 +1470,6 @@ const styles = StyleSheet.create({
   toastText: { color: colors.ink, fontFamily: fonts.sansSemiBold, fontSize: 13 },
   // Person detail sheet
   personSheet: {
-    height: screenHeight * 0.88,
     backgroundColor: colors.background,
     borderTopLeftRadius: radii.xxl, borderTopRightRadius: radii.xxl,
     overflow: "hidden",

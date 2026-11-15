@@ -281,13 +281,13 @@ export async function fetchUniversalTitle(
   token: string,
   titleId: string,
   seed?: TitleSeed | null,
-  options?: { lightweight?: boolean },
+  options?: { lightweight?: boolean; signal?: AbortSignal },
 ): Promise<UniversalTitle> {
   try {
-    const data = await apiRequest<TitleResponse>(`/titles/${titleId}${options?.lightweight ? "?enrich=false" : "?include_related=false"}`, { token });
+    const data = await apiRequest<TitleResponse>(`/titles/${titleId}${options?.lightweight ? "?enrich=false" : "?include_related=false"}`, { token, signal: options?.signal });
     return normalizeFromApi(data);
   } catch {
-    if (seed) {
+    if (seed && !options?.signal?.aborted) {
       return normalizeFromSeed(seed);
     }
     throw new Error("Unable to load title details");

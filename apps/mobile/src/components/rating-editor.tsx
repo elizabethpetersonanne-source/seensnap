@@ -113,7 +113,9 @@ export function RatingEditor({
   }
   const { height, width, fontScale } = useWindowDimensions();
   const insets = useSafeAreaInsets();
-  const columns = fontScale > 1.3 || width < 320 ? 3 : 5;
+  // Account for the sheet's actual gutters and scaled two-digit labels.
+  const availableWidth = Math.min(width - 24, 520) - 34;
+  const columns = Math.max(1, Math.min(5, Math.floor((availableWidth + 8) / (Math.max(44, 28 * fontScale) + 8))));
   const numbers = Array.from({ length: 10 }, (_, i) => i + 1);
   const rows = Array.from({ length: Math.ceil(10 / columns) }, (_, i) =>
     numbers.slice(i * columns, (i + 1) * columns),
@@ -234,7 +236,7 @@ export function RatingEditor({
       animationType="fade"
       onRequestClose={close}
     >
-      <Pressable style={styles.backdrop} onPress={close}>
+      <Pressable style={[styles.backdrop, { paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 }]} onPress={close}>
         <Pressable
           style={[
             styles.sheet,
