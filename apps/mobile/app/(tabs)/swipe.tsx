@@ -45,6 +45,7 @@ import { CategoryChips } from "@/components/category-chips";
 import { useDiscoveryFilter } from "@/lib/discovery-filter";
 import { fetchUniversalTitle, type UniversalTitle } from "@/lib/universal-title";
 import { recordWatchHandoff } from "@/lib/watch-handoff";
+import { mergeDiscoveryRerank } from "@/lib/discovery-rerank";
 
 type RecommendationItem = {
   title: {
@@ -146,6 +147,11 @@ export default function SwipeTab() {
   const swipingRef = useRef(false);
   const [swipeBusy, setSwipeBusy] = useState(false);
   const [swipeError, setSwipeError] = useState<string | null>(null);
+  const [tasteRevision, setTasteRevision] = useState(0);
+  const lastRerankedRef = useRef(0);
+  const lastSaveStatesRef = useRef(new Map<string, boolean>());
+  const [rerankBusy, setRerankBusy] = useState(false);
+  const rerankOperationRef = useRef<AbortController | null>(null);
   const swipeOperationRef = useRef<AbortController | null>(null);
   const swipeAttemptRef = useRef<{
     item: RecommendationItem; direction: SwipeDirection; pauseMs: number;
@@ -234,6 +240,9 @@ export default function SwipeTab() {
   const loadDeck = useCallback(async (resume = false) => {
     if (!sessionToken || !filterReady) return;
     const generation = ++generationRef.current;
+    rerankOperationRef.current?.abort(); rerankOperationRef.current = null;
+    setTasteRevision(0); lastRerankedRef.current = 0; setRerankBusy(false);
+    lastSaveStatesRef.current.clear();
     swipeOperationRef.current?.abort(); swipeOperationRef.current = null;
     swipingRef.current = false; swipeAttemptRef.current = null;
     setSwipeBusy(false); setSwipeError(null);
@@ -274,6 +283,7 @@ export default function SwipeTab() {
     void loadDeck(true);
     return () => {
       generationRef.current++;
+      rerankOperationRef.current?.abort();
       swipeOperationRef.current?.abort(); swipeOperationRef.current = null;
       swipingRef.current = false;
       pan.stopAnimation();
@@ -316,10 +326,53 @@ export default function SwipeTab() {
       setDeck((previous) => previous.filter((item, index) => index <= currentIndexRef.current || item.title.id !== titleId));
       if (!swipingRef.current) setCurrentIndex((index) => deck[index]?.title.id === titleId ? index + 1 : index);
     }
-    const stopState = subscribeTitleState((state) => { if (state.saved || state.watched) removeQueued(state.title_id); });
-    const stopRating = subscribeRatingChanges((titleId) => removeQueued(titleId));
+    const stopState = subscribeTitleState((state) => {
+      if (state.saved || state.watched) removeQueued(state.title_id);
+      if (state.saved != null) {
+        const previous = lastSaveStatesRef.current.get(state.title_id);
+        lastSaveStatesRef.current.set(state.title_id, state.saved);
+        // A Pass acknowledgement reports saved=false; that is not a change
+        // in taste. Actual saves/removals count once, not on every broadcast.
+        if (previous !== state.saved && (state.saved || previous === true)) setTasteRevision(value => value + 1);
+      }
+    });
+    const stopRating = subscribeRatingChanges((titleId) => {
+      removeQueued(titleId); setTasteRevision(value => value + 3);
+    });
     return () => { stopState(); stopRating(); };
   }, [deck]);
+
+  useEffect(() => {
+    if (!sessionToken || !resumeCursor || loading || loadingMore || swipeBusy || rerankBusy ||
+        tasteRevision - lastRerankedRef.current < 3) return;
+    const timer = setTimeout(() => {
+      if (swipingRef.current) return;
+      const generation = generationRef.current;
+      const snapshot = deckRef.current.slice(currentIndexRef.current, currentIndexRef.current + 100);
+      lastRerankedRef.current = tasteRevision;
+      if (snapshot.length <= 2) return;
+      const ids = snapshot.map(item => item.title.id);
+      const operation = new AbortController();
+      rerankOperationRef.current = operation; setRerankBusy(true);
+      void apiRequest<FeedPage>("/me/discovery-resume", {
+        token: sessionToken, method: "POST", signal: operation.signal,
+        body: JSON.stringify({ cursor: resumeCursor, title_ids: ids, surface: "swipe", rerank: true,
+          preferred_type: categoryFilter.media_type, genre: categoryFilter.genre, mode }),
+      }).then(page => {
+        if (generation !== generationRef.current) return;
+        setDeck(current => mergeDiscoveryRerank(current, currentIndexRef.current, ids, page.items));
+      }).catch(() => {
+        // Optional reordering must never block the deck. Next-page retrieval
+        // still uses current taste, and later feedback schedules another try.
+      }).finally(() => {
+        if (rerankOperationRef.current === operation) {
+          rerankOperationRef.current = null; setRerankBusy(false);
+        }
+      });
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [tasteRevision, sessionToken, resumeCursor, loading, loadingMore, swipeBusy, rerankBusy,
+      categoryFilter.media_type, categoryFilter.genre, mode]);
 
   useEffect(() => {
     const ids = deck.slice(currentIndex).map(item => item.title.id);
@@ -499,6 +552,7 @@ export default function SwipeTab() {
       if (res.saved != null) patchTitleState(item.title.id, { saved: res.saved });
       if (direction === "right" && res.saved) showUndoToast("Added to My Next Watch");
       if (direction === "up" || direction === "down") patchTitleState(item.title.id, { watched: true });
+      if (direction === "down") setTasteRevision(value => value + 3);
       if (direction === "up") setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
       trackEvent(`swipe_${direction}`, { title_id: item.title.id, session_id: sessionId });
     } catch (e) {
@@ -925,7 +979,7 @@ export default function SwipeTab() {
           {/* SWIPE | PREVIEWS selector now lives in the shared
               AppHeader above — don't duplicate it here. */}
           <View style={{ flexDirection: "row", gap: 16 }}>
-            <Pressable onPress={() => setShowFilters((v) => !v)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>Filters{categoryFilter.genre ? ` · ${categoryFilter.genre}` : ""}</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityLabel={showFilters ? "Hide discovery filters" : "Show discovery filters"} onPress={() => setShowFilters((v) => !v)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent }}>Filters{categoryFilter.genre ? ` · ${categoryFilter.genre}` : ""}</Text></Pressable>
             <Pressable onPress={() => setShowHelp((v) => !v)} style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.ink }}>How to swipe</Text></Pressable>
           </View>
           {showHelp ? <Text style={{ color: colors.muted, fontSize: 14, lineHeight: 21, marginBottom: 12 }}>Right — Save to My Next Watch. Left — Pass for now. Up — Watched; add a rating. Down — Watched and didn't like it. Tap the poster to flip to details; tap Back to poster to return. Use the list button to choose another list.</Text> : null}

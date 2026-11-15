@@ -22,6 +22,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
   let filter = { media_type: null, genre: null }, handlers, screen;
   let send = () => Promise.resolve({ swipe_id: 'receipt' });
   let undo = () => Promise.resolve({ reversed: ['swipe', 'saved'], partial_reason: null, watched: false, saved: false });
+  let rerank = options => Promise.resolve({ items: items().filter(item => JSON.parse(options.body).title_ids.includes(item.title.id)).reverse() });
   const pans = [];
   class Value {
     constructor(value) { this.value = value; }
@@ -49,11 +50,12 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
       requests.push({ url, options });
       if (url.startsWith('/titles/recommendations/feed')) {
         const continuation = url.includes('cursor=');
-        return Promise.resolve({ session_id: '01234567-89ab-cdef-0123-456789abcdef', items: items(continuation && !repeatPage ? 'next-page' : filter.genre || 'title'), next_cursor: continuation && !repeatPage ? 'session:2' : 'session:1', has_more: true });
+        return Promise.resolve({ session_id: '01234567-89ab-cdef-0123-456789abcdef', items: items(continuation && !repeatPage ? 'next-page' : filter.genre || 'title'), resume_cursor: '01234567-89ab-cdef-0123-456789abcdef:1', next_cursor: continuation && !repeatPage ? 'session:2' : 'session:1', has_more: true });
       }
       if (url === '/me/preferences') return Promise.resolve({ connected_streaming_services: [] });
       if (url === '/titles/swipes') return send(options);
       if (url.startsWith('/titles/swipes/') && options.method === 'DELETE') return undo(options);
+      if (url === '/me/discovery-resume') return rerank(options);
       throw new Error(`Unexpected request: ${url}`);
     },
   };
@@ -75,6 +77,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
     if (name === '@/lib/auth') return { useAuth: () => ({ sessionToken: 'test-token', user: { user_id: 'owner' } }) };
     if (name === '@/lib/swipe-gesture') return load('src/lib/swipe-gesture.ts');
     if (name === '@/lib/discovery-recovery') return load('src/lib/discovery-recovery.ts');
+    if (name === '@/lib/discovery-rerank') return load('src/lib/discovery-rerank.ts');
     if (name === '@/lib/discovery-filter') return { useDiscoveryFilter: () => [filter, next => { filter = next; }, true] };
     if (name === '@/lib/discovery-storage') return { restoreDiscovery: async () => null, saveDiscoverySnapshot() {} };
     if (name === '@/lib/universal-title') return { fetchUniversalTitle: (token, id, seed, options) => {
@@ -102,6 +105,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
     screen, requests, hydration, patches, button, api, pan: pans[0], handlers: () => handlers,
     sendWith(fn) { send = fn; },
     undoWith(fn) { undo = fn; },
+    rerankWith(fn) { rerank = fn; },
     async click(label) { const b = button(label); assert.ok(b, `Missing button: ${label}`); assert.ok(!b.props.disabled, `Disabled button: ${label}`); await act(async () => { b.props.onPress(); }); },
     async genre(genre) { await act(async () => { screen.root.findByType('CategoryChips').props.onChange({ media_type: null, genre }); }); },
     async close() { await act(async () => screen.unmount()); },
@@ -294,5 +298,69 @@ test('saving and saved feedback stay outside the scrolling deck and Undo remains
     assert.equal(h.button('Undo last swipe: right').props.disabled, false);
     assert.ok(h.button('Flip title 1 to details'));
     assert.equal(h.screen.root.findByType('SaveToListSheet').props.visible, false);
+  } finally { await h.close(); }
+});
+
+test('taste refresh never moves the visible card or blocks a new swipe', async () => {
+  const h = await mount(), refresh = deferred();
+  h.sendWith(() => Promise.resolve({ swipe_id: 'receipt', saved: true }));
+  h.rerankWith(() => refresh.promise);
+  try {
+    for (let n = 0; n < 3; n++) await h.click('Next Watch');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); });
+    const request = h.requests.find(r => r.url === '/me/discovery-resume');
+    assert.ok(request);
+    assert.equal(JSON.parse(request.options.body).rerank, true);
+    assert.ok(h.button('Flip title 3 to details'));
+    await h.click('Pass this title');
+    assert.ok(h.button('Flip title 4 to details'));
+    await act(async () => refresh.resolve({ items: items().slice(3).reverse() }));
+    assert.ok(h.button('Flip title 4 to details'));
+    assert.equal(h.button('Next Watch').props.disabled, false);
+    await h.click('Pass this title');
+    assert.ok(h.button('Flip title 5 to details'));
+    await h.click('Pass this title');
+    assert.ok(h.button('Flip title 19 to details'));
+  } finally { await h.close(); }
+});
+
+test('late taste refresh cannot replace a newly filtered queue', async () => {
+  const h = await mount(), refresh = deferred();
+  h.sendWith(() => Promise.resolve({ swipe_id: 'receipt', saved: true }));
+  h.rerankWith(() => refresh.promise);
+  try {
+    for (let n = 0; n < 3; n++) await h.click('Next Watch');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); });
+    await h.click('Show discovery filters');
+    await h.genre('Comedy');
+    await act(async () => refresh.resolve({ items: items().reverse() }));
+    assert.ok(h.button('Flip Comedy 0 to details'));
+    assert.equal(h.button('Next Watch').props.disabled, false);
+  } finally { await h.close(); }
+});
+
+test('tail merge keeps appended pages and cannot resurrect removed titles', () => {
+  const exports = {};
+  vm.runInNewContext(ts.transpileModule(fs.readFileSync(path.join(root, 'src/lib/discovery-rerank.ts'), 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 },
+  }).outputText, { exports });
+  const initial = items(), appended = items('new');
+  const current = [...initial.filter((_, i) => i !== 9), ...appended];
+  const ranked = [...initial].reverse().filter((_, i) => i !== 0); // server removed title 19
+  const result = exports.mergeDiscoveryRerank(current, 3, initial.map(x => x.title.id), ranked);
+  assert.equal(result[3], current[3]);
+  assert.equal(result[4], current[4]);
+  assert.ok(!result.some(x => x.title.id === initial[9].title.id));
+  assert.ok(!result.some(x => x.title.id === initial[19].title.id));
+  assert.deepEqual(Array.from(result.slice(-20), x => x.title.id), appended.map(x => x.title.id));
+});
+
+test('neutral passes do not trigger taste re-ranking', async () => {
+  const h = await mount();
+  h.sendWith(() => Promise.resolve({ swipe_id: 'receipt', saved: false }));
+  try {
+    for (let n = 0; n < 3; n++) await h.click('Pass this title');
+    await act(async () => { await new Promise(resolve => setTimeout(resolve, 350)); });
+    assert.equal(h.requests.filter(r => r.url === '/me/discovery-resume').length, 0);
   } finally { await h.close(); }
 });

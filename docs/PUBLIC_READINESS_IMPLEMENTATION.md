@@ -4,6 +4,8 @@ Started November 13, 2026 (America/New_York). Scope: Elizabeth's authorization t
 
 ## Implemented
 
+The release also includes the [Swipe personalization upgrade](SWIPE_PERSONALIZATION.md): taste-led candidate discovery, verified metadata, adaptive unseen-card ordering and recommendation-quality fixtures.
+
 - **Watch queue:** one role-based My Next Watch destination. Migration 0043 unions identified legacy queues without deleting original memberships, notes, audiences or share links. Previous collections remain readable. Custom lists are never identified by name alone. Import receipts catch late saves from an older API revision and prevent an intentional unsave from being resurrected. Private legacy items are never copied into a queue subsequently made public. New accounts no longer receive redundant physical Favorites lists; Favorites remains the rating-derived section.
 - **Undo:** owner-checked recovery for pre-ledger receipts, defensive receipt parsing, retention of independent/newer saves and ratings, idempotent retries, and a privacy-safe diagnostic reference on unexpected failures. This addresses known failure modes; the earlier intermittent live Undo symptom still requires post-deployment reproduction/acceptance.
 - **SceneDNA identity:** negative-only genres do not become favorite labels, positive genre percentages remain bounded, current obsessions use current signed evidence, and cached profiles carry their source taste version. A low rating overrides an earlier save.

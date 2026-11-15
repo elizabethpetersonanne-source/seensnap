@@ -28,6 +28,7 @@ class ResumeRequest(BaseModel):
     preferred_type: Literal["movie", "show"] | None = None
     genre: str | None = Field(None, max_length=40)
     mode: Literal["streaming", "all"] = "streaming"
+    rerank: bool = False
 
 
 @router.post("")
@@ -110,6 +111,13 @@ def resume_discovery(payload: ResumeRequest, current_user: CurrentUser, db: DbSe
                     raise HTTPException(503, detail="Could not restore previews. Please retry.")
         rows = [row for row in rows if videos.get(str(row.id))]
     scorer = scorer_for_user(db, current_user.id, rows)
+    if payload.rerank and len(rows) > 2:
+        from app.services.discovery_personalization import compose
+        # The visible card and its immediate successor never jump. Only titles
+        # already served to this owner/session can be reconsidered here.
+        tail = {str(row.id): row for row in rows[2:]}
+        order, _ = compose(tail, {key: scorer.score(row) for key, row in tail.items()}, {}, len(tail))
+        rows = rows[:2] + [tail[key] for key in order]
     items = []
     for row in rows:
         match = scorer.score(row)
@@ -141,7 +149,8 @@ def resume_discovery(payload: ResumeRequest, current_user: CurrentUser, db: DbSe
                     "reason": {"type": "signal_match", "label": reason},
                 }
             )
-    more = bool(state.get("pending")) or any(
+    from app.services.discovery_personalization import has_more_sources
+    more = bool(state.get("pending")) or bool(state.get("taste_waiting")) or has_more_sources(scorer, state, payload.preferred_type) or any(
         not source["done"] for source in state.get("sources", {}).values()
     )
     # Resume is read-only: it neither consumes a page nor records a swipe.
