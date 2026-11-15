@@ -199,7 +199,9 @@ def test_larger_team_all_members_filter_uses_current_explicit_statuses(db, peopl
     assert remaining.total == 2 and remaining.next_offset == 1
     second_page = get_team_page(team.id, "both_want_to_watch", owner, db, limit=1, offset=1, all_members=True)
     assert second_page.next_offset is None and second_page.items[0].id != remaining.items[0].id
-    unavailable(lambda: get_team_page(team.id, "watched", third, db, limit=40, offset=0, all_members=True))
+    with pytest.raises(HTTPException) as refused:
+        get_team_page(team.id, "watched", third, db, limit=40, offset=0, all_members=True)
+    assert refused.value.status_code == 403
 
 
 def test_team_pagination_and_explicit_status_not_private_list_inference(db, people):
