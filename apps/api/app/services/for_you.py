@@ -1,7 +1,7 @@
 """Media-scoped retrieval before candidate limits; one SceneDNA base score."""
 
 from datetime import date
-from sqlalchemy import select
+from sqlalchemy import select, cast, String, func, or_, case
 from app.models.content import ContentTitle
 from app.schemas.content import RecommendationResponse, RecommendationEvidence
 from app.services.discovery_decisions import excluded_title_ids
@@ -33,11 +33,32 @@ def for_you_recommendations(
         query = query.where(ContentTitle.content_type == want)
     if excluded:
         query = query.where(ContentTitle.id.notin_(excluded))
-    # Media is a retrieval constraint, not a filter over a movie-heavy shortlist.
-    pool = db.scalars(query.order_by(ContentTitle.id)).all()
+    # Filter in SQL before materialization, with a fixed retrieval budget.
+    # Keep exploration alongside positive taste seeds; never fetch the whole
+    # catalog into each request. Stable ordering supports session snapshots.
+    def genre_clause(name):
+        return func.lower(cast(ContentTitle.genres, String)).contains('"' + name.casefold() + '"', autoescape=True)
     if genre:
         wanted = canonical_genre("tv" if want == "series" else "movie", genre.strip().casefold())
-        pool = [t for t in pool if wanted in {g.casefold() for g in t.genres or []}]
+        query = query.where(genre_clause(wanted))
+    from collections import Counter
+    from app.models.social import Rating
+    liked = db.scalars(select(ContentTitle).join(Rating, Rating.content_title_id == ContentTitle.id)
+        .where(Rating.user_id == user_id, Rating.score >= 7)
+        .order_by(Rating.score.desc(), Rating.updated_at.desc(), ContentTitle.id).limit(80)).all()
+    seeds = [g for g, _ in Counter(g for t in liked for g in (t.genres or [])).most_common(4)]
+    pool = []
+    media_types = [want] if want else ["movie", "series"]
+    for media in media_types:
+        scoped = query.where(ContentTitle.content_type == media)
+        per_media = 800 // len(media_types)
+        if seeds:
+            pool.extend(db.scalars(scoped.where(or_(*(genre_clause(g) for g in seeds)))
+                .order_by(ContentTitle.release_date.desc(), ContentTitle.id).limit(per_media // 2)).all())
+        remaining = per_media - len([t for t in pool if t.content_type == media])
+        existing = [t.id for t in pool]
+        pool.extend(db.scalars(scoped.where(ContentTitle.id.notin_(existing))
+            .order_by(ContentTitle.release_date.desc(), ContentTitle.id).limit(remaining)).all())
     # Return usable local results without serial upstream padding. Only a true
     # cold start waits for one bounded page of the requested TMDB media.
     if not pool:

@@ -81,9 +81,12 @@ def get_watch_options(
     title_id: str,
     db: DbSession,
     current_user: CurrentUser,
-    region: str = Query(default="US", min_length=2, max_length=2),
+    region: str | None = Query(default=None, pattern="^[A-Za-z]{2}$"),
 ) -> WatchOptionsResponse:
     from uuid import UUID
+    from app.models.user import UserProfile
+    profile = db.get(UserProfile, current_user.id)
+    region = (region or (profile.country_code if profile else None) or "US").upper()
 
     try:
         uid = UUID(title_id)

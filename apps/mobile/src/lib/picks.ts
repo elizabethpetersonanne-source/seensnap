@@ -1,7 +1,8 @@
-import { apiRequest } from "./api";
+import { ApiError, apiRequest } from "./api";
 
 export type PickTitle = {
   id: string;
+  tmdb_id?: number;
   title: string;
   poster_url: string | null;
   backdrop_url: string | null;
@@ -19,6 +20,7 @@ export type PickList = {
   is_default: boolean;
   titles: PickTitle[];
   total_count?: number;
+  is_previous_collection?: boolean;
 };
 
 export type PicksCollections = {
@@ -76,18 +78,35 @@ type LegacyRankedRow = {
 type LegacyRankedResponse = { items: LegacyRankedRow[]; total: number };
 
 
-export async function fetchPicksCollections(token: string): Promise<PicksCollections> {
-  // Preferred path — single call, server-side grouped.
-  try {
-    return await apiRequest<PicksCollections>("/me/picks/collections", { token });
-  } catch (err) {
-    // Backend not yet deployed with the unified endpoint. Fall back
-    // to the legacy watchlist + ranked endpoints so users still see
-    // the lists they've curated.
-    return await fetchPicksCollectionsLegacy(token);
+export async function fetchPicksCollections(token: string, previous: PicksCollections | null = null): Promise<PicksCollections> {
+  let result: PicksCollections;
+  try { result = await apiRequest<PicksCollections>("/me/picks/collections", { token }); }
+  catch (error) {
+    if (error instanceof ApiError && error.status === 404) return fetchPicksCollectionsLegacy(token);
+    throw error;
   }
+  // Refresh already-browsed pages too: removals and ranking edits must not
+  // leave stale tail items, or collapse a user's position back to page one.
+  if (previous) {
+    const keys = ["ranked_favorites", "my_next_watch", "favorites", "watched"] as const;
+    await Promise.all(keys.map(async key => {
+      while (result[key].length < Math.min(previous[key].length, result[`${key}_count`] ?? 0)) {
+        const page = await apiRequest<{ items: PickTitle[] }>(`/me/picks/collections/${key}?offset=${result[key].length}&limit=100`, { token });
+        if (!page.items.length) break;
+        result[key].push(...page.items);
+      }
+    }));
+    await Promise.all(result.my_lists.map(async list => {
+      const loaded = previous.my_lists.find(old => old.id === list.id)?.titles.length ?? 0;
+      while (list.titles.length < Math.min(loaded, list.total_count ?? 0)) {
+        const page = await apiRequest<{ items: PickTitle[] }>(`/me/picks/lists/${list.id}/titles?offset=${list.titles.length}&limit=100`, { token });
+        if (!page.items.length) break;
+        list.titles.push(...page.items);
+      }
+    }));
+  }
+  return result;
 }
-
 
 async function fetchPicksCollectionsLegacy(token: string): Promise<PicksCollections> {
   const [listSummaries, ranked] = await Promise.allSettled([

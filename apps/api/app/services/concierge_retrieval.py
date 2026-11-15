@@ -22,7 +22,7 @@ from app.core.config import settings
 from app.models.content import ContentAvailability, ContentTitle
 from app.models.social import Rating, RankedFavorite, TitleWatchStatus, Watchlist, WatchlistItem
 from app.services import tmdb
-from app.services.concierge_runtime import timeout_for, check_budget, stage, ConciergeDeadlineExceeded
+from app.services.concierge_runtime import timeout_for, check_budget, stage, ConciergeDeadlineExceeded, count_retrieval
 from app.services.concierge_contract import RelevanceResponse
 
 
@@ -435,10 +435,13 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
             batches += 1
             by_id = {str(t.id): t for t in db.scalars(select(ContentTitle).where(ContentTitle.id.in_([UUID(x) for x in batch_ids]))).all()}
             batch = [by_id[key] for key in batch_ids if permitted(by_id.get(key))]
+            count_retrieval("candidate_reviewed", len(batch))
             with stage("metadata"):
                 failed = hydrate_candidates(db, batch, constraints)
             failures.extend(str(x) for x in failed)
             passing = [row for row in batch if row.id not in failed and _passes_constraints(row, constraints, db=db)]
+            count_retrieval("metadata_failed", len(failed))
+            count_retrieval("constraint_rejected", len(batch) - len(failed) - len(passing))
             if not passing: continue
             with stage("relevance"):
                 raw = _call_configured_model("", prompt_override=relevance_prompt(passing, constraints))
@@ -448,6 +451,9 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
                 # Preserve verified matches even if the model omitted some
                 # assessments. Unreviewed candidates remain pending, never fill
                 # the other four slots without passing relevance themselves.
+                count_retrieval("relevance_approved", len(matches))
+                count_retrieval("relevance_unassessed", len(missing))
+                count_retrieval("relevance_rejected", len(passing) - len(missing) - len(matches))
                 pending.extend(missing)
                 if missing: reason = "upstream_failure"
             for match in matches:

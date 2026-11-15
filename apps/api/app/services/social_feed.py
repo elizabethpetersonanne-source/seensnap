@@ -10,7 +10,7 @@ block rules server-side (§57 — server determines actor identity).
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 from uuid import UUID, uuid4
 
@@ -291,9 +291,17 @@ def following_feed(
     # Pull every stored compatibility score for the viewer and bucket
     # the counterparties. The score table stores pairs sorted by uuid
     # string, so the viewer can be either user_a or user_b.
+    from sqlalchemy.orm import aliased
+    from app.models.user import User
+    user_a, user_b = aliased(User), aliased(User)
     compat_rows = db.execute(
         select(CompatibilityScore.user_a_id, CompatibilityScore.user_b_id, CompatibilityScore.compatibility)
-        .where(
+        .join(user_a, user_a.id == CompatibilityScore.user_a_id)
+        .join(user_b, user_b.id == CompatibilityScore.user_b_id)
+        .where(CompatibilityScore.user_a_version == user_a.taste_version,
+            CompatibilityScore.user_b_version == user_b.taste_version,
+            CompatibilityScore.rated_count_a >= 5, CompatibilityScore.rated_count_b >= 5,
+            CompatibilityScore.updated_at > datetime.now(timezone.utc) - timedelta(hours=12),
             or_(
                 CompatibilityScore.user_a_id == viewer_user_id,
                 CompatibilityScore.user_b_id == viewer_user_id,

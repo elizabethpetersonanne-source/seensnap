@@ -16,7 +16,17 @@ Validation: the initial 45 client tests pass, including a new regression asserti
 
 Production observation after the initial release: the poster remained at exactly `top=332px`, `height=520px` before and after a confirmed right swipe, and My Next Watch contained the saved title. Visual inspection caught an extra bottom-navigation offset in the overlay; the follow-up removes that duplicate offset because the tab navigator already reserves the navigation area.
 
-**Additional live defect:** Undo returned the retry message on two attempts. The current card/receipt remained available, but the server-side reversal was not confirmed. Local mocked-client and API tests do not reproduce this production failure. Investigate the deployed Undo response and Cloud Run logs before calling Undo accepted. The follow-up logs only the HTTP status (no account, token, title or raw response) and adds clear conflict/missing-receipt messages. This diagnostic change is not a claimed backend fix.
+**Additional live defect:** Undo repeatedly returned the retry message for the first tested title. The current card/receipt remained available, but the server-side reversal was not confirmed. A fresh save and Undo on a different title succeeded after the follow-up frontend release. Treat this as intermittent or title-specific until the failed response and Cloud Run logs explain it. Local mocked-client and API tests do not reproduce the failed case. The follow-up logs only the HTTP status (no account, token, title or raw response) and adds clear conflict/missing-receipt messages. This diagnostic change is not a claimed backend fix. The temporary queue additions were removed/restored during acceptance.
+
+### Final frontend release evidence
+
+- PRs #8 and #9 merged; final frontend merge: `825840b702c0382af76063cfebeab6244a1de694`.
+- Both PR verification runs and Netlify preview builds passed. The final client suite has 47 passing tests.
+- Production serves `entry-55672c41982d97e401d3a275d0c6ab87.js`, SHA-256 `9aad335b73148a2e90809c2e1d9cb376d85e27afb3b7a31e7056004f52327277`, matching the tested preview.
+- Live overlay bottom measured `855px`, with tab navigation starting at `863px`: the intended 8px gap. No duplicate navigation offset remains.
+- Save advanced the deck; a fresh successful Undo restored the title. The earlier failure remains a separate follow-up.
+- The live list picker has clean labels and also confirms separate Next Watch / My Next Watch queues. Consolidation remains backend work.
+- Browser inspection is desktop-sized; physical iPhone/iPad acceptance remains outstanding.
 
 ## Recommended order for remaining work
 

@@ -173,7 +173,7 @@ class PublicProfileListSummary(BaseModel):
     name: str
     description: str | None
     item_count: int
-    share_token: str
+    share_token: str | None = None
     preview_posters: list[str]
 
 
@@ -183,53 +183,23 @@ def get_public_profile_lists(
     current_user: CurrentUser,
     db: DbSession,
 ) -> list[PublicProfileListSummary]:
-    """Return the user's watchlists that have an active public share
-    token. A list becomes discoverable on someone's profile once its
-    owner publishes it (POST /me/watchlist/lists/{id}/share) OR posts
-    it to the social feed (create_social_post auto-mints a token).
-    """
-    profile = _require_profile(db, user_id, current_user.id)
-
-    # Latest non-revoked share per watchlist, owned by this user.
-    share_rows = db.execute(
-        select(ListShare, Watchlist)
-        .join(Watchlist, Watchlist.id == ListShare.watchlist_id)
-        .where(
-            Watchlist.owner_user_id == user_id,
-            ListShare.revoked_at.is_(None),
-            Watchlist.visibility == "public",
-            visible_list_clause(current_user.id),
-            ListShare.created_by_user_id == Watchlist.owner_user_id,
-        )
-        .order_by(ListShare.created_at.desc())
-    ).all()
-    # Dedupe to one share per watchlist (the latest).
-    seen: set[UUID] = set()
-    out: list[PublicProfileListSummary] = []
-    for share, watchlist in share_rows:
-        if watchlist.id in seen:
-            continue
-        seen.add(watchlist.id)
-        item_count = db.scalar(
-            select(func.count(WatchlistItem.id)).where(WatchlistItem.watchlist_id == watchlist.id)
-        ) or 0
-        preview_rows = db.execute(
-            select(ContentTitle.poster_url)
-            .join(WatchlistItem, WatchlistItem.content_title_id == ContentTitle.id)
-            .where(WatchlistItem.watchlist_id == watchlist.id)
-            .order_by(WatchlistItem.created_at.desc())
-            .limit(4)
-        ).all()
-        preview_posters = [row[0] for row in preview_rows if row[0]]
-        out.append(PublicProfileListSummary(
-            list_id=watchlist.id,
-            name=watchlist.name,
-            description=watchlist.description,
-            item_count=int(item_count),
-            share_token=share.token,
-            preview_posters=preview_posters,
-        ))
-    return out
+    """Public visibility is publication; a separate link token is optional."""
+    _require_profile(db, user_id, current_user.id)
+    lists = db.scalars(select(Watchlist).where(Watchlist.owner_user_id == user_id,
+        Watchlist.visibility == "public", visible_list_clause(current_user.id))
+        .order_by(Watchlist.updated_at.desc(), Watchlist.id)).all()
+    ids = [wl.id for wl in lists]
+    counts = dict(db.execute(select(WatchlistItem.watchlist_id, func.count())
+        .where(WatchlistItem.watchlist_id.in_(ids)).group_by(WatchlistItem.watchlist_id)).all())
+    previews = {key: [] for key in ids}
+    # Window each list before transferring artwork rows.
+    ranked = select(WatchlistItem.watchlist_id.label("list_id"), ContentTitle.poster_url,
+        func.row_number().over(partition_by=WatchlistItem.watchlist_id,
+            order_by=(WatchlistItem.created_at.desc(), WatchlistItem.id)).label("position"))        .join(ContentTitle, ContentTitle.id == WatchlistItem.content_title_id)        .where(WatchlistItem.watchlist_id.in_(ids), ContentTitle.poster_url.is_not(None)).subquery()
+    for list_id, poster in db.execute(select(ranked.c.list_id, ranked.c.poster_url).where(ranked.c.position <= 4)):
+        previews[list_id].append(poster)
+    return [PublicProfileListSummary(list_id=wl.id, name=wl.name, description=wl.description,
+        item_count=counts.get(wl.id, 0), preview_posters=previews[wl.id]) for wl in lists]
 
 
 class PublicRankedFavoriteRow(BaseModel):

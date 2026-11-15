@@ -410,9 +410,11 @@ export default function DiscoverScreen() {
       else if (decision.status === "allowance_exhausted")
         setConciergeActionError("Your monthly search allowance is used up. It resets next month.");
       return decision;
-    } catch {
+    } catch (error) {
       if (generation === conciergeGeneration.current)
-        setConciergeActionError("Couldn't retrieve this search. Your request is saved; tap the arrow to retry.");
+        setConciergeActionError(error instanceof ApiError && error.status === 429
+          ? "Please let your current search finish, then try again in a moment. Your request is saved."
+          : "Couldn't retrieve this search. Your request is saved; tap the arrow to retry.");
     } finally {
       if (generation === conciergeGeneration.current) {
         conciergeRefining.current = false;
@@ -456,7 +458,7 @@ export default function DiscoverScreen() {
           if (generation === conciergeGeneration.current) setConciergeDecision({ ...latest, _intent: String(latest.constraints?.raw_intent ?? conciergeDecision._intent ?? "") });
         } catch { /* Keep the visible results if recovery cannot connect. */ }
         if (generation === conciergeGeneration.current) setConciergeActionError("Your search changed elsewhere. Review the latest results and try again.");
-      } else setConciergeActionError("Couldn't finish checking more matches. Your results are still here; please retry.");
+      } else setConciergeActionError(error instanceof ApiError && error.status === 429 ? "Please wait a moment before trying again. Your results are still here." : "Couldn't finish checking more matches. Your results are still here; please retry.");
     } finally {
       if (generation === conciergeGeneration.current) {
         conciergeRefining.current = false;

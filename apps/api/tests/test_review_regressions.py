@@ -114,7 +114,7 @@ def test_feed_cursor_exhausts_mixed_buckets_and_equal_timestamps_without_duplica
     db.add(UserFollow(follower_user_id=viewer.id, following_user_id=followed.id))
     for person, score in [(high, 95), (medium, 85)]:
         a, b = sorted([viewer.id, person.id], key=str)
-        db.add(CompatibilityScore(user_a_id=a, user_b_id=b, compatibility=score))
+        db.add(CompatibilityScore(user_a_id=a, user_b_id=b, compatibility=score, user_a_version=0, user_b_version=0, rated_count_a=5, rated_count_b=5))
     now = datetime.now(timezone.utc)
     expected = []
     for group, person in enumerate([followed, high, medium]):

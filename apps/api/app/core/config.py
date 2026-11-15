@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     concierge_ai_location: str = "us"
     # Optional internal scheduler credential. Empty disables the HTTP trigger.
     internal_job_token: str = ""
+    # Optional native launch configuration; empty means web-only beta.
+    ios_team_id: str = ""
+    android_app_package: str = "com.seensnap.app"
+    android_sha256_fingerprint: str = ""
+    ios_app_store_url: str = ""
+    android_play_store_url: str = ""
+    # Operational protection, independent of Premium billing allowances.
+    concierge_max_concurrent_per_user: int = 1
+    concierge_requests_per_minute: int = 12
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 

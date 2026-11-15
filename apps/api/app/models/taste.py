@@ -13,6 +13,7 @@ class UserTasteProfile(Base):
     __tablename__ = "user_taste_profiles"
 
     user_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    source_version: Mapped[int] = mapped_column(Integer, default=-1, server_default="-1")
     top_genres: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     top_themes: Mapped[list[str]] = mapped_column(JSONB, default=list)
     top_platforms: Mapped[list[str]] = mapped_column(JSONB, default=list)
@@ -37,6 +38,10 @@ class CompatibilityScore(Base):
     user_a_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     user_b_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("users.id"))
     compatibility: Mapped[int] = mapped_column(Integer)
+    user_a_version: Mapped[int] = mapped_column(Integer, default=-1, server_default="-1")
+    user_b_version: Mapped[int] = mapped_column(Integer, default=-1, server_default="-1")
+    rated_count_a: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    rated_count_b: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
     shared_genres: Mapped[list[str]] = mapped_column(JSONB, default=list)
     shared_titles: Mapped[list[dict]] = mapped_column(JSONB, default=list)
     shared_labels: Mapped[list[str]] = mapped_column(JSONB, default=list)

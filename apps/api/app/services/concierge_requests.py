@@ -4,7 +4,7 @@ import hashlib
 import json
 from uuid import uuid4
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, func
 from app.models.entitlements import ConciergeRequest, ConciergeAllowanceEntry
 from app.models.user import User
 from app.services.entitlements import reserve_concierge_decision
@@ -14,11 +14,11 @@ LEASE_SECONDS = 150
 
 def request_fingerprint(payload):
     data = payload.model_dump(mode="json", exclude={"idempotency_key"})
-    data["intent"] = data["intent"].strip()
+    if "intent" in data: data["intent"] = data["intent"].strip()
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
-def claim(db, user_id, payload):
+def claim(db, user_id, payload, *, reserve_allowance=True):
     now = datetime.now(timezone.utc)
     db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     request = db.scalar(select(ConciergeRequest).where(
@@ -31,6 +31,18 @@ def claim(db, user_id, payload):
         if request.state == "completed" or (request.state == "processing" and request.lease_expires_at.replace(tzinfo=timezone.utc) > now):
             db.commit()
             return request, False, None
+    from app.core.config import settings
+    live = db.scalar(select(func.count()).select_from(ConciergeRequest).where(
+        ConciergeRequest.user_id == user_id, ConciergeRequest.state == "processing",
+        ConciergeRequest.lease_expires_at > now)) or 0
+    recent = db.scalar(select(func.sum(ConciergeRequest.attempt)).where(
+        ConciergeRequest.user_id == user_id, ConciergeRequest.updated_at > now - timedelta(minutes=1))) or 0
+    if live >= max(1, settings.concierge_max_concurrent_per_user):
+        raise HTTPException(429, detail={"code": "search_busy", "retryable": True,
+            "message": "Your previous search is still running. Please try again shortly."}, headers={"Retry-After": "3"})
+    if recent >= max(1, settings.concierge_requests_per_minute):
+        raise HTTPException(429, detail={"code": "search_rate_limited", "retryable": True,
+            "message": "Please wait a moment before starting another search."}, headers={"Retry-After": "60"})
     # Reservation retries (including a worker lost after commit) must not leak
     # slots or bypass the free-tier cap. The user row serializes cap checks.
     if request:
@@ -40,8 +52,8 @@ def claim(db, user_id, payload):
         if entry and entry.state == "reserved":
             entry.state = "released"
             db.flush()
-    allowance = reserve_concierge_decision(db, user_id, idempotency_key=payload.idempotency_key, now=now)
-    if not allowance.allowed:
+    allowance = reserve_concierge_decision(db, user_id, idempotency_key=payload.idempotency_key, now=now) if reserve_allowance else None
+    if allowance is not None and not allowance.allowed:
         db.commit()
         return request, False, allowance
     if request is None:

@@ -26,6 +26,7 @@ class Runtime:
     seconds: float = 75
     started: float = field(default_factory=time.monotonic)
     stages: dict = field(default_factory=dict)
+    counts: dict = field(default_factory=dict)
 
     def remaining(self):
         left = self.seconds - (time.monotonic() - self.started)
@@ -67,12 +68,20 @@ def stage(name):
             runtime.stages[name] = runtime.stages.get(name, 0) + round((time.monotonic() - started) * 1000)
 
 
+def count_retrieval(name, amount):
+    if name not in {"candidate_reviewed", "metadata_failed", "constraint_rejected", "relevance_approved", "relevance_rejected", "relevance_unassessed"}:
+        raise ValueError("Unknown retrieval counter")
+    runtime = _active.get()
+    if runtime:
+        runtime.counts[name] = runtime.counts.get(name, 0) + max(0, int(amount))
+
+
 def report(runtime, *, status, code, count, attempt):
     logger.info(json.dumps({"event": "concierge_request",
         "request_id": runtime.request_id, "status": status, "code": code,
         "result_count": count, "attempt": attempt,
         "elapsed_ms": round((time.monotonic() - runtime.started) * 1000),
-        "stages_ms": runtime.stages,
+        "stages_ms": runtime.stages, "retrieval_counts": runtime.counts,
     }))
 
 

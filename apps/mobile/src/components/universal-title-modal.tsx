@@ -248,7 +248,7 @@ export function UniversalTitleModal({
       if (isMounted) setWatchOptionsLoading(true);
       try {
         const data = await apiRequest<WatchOptionsResponse>(
-          `/titles/${activeTitle.id}/watch-options?region=US`,
+          `/titles/${activeTitle.id}/watch-options`,
           { token: sessionToken }
         );
         if (isMounted) setWatchOptions(data);

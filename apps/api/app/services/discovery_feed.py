@@ -6,6 +6,7 @@ band. Persisted pending/served IDs prevent regenerated-pool offset skips.
 import calendar
 import hashlib
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, datetime, timedelta, timezone
 from uuid import UUID
@@ -18,14 +19,15 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.models.content import ContentTitle, ContentAvailability
 from app.models.discovery import DiscoverySession
-from app.models.taste import TitleFeatures
 from app.models.user import UserProfile
 from app.services.discovery_decisions import excluded_title_ids
 from app.services.title_compatibility import scorer_for_user
+from app.services import discovery_personalization as personal
 from app.services.tmdb import _fetch_genre_map, _match_genre_id, _tmdb_headers, _upsert_title_from_tmdb_result, fetch_title_videos, TmdbConfigurationError
 
 from app.core.scenedna_config import SCORE_VERSION
-ALGORITHM = "discovery_v3:" + SCORE_VERSION
+ALGORITHM = "discovery_v4:" + SCORE_VERSION
+log = logging.getLogger(__name__)
 WEIGHTS = (0.50, 0.30, 0.15, 0.05)
 
 
@@ -98,10 +100,12 @@ def _streaming_evidence(title, region, mode, now):
         return False
 
 
-def eligible(title, excluded, preferred_type, genre, region, mode, as_of, now):
+def eligible(title, excluded, preferred_type, genre, region, mode, as_of, now, *, require_availability=True):
     if title.id in excluded or not title.poster_url or not (title.overview or "").strip():
         return False
     if title.release_date is None or title.release_date > as_of:
+        return False
+    if (title.metadata_raw or {}).get("adult"):
         return False
     expected = "series" if preferred_type == "show" else preferred_type
     if expected and title.content_type != expected:
@@ -109,7 +113,7 @@ def eligible(title, excluded, preferred_type, genre, region, mode, as_of, now):
     genre = canonical_genre("tv" if title.content_type == "series" else "movie", genre)
     if genre and genre.casefold() not in {g.casefold() for g in title.genres or []}:
         return False
-    return _streaming_evidence(title, region, mode, now)
+    return not require_availability or _streaming_evidence(title, region, mode, now)
 
 
 def _video(title):
@@ -181,6 +185,11 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
                     if label in {"In your Watch Teams", "Saved by someone you follow"}:
                         label = current_sources.get(key) or matches[key]["explanation"]
                         item["reason"] = {**old_reason, "label": label} if isinstance(old_reason, dict) else label
+                    else:
+                        origin = session.state.get("served_origins", {}).get(key)
+                        fallback = matches[key]["explanation"] if matches[key]["score"] is not None else "Available to stream in your region · learning your taste"
+                        label = personal.personal_reason(db, scorer, origin) or fallback
+                        item["reason"] = {**old_reason, "label": label} if isinstance(old_reason, dict) else label
             return response
         if requested_version != session.version:
             raise HTTPException(status_code=409, detail={"error": "reset_feed", "message": "This feed cursor is out of date."})
@@ -196,6 +205,13 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     as_of = date.fromisoformat(state["as_of"])
     excluded = excluded_title_ids(db, user_id)
     served = set(state["served"])
+    taste = scorer_for_user(db, user_id)
+    seeds = personal.positive_seeds(db, taste, state, preferred_type)
+    jobs = []
+    if seeds and settings.tmdb_api_key:
+        personal.enrich_evidence(db, seeds, region, limit=4)
+        taste = scorer_for_user(db, user_id)
+        jobs = personal.plan_sources(taste, seeds, state, preferred_type, genre)
     pending = {str(t.id): t for t in db.scalars(select(ContentTitle).where(
         ContentTitle.id.in_([UUID(x) for x in state["pending"]]),
     )).all()}
@@ -209,6 +225,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     # HTTP in workers; SQLAlchemy session and title mutations stay on this thread.
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures = {key: pool.submit(catalog_page, key.split(":")[0], int(key.split(":")[1]), source["page"], genre, region, mode, as_of) for key, source in work}
+        personal_futures = [(job, pool.submit(personal.fetch_source, job, genre, region, mode, as_of)) for job in jobs]
         for key, future in futures.items():
             try:
                 result = future.result()
@@ -234,6 +251,42 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
                 title.metadata_raw = metadata
                 if str(title.id) not in served and eligible(title, excluded, preferred_type, genre, region, mode, as_of, now):
                     pending[str(title.id)] = title
+        for job, future in personal_futures:
+            try:
+                personal.ingest_source(db, job, future.result(), state, now, region, mode)
+            except (httpx.HTTPError, TmdbConfigurationError, ValueError, TypeError):
+                # Personal-source outages do not interrupt a usable catalog page.
+                # Its source cursor stays unchanged so a later page retries it.
+                upstream_failure = True
+    now = datetime.now(timezone.utc)
+    origins = state.setdefault("taste_waiting", {})
+    waiting = {str(t.id): t for t in db.scalars(select(ContentTitle).where(
+        ContentTitle.id.in_([UUID(key) for key in origins]),
+    )).all() if str(t.id) not in served and eligible(
+        t, excluded, preferred_type, genre, region, mode, as_of, now, require_availability=False,
+    )}
+    # Keep unscanned related titles across pages. A metadata budget must not
+    # silently discard the rest of a personalized retrieval response.
+    preliminary = scorer_for_user(db, user_id, [*waiting.values(), *pending.values()])
+    def evidence_order(title):
+        match = preliminary.score(title)
+        return (-(match.score if match.score is not None else 50), str(title.id))
+    waiting = dict(sorted(waiting.items(), key=lambda pair: evidence_order(pair[1]))[:personal.MAX_WAITING])
+    if seeds and settings.tmdb_api_key:
+        # One worker wave, including catalog discoveries: learn more about the
+        # strongest prospects before choosing the page, not after displaying it.
+        prospects = [t for t in waiting.values() if personal.needs_evidence(t, region)][:6]
+        prospects += [t for t in sorted(pending.values(), key=evidence_order) if personal.needs_evidence(t, region)][:2]
+        if personal.enrich_evidence(db, prospects, region, limit=8):
+            upstream_failure = True
+    now = datetime.now(timezone.utc)
+    for key, title in waiting.items():
+        if eligible(title, excluded, preferred_type, genre, region, mode, as_of, now):
+            pending[key] = title
+    # Keep unscanned work, but don't loop forever on known unavailable titles
+    # or titles whose provider evidence could not be established this time.
+    state["taste_waiting"] = {key: origins[key] for key, t in waiting.items()
+                             if key in pending or personal.needs_evidence(t, region)}
     # Private sources are read in the viewer's scope. They still must pass
     # exactly the same genre/media/region/exclusion rules as catalog titles.
     social, teams = private_sources(db, user_id, excluded)
@@ -266,19 +319,20 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
             if key not in served and eligible(title, excluded, preferred_type, genre, region, mode, as_of, now):
                 pending[key] = title
                 source_reasons.setdefault(key, label)
+    pending = {key: t for key, t in pending.items() if eligible(
+        t, excluded, preferred_type, genre, region, mode, as_of, now,
+    )}
     scorer = scorer_for_user(db, user_id, pending.values())
     scores = {key: scorer.score(title) for key, title in pending.items()}
     bands = {band: sorted([key for key, t in pending.items() if age_band(t.release_date, as_of) == band],
                          key=lambda key: (-(scores[key].score if scores[key].score is not None else 50.), key)) for band in range(4)}
-    for band, keys in bands.items():
-        related = [key for key in keys if key in source_reasons]
-        if related:
-            keys.remove(related[0])
-            keys.insert(0, related[0])
+    warm = any(e.utility > 0 for e in scorer.evidence.values())
+    history = state.get("mix_history", [])
+    personalized_order, _ = personal.compose(pending, scores, source_reasons, 48, history) if warm else ([], [])
     selected, video_cache, checked = [], {}, 0
     counts = list(state["counts"])
     if surface == "preview":
-        video_keys = [key for band in range(4) for key in bands[band][:12]]
+        video_keys = personalized_order if warm else [key for band in range(4) for key in bands[band][:12]]
         with ThreadPoolExecutor(max_workers=8) as pool:
             futures = {key: pool.submit(_video, pending[key]) for key in video_keys}
             for key, future in futures.items():
@@ -289,11 +343,24 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
         # Only scanned candidates take part in this page. Unscanned ones
         # stay pending, so a short video page never loses catalog positions.
         bands = {band: [key for key in keys if key in video_cache] for band, keys in bands.items()}
-    while len(selected) < limit and any(bands.values()) and checked < 60:
+    if warm:
+        selectable = dict(pending)
+        if surface == "preview":
+            for key, video in video_cache.items():
+                if video is None:
+                    pending.pop(key, None); served.add(key)
+            selectable = {key: title for key, title in pending.items() if video_cache.get(key)}
+        selected, history = personal.compose(selectable, scores, source_reasons, limit, history)
+        for key in selected:
+            counts[age_band(pending[key].release_date, as_of)] += 1
+    while not warm and len(selected) < limit and any(bands.values()) and checked < 60:
         band = next_band(counts, [i for i in bands if bands[i]])
         key = bands[band].pop(0)
         title = pending[key]
         checked += 1
+        if key in source_reasons and sum(x["kind"] == "social" for x in history[-19:]) >= 2:
+            pending.pop(key)
+            continue
         if surface == "preview":
             video = video_cache[key]
             if video is None:
@@ -303,6 +370,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
             video_cache[key] = video
         selected.append(key)
         counts[band] += 1
+        history = [*history, {"kind": "social" if key in source_reasons else "discovery"}][-20:]
     # Mutations can have landed while upstream requests were in flight.
     excluded = excluded_title_ids(db, user_id)
     items = []
@@ -315,7 +383,11 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
         served.add(key)
         compatibility = scores[key]
         matching = compatibility.score is not None
-        reason = source_reasons.get(key) or (compatibility.explanation if matching else "Available to stream in your region · learning your taste")
+        origin = state.get("taste_waiting", {}).pop(key, None)
+        if origin:
+            state.setdefault("served_origins", {})[key] = origin
+        seed_reason = personal.personal_reason(db, scorer, origin)
+        reason = source_reasons.get(key) or seed_reason or (compatibility.explanation if matching else "Available to stream in your region · learning your taste")
         if surface == "preview":
             items.append({"feed_item_id": f"pfi-{title.id}", "title_id": str(title.id), "tmdb_id": title.tmdb_id,
                 "media_type": title.content_type, "title": title.title, "year": title.release_date.year,
@@ -326,7 +398,12 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
             dto.scenedna = compatibility
             items.append({"title": dto.model_dump(mode="json"), "reason": reason,
                 "reason_type": "signal_match" if matching else "regional_streaming", "seed_title_id": None})
-    more = bool(pending) or any(not source["done"] for source in state["sources"].values())
+    if sum(x["kind"] == "social" for x in history[-19:]) >= 2:
+        # Temporarily defer capped social candidates. They can re-enter through
+        # the viewer-scoped source once new cards advance the rolling window.
+        pending = {key: title for key, title in pending.items() if key not in source_reasons}
+        state["taste_waiting"] = {key: value for key, value in state.get("taste_waiting", {}).items() if key not in source_reasons}
+    more = bool(pending) or bool(state.get("taste_waiting")) or personal.has_more_sources(scorer, state, preferred_type) or any(not source["done"] for source in state["sources"].values())
     if upstream_failure and not items:
         db.rollback()
         raise HTTPException(status_code=503, detail="Couldn't load streaming picks right now. Please retry with the same filters.")
@@ -347,7 +424,12 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
         known = state.get("resume_videos", {})
         known.update({str(key):value for key,value in video_cache.items() if value})
         state["resume_videos"] = dict(list(known.items())[-200:])
-    state.update(pending=list(pending), served=sorted(served), counts=counts)
+    state.update(pending=list(pending), served=sorted(served), counts=counts, mix_history=history)
+    state["served_origins"] = dict(list(state.get("served_origins", {}).items())[-200:])
+    # Aggregate diagnostics only: no account IDs, seed titles, or viewing data.
+    log.info("discovery_page mode=%s candidates=%s personal_candidates=%s returned=%s specific_matches=%s upstream_degraded=%s",
+             "personalized" if warm else "learning", len(scores), len(waiting), len(items),
+             sum(personal.specific_match(scores[key]) for key in selected), upstream_failure)
     session.state, session.last_response = state, response
     db.commit()
     return response

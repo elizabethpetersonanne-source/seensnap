@@ -12,7 +12,7 @@ def excluded_title_ids(db, user_id):
     """Current hard exclusions. Only committed discovery decisions advance cooldown."""
     excluded = set(db.scalars(select(WatchlistItem.content_title_id).join(
         Watchlist, Watchlist.id == WatchlistItem.watchlist_id,
-    ).where(Watchlist.owner_user_id == user_id)).all())
+    ).where(Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None))).all())
     excluded.update(db.scalars(select(RankedFavorite.content_title_id).where(RankedFavorite.user_id == user_id)).all())
     excluded.update(db.scalars(select(Rating.content_title_id).where(
         Rating.user_id == user_id, (Rating.watched_state == "watched") | Rating.score.is_not(None),
@@ -62,7 +62,16 @@ def undo_decision(db, user_id, swipe_id, *, refresh_derived=True):
     db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     decision = db.scalar(select(DiscoveryDecision).where(DiscoveryDecision.id == swipe_id, DiscoveryDecision.user_id == user_id))
     if decision is None:
-        raise HTTPException(status_code=404, detail="Swipe not found")
+        # Older clients can hold receipts created before the durable ledger.
+        # Disable that action, but never infer ownership of a save/rating.
+        legacy = db.scalar(select(SwipeRecord).where(SwipeRecord.id == swipe_id, SwipeRecord.user_id == user_id))
+        if legacy is None:
+            raise HTTPException(status_code=404, detail="Swipe not found")
+        decision = DiscoveryDecision(id=legacy.id, user_id=user_id, content_title_id=legacy.content_title_id,
+            direction=legacy.direction, action_version=legacy.action_version, sequence=None,
+            state_before={}, state_after={}, created_at=legacy.created_at)
+        db.add(decision)
+        db.flush()
     if decision.undone_at:
         return {"reversed": [], "partial_reason": None, "watched": _watched(db, user_id, decision.content_title_id),
                 "saved": _saved(db, user_id, decision.content_title_id)}
@@ -95,7 +104,7 @@ def undo_decision(db, user_id, swipe_id, *, refresh_derived=True):
                     db.delete(status)
             queue_item = before.get("removed_queue_item")
             if queue_item:
-                wl = db.scalar(select(Watchlist).where(Watchlist.id == UUID(queue_item["watchlist_id"]), Watchlist.owner_user_id == user_id))
+                wl = db.scalar(select(Watchlist).where(Watchlist.id == UUID(queue_item["watchlist_id"]), Watchlist.owner_user_id == user_id, Watchlist.merged_into_id.is_(None)))
                 existing = db.scalar(select(WatchlistItem.id).where(WatchlistItem.watchlist_id == wl.id, WatchlistItem.content_title_id == decision.content_title_id)) if wl else None
                 if wl and not existing:
                     db.add(WatchlistItem(watchlist_id=wl.id, content_title_id=decision.content_title_id,
@@ -103,22 +112,31 @@ def undo_decision(db, user_id, swipe_id, *, refresh_derived=True):
             reversed_bits.append("watched")
     if decision.direction == "right":
         created = (decision.state_before or {}).get("added_queue_item")
-        if created:
+        valid_receipt = isinstance(created, dict) and isinstance(created.get("added_via"), str)
+        try:
+            receipt_id = UUID(created["id"]) if valid_receipt else None
+        except (TypeError, ValueError, KeyError, AttributeError):
+            receipt_id = None
+        if receipt_id:
             item = db.scalar(select(WatchlistItem).join(Watchlist).where(
-                WatchlistItem.id == UUID(created["id"]), Watchlist.owner_user_id == user_id,
+                WatchlistItem.id == receipt_id, Watchlist.owner_user_id == user_id,
                 WatchlistItem.content_title_id == decision.content_title_id,
                 Watchlist.system_role == "next_watch",
             ))
             if item and item.added_via == created["added_via"]:
                 db.delete(item)
                 reversed_bits.append("saved")
-            elif item:
+            elif item or _saved(db, user_id, decision.content_title_id):
                 partial = "newer_save_kept"
-        # Historical v2 right swipes have no save receipt and remove nothing.
+        elif _saved(db, user_id, decision.content_title_id):
+            partial = "unknown_save_receipt"
+        # Historical right swipes have no save receipt and remove nothing.
     decision.undone_at = datetime.now(timezone.utc)
     record = db.get(SwipeRecord, swipe_id)
     if record:
         db.delete(record)
+    from app.services.taste_invalidation import invalidate_taste
+    invalidate_taste(db, user_id)
     db.commit()
     if refresh_derived:
         try:

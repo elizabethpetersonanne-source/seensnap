@@ -18,58 +18,88 @@ from app.schemas.taste import CompatibilityResponse, TeamAnalyticsResponse, Team
 from app.services.taste import get_taste_profile
 
 
-def refresh_compatibility(db: Session, user_a: UUID, user_b: UUID) -> CompatibilityScore:
-    first, second = sorted([user_a, user_b], key=str)
-    record = db.scalar(
-        select(CompatibilityScore).where(CompatibilityScore.user_a_id == first, CompatibilityScore.user_b_id == second)
-    )
-    if record is None:
-        record = CompatibilityScore(user_a_id=first, user_b_id=second, compatibility=0)
-        db.add(record)
-        db.flush()
-
-    profile_a = get_taste_profile(db, first)
-    profile_b = get_taste_profile(db, second)
-
-    genres_a = {item["genre"]: int(item["score"]) for item in profile_a.top_genres or []}
-    genres_b = {item["genre"]: int(item["score"]) for item in profile_b.top_genres or []}
-    shared_genres = sorted(set(genres_a).intersection(genres_b), key=lambda g: min(genres_a[g], genres_b[g]), reverse=True)
-
-    labels_a = {item["label"] for item in profile_a.taste_labels or []}
-    labels_b = {item["label"] for item in profile_b.taste_labels or []}
-    shared_labels = sorted(labels_a.intersection(labels_b))
-
-    platforms_a = set(profile_a.top_platforms or [])
-    platforms_b = set(profile_b.top_platforms or [])
-    shared_platforms = sorted(platforms_a.intersection(platforms_b))
-
-    shared_titles = _shared_titles(db, first, second)
-
-    genre_score = sum(min(genres_a[g], genres_b[g]) for g in shared_genres[:3]) / 3 if shared_genres else 0
-    title_score = min(len(shared_titles) * 18, 36)
-    label_score = min(len(shared_labels) * 12, 24)
-    # M01: streaming-provider overlap is NOT a taste compatibility
-    # signal. Shared subscriptions are context (we still display the
-    # platform list) but they do not contribute to the match number —
-    # that would reward paying for the same services, not having
-    # similar taste. Previously platform_score added up to 12 points.
-    compatibility = min(99, int(round(genre_score * 0.35 + title_score + label_score)))
-
-    record.compatibility = compatibility
-    record.shared_genres = shared_genres[:3]
-    record.shared_titles = shared_titles[:4]
-    record.shared_labels = shared_labels[:4]
-    record.shared_platforms = shared_platforms[:3]
-    record.summary = _compatibility_summary(shared_genres, shared_labels, shared_platforms)
-    record.updated_at = datetime.now(timezone.utc)
+def get_compatibilities(db: Session, viewer: UUID, candidates, *, force_refresh=False):
+    """Batch pair reads/writes, versioned against BOTH users' current taste."""
+    from app.models.user import User, UserPreferences
+    from app.models.social import UserFollow
+    from app.models.taste import UserTasteProfile
+    from app.services.visibility import visible_profile_clause
+    from sqlalchemy import or_, and_
+    ids = set(candidates)
+    if not ids:
+        return {}
+    users = dict(db.execute(select(User.id, User.taste_version).where(User.id.in_(ids | {viewer}))).all())
+    pairs = or_(and_(CompatibilityScore.user_a_id == viewer, CompatibilityScore.user_b_id.in_(ids)),
+                and_(CompatibilityScore.user_b_id == viewer, CompatibilityScore.user_a_id.in_(ids)))
+    records = {r.user_b_id if r.user_a_id == viewer else r.user_a_id: r
+        for r in db.scalars(select(CompatibilityScore).where(pairs)).all()}
+    pending = []
+    for other in ids:
+        if other not in users or viewer not in users:
+            continue
+        first, second = sorted((viewer, other), key=str)
+        cached = records.get(other)
+        if force_refresh or cached is None or cached.user_a_version != users[first] or cached.user_b_version != users[second] or _is_stale(cached.updated_at, hours=12):
+            pending.append(other)
+    if not pending:
+        return records
+    needed = set(pending) | {viewer}
+    # One profile build per person, one final commit for the whole batch.
+    profiles = {uid: get_taste_profile(db, uid, commit=False) for uid in sorted(needed, key=str)}
+    counts = dict(db.execute(select(Rating.user_id, func.count()).where(
+        Rating.user_id.in_(needed), Rating.watched_state == "watched", Rating.score.is_not(None)
+    ).group_by(Rating.user_id)).all())
+    favorites = defaultdict(list)
+    for owner, title in db.execute(select(RankedFavorite.user_id, ContentTitle)
+        .join(ContentTitle, ContentTitle.id == RankedFavorite.content_title_id)
+        .where(RankedFavorite.user_id.in_(needed)).order_by(RankedFavorite.position)):
+        favorites[owner].append(title)
+    visible = set(db.scalars(select(UserProfile.user_id).where(UserProfile.user_id.in_(needed),
+        visible_profile_clause(UserProfile.user_id, viewer))).all())
+    viewer_prefs = db.get(UserPreferences, viewer)
+    audience = viewer_prefs.profile_visibility if viewer_prefs else "public"
+    followers = set(db.scalars(select(UserFollow.follower_user_id).where(
+        UserFollow.following_user_id == viewer, UserFollow.follower_user_id.in_(needed))).all())
+    values = []
+    started = datetime.now(timezone.utc)
+    for other in pending:
+        first, second = sorted((viewer, other), key=str)
+        a, b = profiles[first], profiles[second]
+        ga = {g["genre"]: max(0, min(100, int(g["score"]))) for g in a.top_genres or []}
+        gb = {g["genre"]: max(0, min(100, int(g["score"]))) for g in b.top_genres or []}
+        shared_genres = sorted(set(ga) & set(gb), key=lambda g: (-min(ga[g], gb[g]), g))[:3]
+        shared_labels = sorted({g["label"] for g in a.taste_labels or []} & {g["label"] for g in b.taste_labels or []})[:4]
+        shared_platforms = sorted(set(a.top_platforms or []) & set(b.top_platforms or []))[:3]
+        shared_titles = []
+        if other in visible and (other == viewer or audience == "public" or (audience == "followers" and other in followers)):
+            mine = {t.id for t in favorites[viewer]}
+            shared_titles = [{"title_id": str(t.id), "title_name": t.title, "poster_url": t.poster_url}
+                for t in favorites[other] if t.id in mine][:4]
+        genre_score = sum(min(ga[g], gb[g]) for g in shared_genres) / 3
+        score = min(99, max(0, round(genre_score * .35 + min(len(shared_titles)*18, 36) + min(len(shared_labels)*12, 24))))
+        values.append(dict(user_a_id=first, user_b_id=second, compatibility=score,
+            user_a_version=users[first], user_b_version=users[second],
+            rated_count_a=counts.get(first, 0), rated_count_b=counts.get(second, 0),
+            shared_genres=shared_genres, shared_titles=shared_titles, shared_labels=shared_labels,
+            shared_platforms=shared_platforms, summary=_compatibility_summary(shared_genres, shared_labels, shared_platforms), updated_at=started))
+    if db.bind.dialect.name == "postgresql":
+        from sqlalchemy.dialects.postgresql import insert
+    else:
+        from sqlalchemy.dialects.sqlite import insert
+    statement = insert(CompatibilityScore).values(values)
+    db.execute(statement.on_conflict_do_update(index_elements=["user_a_id", "user_b_id"],
+        set_={key: getattr(statement.excluded, key) for key in values[0] if key not in {"user_a_id", "user_b_id"}}))
     db.commit()
-    db.refresh(record)
-    return record
+    return {r.user_b_id if r.user_a_id == viewer else r.user_a_id: r
+        for r in db.scalars(select(CompatibilityScore).where(pairs).execution_options(populate_existing=True)).all()}
+
+
+def refresh_compatibility(db: Session, user_a: UUID, user_b: UUID) -> CompatibilityScore:
+    return get_compatibilities(db, user_a, [user_b], force_refresh=True)[user_b]
 
 
 def get_compatibility(db: Session, user_a: UUID, user_b: UUID, *, force_refresh: bool = False) -> CompatibilityScore:
-    # Beta: recompute rather than exposing a day-old private evidence snapshot.
-    return refresh_compatibility(db,user_a,user_b)
+    return get_compatibilities(db, user_a, [user_b], force_refresh=force_refresh)[user_b]
 
 
 # M01 evidence gate: minimum distinct rated titles PER PERSON before
@@ -96,6 +126,7 @@ def to_compatibility_response(
     other_user_id: UUID,
     *,
     db: Session | None = None,
+    include_titles: bool = True,
 ) -> CompatibilityResponse:
     # M01: compatibility is a NUMBER only when BOTH users have >= 5
     # rated titles AND there's supported shared evidence. Otherwise
@@ -106,22 +137,15 @@ def to_compatibility_response(
         or (record.shared_labels or [])
     )
     has_evidence = shared_present
-    if has_evidence and db is not None:
-        # Enforce the rated-count floor only when a session is
-        # available. Legacy callers (team analytics path) that pass
-        # the record without db still show the previous behavior,
-        # which is acceptable for team pair rankings.
-        a_count = _user_rated_count(db, record.user_a_id)
-        b_count = _user_rated_count(db, record.user_b_id)
-        if a_count < _MIN_RATED_FOR_EVIDENCE or b_count < _MIN_RATED_FOR_EVIDENCE:
-            has_evidence = False
+    if has_evidence:
+        has_evidence = min(record.rated_count_a or 0, record.rated_count_b or 0) >= _MIN_RATED_FOR_EVIDENCE
     compat: int | None = record.compatibility if has_evidence else None
     return CompatibilityResponse(
         user_a=viewer_user_id,
         user_b=other_user_id,
         compatibility=compat,
         top_shared_genres=record.shared_genres or [],
-        top_shared_titles=[TasteTitleReferenceResponse(**item) for item in (_shared_titles(db,viewer_user_id,other_user_id) if db is not None else [])],
+        top_shared_titles=[TasteTitleReferenceResponse(**item) for item in (_shared_titles(db,viewer_user_id,other_user_id) if db is not None and include_titles else (record.shared_titles or []) if not include_titles else [])],
         shared_labels=record.shared_labels or [],
         shared_platforms=record.shared_platforms or [],
         summary=record.summary,
@@ -338,4 +362,4 @@ def _most_divisive_title(db: Session,team_id: UUID,member_ids: list[UUID]) -> di
 def _is_stale(updated_at: datetime | None, *, hours: int) -> bool:
     if updated_at is None:
         return True
-    return (datetime.now(timezone.utc) - updated_at).total_seconds() > hours * 3600
+    return (datetime.now(timezone.utc) - updated_at.replace(tzinfo=timezone.utc)).total_seconds() > hours * 3600
