@@ -1047,12 +1047,13 @@ export default function DiscoverScreen() {
               const subtitle = serverItems[0].reason || "Learning your taste";
               return (
                 <DiscoverSection
+                  key={`for-you:${sessionToken}:${forYouMedia}`}
                   onAction={handleDiscoverAction}
                   kicker="FOR YOU"
                   subtitle={subtitle}
                   rightSlot={<MediaToggle value={forYouMedia} onChange={setForYouMedia} />}
-                  hero={titleItemToDiscover(serverItems[0].title)}
-                  four={serverItems.slice(1).map((r) => titleItemToDiscover(r.title))}
+                  hero={{ ...titleItemToDiscover(serverItems[0].title), reason: serverItems[0].reason }}
+                  four={serverItems.slice(1).map((r) => ({ ...titleItemToDiscover(r.title), reason: r.reason }))}
                   onPressTitle={(t) => {
                     trackEvent("discover_item_clicked", { module: "for_you", content_id: t.id });
                     void openTitleModal(t.id);

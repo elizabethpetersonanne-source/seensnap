@@ -24,6 +24,11 @@ from app.models.social import Rating, RankedFavorite, TitleWatchStatus, Watchlis
 from app.services import tmdb
 from app.services.concierge_runtime import timeout_for, check_budget, stage, ConciergeDeadlineExceeded, count_retrieval
 from app.services.concierge_contract import RelevanceResponse
+from app.services import taste_candidates as taste
+from app.services.viewing_style import title_style
+from app.services.title_compatibility import title_features
+
+RETRIEVAL_VERSION = "style_v2"
 
 
 class PersonResolutionError(ValueError):
@@ -180,6 +185,7 @@ def relevance_prompt(rows, constraints):
             "runtime_minutes": t.runtime_minutes,
             "keywords": (t.metadata_raw or {}).get("keywords"),
             "original_language": (t.metadata_raw or {}).get("original_language"),
+            "viewing_style": title_style(t),
         }
         for t in rows
     ]
@@ -191,6 +197,9 @@ def relevance_prompt(rows, constraints):
         "do not invent extra differences so personal taste can order equally relevant matches. "
         "65 is the minimum for a defensible match; do not fill slots with unrelated titles. "
         "Check the themes, tone, similarity anchors and exclusions, not just genre. "
+        "For 'like this' similarity, use the supplied multi-axis viewing style. Shared plot subjects, "
+        "genres or actors alone do not prove a similar viewing experience. Unknown style is not agreement. "
+        "Distinguish an explicit subject request (e.g. serial killers) from a style/taste similarity request. "
         "Use supplied metadata; do not invent facts or IDs. Reasons for inferred tone must say it is a similarity. "
         "A broad request with no special theme allows generally appropriate choices. "
         "Active constraints below override superseded constraints in the request history. "
@@ -252,12 +261,12 @@ def _fingerprint(user_id, constraints):
         values.pop(field, None)
     # IDs are resolved by the server; names/roles remain stable across turns.
     values["person_constraints"] = [{k: v for k, v in p.items() if k != "tmdb_person_id"} for p in values["person_constraints"]]
-    return hashlib.sha256(json.dumps([str(user_id), values], sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([RETRIEVAL_VERSION, str(user_id), values], sort_keys=True).encode()).hexdigest()
 
 
 def _evidence_signature(title):
     return hashlib.sha256(json.dumps([title.overview, title.genres, title.runtime_minutes,
-        (title.metadata_raw or {}).get("keywords"), (title.metadata_raw or {}).get("credits")], sort_keys=True).encode()).hexdigest()
+        (title.metadata_raw or {}).get("keywords"), (title.metadata_raw or {}).get("credits"), title_style(title)], sort_keys=True).encode()).hexdigest()
 
 
 @lru_cache(maxsize=64)
@@ -348,6 +357,16 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
         rows = list(db.scalars(select(ContentTitle).where(ContentTitle.id.in_(ids)).order_by(ContentTitle.id)).all())
         allowed_ids = {str(row.id) for row in rows}
     resume = continuation if continuation and continuation.get("fingerprint") == _fingerprint(user_id, constraints) else None
+    preliminary, seeds, negatives, source_state = taste.history(db, user_id,
+        "show" if constraints.media_type == "series" else "movie" if constraints.media_type == "movie" else None)
+    anchor_rows = list(db.scalars(select(ContentTitle).where(
+        ContentTitle.id.in_([UUID(x) for x in constraints.anchor_title_ids])))) if constraints.anchor_title_ids else []
+    def anchor_signature():
+        return hashlib.sha256(json.dumps(sorted(_evidence_signature(a) for a in anchor_rows)).encode()).hexdigest()
+    if resume and resume.get("anchor_signature") != anchor_signature():
+        # Previously rejected candidates may now match a corrected anchor.
+        # Rebuild the source, not only the already-approved remainder.
+        resume = None
     if not resume:
         with stage("candidate_sources"):
             if scope == "any":
@@ -359,7 +378,6 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
                 if scope == "any":
                     rows.extend(people_rows)
                     complete = True  # verified combined credits enumerate this source
-            anchor_rows = []
             if constraints.anchor_title_ids:
                 anchor_rows = list(db.scalars(select(ContentTitle).where(ContentTitle.id.in_([UUID(x) for x in constraints.anchor_title_ids]))).all())
             else:
@@ -371,7 +389,7 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
                 constraints.anchor_title_ids = [str(a.id) for a in anchor_rows]
             constraints.anchor_evidence = [{"title_id": str(a.id), "title": a.title,
                 "media_type": a.content_type, "overview": (a.overview or "")[:1400], "genres": a.genres,
-                "keywords": (a.metadata_raw or {}).get("keywords")} for a in anchor_rows]
+                "keywords": (a.metadata_raw or {}).get("keywords"), "viewing_style": title_style(a)} for a in anchor_rows]
             constraints.excluded_title_ids = list(set(constraints.excluded_title_ids) | {str(a.id) for a in anchor_rows})
             if scope == "any" and not complete:
                 for anchor in anchor_rows:
@@ -381,6 +399,16 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
                 # this request's decade, language, duration and providers.
                 # catalog_page below expands with the complete hard filters.
                 rows.extend(_intent_matched_catalog_batch(db, constraints=constraints, exclude=set(), offset=0, limit=24))
+                # Taste-led sources widen generic requests without bypassing
+                # the per-candidate relevance and hard-constraint checks below.
+                if not anchor_rows and seeds:
+                    personal_rows, origins = taste.retrieve_personal(db, preliminary, seeds, source_state,
+                        preferred_type="show" if constraints.media_type == "series" else
+                        "movie" if constraints.media_type == "movie" else None,
+                        region=constraints.region_code)
+                    personal_rows = taste.inspection_order(personal_rows, origins,
+                        scorer_for_user(db, user_id, personal_rows))
+                    rows = [*rows[:12], *personal_rows, *rows[12:]]
     watched = set()
     if scope == "any" and not constraints.rewatch_intent:
         from app.services.discovery_decisions import excluded_title_ids
@@ -411,9 +439,12 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
         row = cached.get(key)
         if not permitted(row):
             approved.pop(key)
-        elif not _passes_constraints(row, constraints, db=db) or approved[key].get("signature") != _evidence_signature(row):
+        elif not _passes_constraints(row, constraints, db=db) or approved[key].get("signature") != _evidence_signature(row) or (
+            anchor_rows and approved[key].get("anchor_signature") != anchor_signature()
+        ):
             approved.pop(key); pending.append(key)
     failures, reason, batches, pages = [], None, 0, 0
+    style_batches = 0
     while len(approved) < target and batches < MAX_REVIEW_BATCHES:
         batch_ids = []
         try:
@@ -443,6 +474,26 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
             count_retrieval("metadata_failed", len(failed))
             count_retrieval("constraint_rejected", len(batch) - len(failed) - len(passing))
             if not passing: continue
+            if style_batches < 2:
+                with stage("viewing_style"):
+                    taste.prepare_evidence(db, passing, seeds=seeds, negatives=negatives,
+                        anchors=anchor_rows, region=constraints.region_code, metadata=False)
+                style_batches += 1
+            if anchor_rows:
+                constraints.anchor_evidence = [{"title_id": str(a.id), "title": a.title,
+                    "media_type": a.content_type, "overview": (a.overview or "")[:1400],
+                    "genres": a.genres, "viewing_style": title_style(a)} for a in anchor_rows]
+                matched = []
+                for row in passing:
+                    pairs = [(title_features(a), title_features(row)) for a in anchor_rows]
+                    if any(taste.similarity_strength(a, b) for a, b in pairs):
+                        matched.append(row)
+                    elif any(taste.similarity_unknown(a, b) for a, b in pairs):
+                        # Retry unknown evidence later; never call it an exhausted
+                        # source and never fill slots with a subject-only match.
+                        failures.append(str(row.id))
+                passing = matched
+                if not passing: continue
             with stage("relevance"):
                 raw = _call_configured_model("", prompt_override=relevance_prompt(passing, constraints))
                 matches = validated_matches(raw, passing, allow_partial=True)
@@ -458,7 +509,8 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
                 if missing: reason = "upstream_failure"
             for match in matches:
                 approved[match.title_id] = {"relevance": match.relevance, "reason": match.reason,
-                    "signature": _evidence_signature(by_id[match.title_id])}
+                    "signature": _evidence_signature(by_id[match.title_id]),
+                    "anchor_signature": anchor_signature()}
                 cached[match.title_id] = by_id[match.title_id]
         except ConciergeDeadlineExceeded:
             pending = list(dict.fromkeys(batch_ids + pending))
@@ -466,14 +518,17 @@ def retrieve(db, *, user_id, suggested_names, constraints, context, target=5, co
         except (httpx.HTTPError, tmdb.TmdbConfigurationError, ValueError):
             pending = list(dict.fromkeys(batch_ids + pending))
             reason = "upstream_failure"; break
+    for key in list(approved):
+        if anchor_rows and approved[key].get("anchor_signature") != anchor_signature():
+            approved.pop(key)
+            failures.append(key)
     scorer = scorer_for_user(db, user_id, cached.values())
-    personal = {key: scorer.score(cached[key]).score for key in approved}
-    ordered = sorted(approved, key=lambda key: (-approved[key]["relevance"],
-        -(personal[key] if personal[key] is not None else 50.), key))
-    selected = ordered[:target]
+    ordered, _ = taste.order_personal([cached[key] for key in approved], scorer,
+        relevance={cached[key].id: approved[key]["relevance"] for key in approved})
+    selected = [str(row.id) for row in ordered[:target]]
     rationales = {key: approved.pop(key)["reason"] for key in selected}
     pending = list(dict.fromkeys([*pending, *failures]))
-    state.update(pending_ids=pending, approved=approved, seen_ids=sorted(seen))
+    state.update(pending_ids=pending, approved=approved, seen_ids=sorted(seen), anchor_signature=anchor_signature())
     exhausted = state["source_complete"] and not pending and not approved
     if len(selected) < target:
         reason = reason or ("metadata_unavailable" if failures else "source_exhausted" if exhausted else "retrieval_budget_reached")

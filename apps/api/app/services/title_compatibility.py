@@ -110,7 +110,7 @@ class Evidence:
 
 
 def effective_evidence(ratings, ranks, saved, swipes, watched):
-    """Current numeric ratings supersede every weaker action, including neutral 5/6."""
+    """Current numeric ratings supersede every weaker action, including neutral 5 and mildly positive 6."""
     evidence = {}
     numeric_count = 0
     for title_id in set(ratings) | set(ranks) | set(saved) | set(swipes):
@@ -365,7 +365,7 @@ def scorer_for_user(db, user_id, candidates=()):
         ).all()
     }
     now = datetime.now(timezone.utc)
-    profile = db.get(UserProfile, user_id)
+    profile = db.get(UserProfile, user_id) if user_id else None
     region = (profile.country_code if profile else None) or "US"
     providers = defaultdict(set)
     for row in db.scalars(

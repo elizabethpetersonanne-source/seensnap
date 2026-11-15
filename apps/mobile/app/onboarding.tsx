@@ -208,6 +208,8 @@ export default function OnboardingScreen() {
   const [country, setCountry] = useState("US");
   const [ratingTitle, setRatingTitle] = useState<Title | null>(null);
   const [ratedCount, setRatedCount] = useState(0);
+  const [calibrationMode, setCalibrationMode] = useState<"search" | "swipe">("search");
+  const [lastRatedTitle, setLastRatedTitle] = useState<string | null>(null);
   const actionBusy = useRef(false);
   const completionBusy = useRef(false);
   const draft = useOnboardingDraft(
@@ -963,41 +965,24 @@ export default function OnboardingScreen() {
                 <Text style={styles.serif}>Let's tune{"\n"}your picks.</Text>
               </View>
               <Text style={styles.body}>
-                Rate five titles you have watched to help SeenSnap learn your
-                taste. You can leave anytime.
+                Search for five films or shows you know and give each a rating.
+                Start with favorites, then add something you liked less—both help
+                us find your taste. You can also choose your #1, or do this later.
               </Text>
-              <View style={styles.propList}>
-                <View style={styles.propRow}>
-                  <Text style={styles.propIndex}>←</Text>
-                  <Text style={styles.propText}>Swipe left: Pass</Text>
-                </View>
-                <View style={styles.propRow}>
-                  <Text style={styles.propIndex}>→</Text>
-                  <Text style={styles.propText}>Swipe right: Save to My Next Watch</Text>
-                </View>
-                <View style={styles.propRow}>
-                  <Text style={styles.propIndex}>↑</Text>
-                  <Text style={styles.propText}>
-                    Swipe up: Watched — add an optional rating
-                  </Text>
-                </View>
-                <View style={styles.propRow}>
-                  <Text style={styles.propIndex}>↓</Text>
-                  <Text style={styles.propText}>
-                    Swipe down: Watched and didn’t like it
-                  </Text>
-                </View>
-              </View>
               <GoldButton
-                label="Start swiping"
+                label="Find and rate my titles"
                 icon="arrow-forward"
                 size="lg"
                 onPress={() => {
-                  trackEvent("onboarding_calibration_started", {});
+                  trackEvent("onboarding_calibration_started", { mode: "search" });
+                  setCalibrationMode("search");
                   advance("calibrate");
                 }}
                 style={styles.cta}
               />
+              <Pressable accessibilityRole="button" style={styles.skipLink} onPress={() => { setCalibrationMode("swipe"); advance("calibrate"); }}>
+                <Text style={styles.skipLinkText}>I’d rather swipe through suggestions</Text>
+              </Pressable>
               <Pressable style={styles.skipLink} onPress={() => void skip()}>
                 <Text style={styles.skipLinkText}>Do this later</Text>
               </Pressable>
@@ -1014,9 +999,9 @@ export default function OnboardingScreen() {
               <View style={styles.calibrateHeader}>
                 <View style={{ flex: 1, gap: 4 }}>
                   <Text style={styles.featureEyebrow}>TASTE CALIBRATION</Text>
-                  <Text style={styles.featureTitle}>What&apos;s Next?</Text>
+                  <Text style={styles.featureTitle}>Shape your SceneDNA</Text>
                   <Text style={styles.featureSubtitle}>
-                    Swipe to shape your SceneDNA.
+                    Rate five titles you know. Favorites, good watches and dislikes all help.
                   </Text>
                 </View>
                 <Text style={styles.featureProgress}>
@@ -1025,7 +1010,16 @@ export default function OnboardingScreen() {
                 </Text>
               </View>
 
-              <OnboardingTitleSearch
+              <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+                {(["search", "swipe"] as const).map(mode => (
+                  <Pressable key={mode} accessibilityRole="button" accessibilityState={{ selected: calibrationMode === mode }}
+                    onPress={() => setCalibrationMode(mode)} style={{ minHeight: 44, padding: 12, borderBottomWidth: calibrationMode === mode ? 2 : 0, borderColor: colors.accent }}>
+                    <Text style={{ color: calibrationMode === mode ? colors.accent : colors.ink }}>{mode === "search" ? "Search & rate" : "Swipe suggestions"}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              {lastRatedTitle ? <Text accessibilityLiveRegion="polite" style={styles.featureSubtitle}>Rating saved for {lastRatedTitle}.</Text> : null}
+              {calibrationMode === "search" ? <OnboardingTitleSearch
                 onRate={(t) =>
                   setRatingTitle({
                     ...t,
@@ -1034,7 +1028,9 @@ export default function OnboardingScreen() {
                     genres: [],
                   })
                 }
-              />
+              /> : null}
+              {calibrationMode === "swipe" ? <>
+              <Text style={styles.featureSubtitle}>Right: Save · Left: Pass · Up: Watched & rate · Down: Watched & disliked</Text>
               {loadingCandidates || !currentCard ? (
                 <View style={styles.calibrateLoading}>
                   <Text style={styles.calibrateLoadingTitle}>
@@ -1249,6 +1245,10 @@ export default function OnboardingScreen() {
                   </View>
                 </View>
               )}
+              </> : null}
+              <Pressable accessibilityRole="button" style={styles.skipLink} onPress={() => void skip()}>
+                <Text style={styles.skipLinkText}>{ratedCount > 0 ? "Continue with these picks" : "Do this later"}</Text>
+              </Pressable>
             </View>
           ) : null}
 
@@ -1350,6 +1350,7 @@ export default function OnboardingScreen() {
         initial={null}
         onClose={() => setRatingTitle(null)}
         onChanged={() => {
+          setLastRatedTitle(ratingTitle?.title ?? null);
           if (sessionToken)
             void apiRequest<{ rated_count: number }>(
               "/me/onboarding-progress",

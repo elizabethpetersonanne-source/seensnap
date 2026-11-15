@@ -284,7 +284,7 @@ export async function fetchUniversalTitle(
   options?: { lightweight?: boolean },
 ): Promise<UniversalTitle> {
   try {
-    const data = await apiRequest<TitleResponse>(`/titles/${titleId}${options?.lightweight ? "?enrich=false" : ""}`, { token });
+    const data = await apiRequest<TitleResponse>(`/titles/${titleId}${options?.lightweight ? "?enrich=false" : "?include_related=false"}`, { token });
     return normalizeFromApi(data);
   } catch {
     if (seed) {
@@ -301,7 +301,7 @@ export async function fetchUniversalTitleByTmdbId(
 ): Promise<UniversalTitle> {
   // media_type: TMDB uses "movie" or "tv"; server accepts "movie" | "series" | "tv"
   const data = await apiRequest<TitleResponse>(
-    `/titles/by-tmdb/${encodeURIComponent(mediaType)}/${tmdbId}`,
+    `/titles/by-tmdb/${encodeURIComponent(mediaType)}/${tmdbId}?include_related=false`,
     { token }
   );
   return normalizeFromApi(data);

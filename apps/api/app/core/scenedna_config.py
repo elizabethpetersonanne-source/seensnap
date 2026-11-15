@@ -2,7 +2,7 @@
 
 from types import MappingProxyType
 
-SCORE_VERSION = "scenedna_title_v5"
+SCORE_VERSION = "scenedna_title_v6"
 WEIGHTS = MappingProxyType(
     {
         "exemplars": 28,
@@ -18,7 +18,7 @@ WEIGHTS = MappingProxyType(
     }
 )
 RATING_UTILITY = MappingProxyType(
-    {1: -1.0, 2: -0.75, 3: -0.5, 4: -0.25, 5: 0.0, 6: 0.0, 7: 0.25, 8: 0.5, 9: 0.75, 10: 1.0}
+    {1: -1.0, 2: -0.75, 3: -0.5, 4: -0.25, 5: 0.0, 6: 0.125, 7: 0.25, 8: 0.5, 9: 0.75, 10: 1.0}
 )
 DISPLAY_MIN_RATINGS = 5
 DISPLAY_MIN_COVERAGE = 0.35

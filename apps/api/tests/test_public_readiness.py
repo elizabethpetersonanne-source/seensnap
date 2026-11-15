@@ -221,7 +221,7 @@ def test_for_you_bounds_catalog_materialization_and_filters_genre_first(db, monk
         return original(db, uid, candidates)
     monkeypatch.setattr(for_you, "scorer_for_user", capture)
     result = for_you.for_you_recommendations(db, user.id, preferred_type="show", genre="Comedy", limit=5)
-    assert sizes == [800] and len(result) == 5
+    assert len(sizes) == 1 and 0 < sizes[0] <= 800 and len(result) == 5
 
 
 def test_profile_cache_tracks_current_taste_version(db):

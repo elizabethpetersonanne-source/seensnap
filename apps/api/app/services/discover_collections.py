@@ -71,7 +71,8 @@ def collection_page(db, user_id, key, media="movie", cursor=None, limit=20):
     if key == "now-in-theaters":
         media = "movie"
     region = region_for_user(db, user_id)
-    fingerprint = f"collection_v1:{key}:{media}:{region}"
+    from app.core.scenedna_config import SCORE_VERSION
+    fingerprint = f"collection_v2:{key}:{media}:{region}" + (f":{SCORE_VERSION}" if key == "for-you" else "")
     now = datetime.now(timezone.utc)
     if cursor:
         try:
