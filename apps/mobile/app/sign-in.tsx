@@ -1,16 +1,15 @@
 import * as AppleAuthentication from "expo-apple-authentication";
 import { router, useLocalSearchParams } from "expo-router";
 import { useEffect, useState } from "react";
-import { Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { KeyboardAvoidingView, Linking, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 
 import { safeReturnPath } from "@/lib/return-path";
 import { SSLogo } from "@/components/branding/ss-logo";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
-import { resolvedApiBaseUrl } from "@/lib/api";
-import { useAuth } from "@/lib/auth";
+import { DEV_AUTH_ENABLED, useAuth } from "@/lib/auth";
 
 export default function SignInScreen() {
-  const { isExpoGo, isLoading, sessionToken, signInDemo, signInWithGoogle, signInWithApple, signInWithDevEmail } =
+  const { isExpoGo, isLoading, googleAvailable, signInDemo, signInWithGoogle, signInWithApple, signInWithDevEmail } =
     useAuth();
   const {returnTo}=useLocalSearchParams<{returnTo?:string}>();
   const hasSharedDestination=!!safeReturnPath(returnTo);
@@ -22,7 +21,7 @@ export default function SignInScreen() {
 
   useEffect(() => {
     if (Platform.OS === "ios" && !isExpoGo) {
-      void AppleAuthentication.isAvailableAsync().then(setAppleAvailable);
+      void AppleAuthentication.isAvailableAsync().then(setAppleAvailable).catch(() => setAppleAvailable(false));
     }
   }, [isExpoGo]);
 
@@ -31,7 +30,7 @@ export default function SignInScreen() {
     try {
       await signInDemo();
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Demo sign-in failed (${resolvedApiBaseUrl})`);
+      setError(err instanceof Error ? err.message : "Demo sign-in failed. Please try again.");
     }
   }
 
@@ -40,7 +39,7 @@ export default function SignInScreen() {
     try {
       await signInWithGoogle();
     } catch (err) {
-      setError(err instanceof Error ? err.message : `Sign-in failed (${resolvedApiBaseUrl})`);
+      setError(err instanceof Error ? err.message : "Sign-in failed. Please try again.");
     }
   }
 
@@ -63,7 +62,8 @@ export default function SignInScreen() {
   }
 
   return (
-    <View style={styles.root}>
+    <KeyboardAvoidingView style={{ flex: 1, backgroundColor: colors.background }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+    <ScrollView contentContainerStyle={styles.root} keyboardShouldPersistTaps="handled">
       <View style={styles.inner}>
         {/* Welcome — large centered logo + editorial eyebrow line */}
         <View style={styles.header}>
@@ -76,7 +76,7 @@ export default function SignInScreen() {
         <View style={styles.actions}>
           {error ? <Text style={styles.error}>{error}</Text> : null}
 
-          {isExpoGo ? (
+          {isExpoGo && DEV_AUTH_ENABLED ? (
             <Pressable
               accessibilityRole="button"
               disabled={isLoading}
@@ -98,7 +98,7 @@ export default function SignInScreen() {
                   onPress={() => void handleAppleSignIn()}
                 />
               ) : null}
-              <Pressable
+              {googleAvailable ? <Pressable
                 accessibilityRole="button"
                 disabled={isLoading}
                 onPress={() => void handleGoogleSignIn()}
@@ -111,12 +111,12 @@ export default function SignInScreen() {
                 <Text style={styles.secondaryBtnLabel}>
                   {isLoading ? "Connecting..." : "Continue with Google"}
                 </Text>
-              </Pressable>
+              </Pressable> : null}
             </>
           )}
 
           {/* Dev / Expo Go: create or sign into a real test account via /auth/dev */}
-          {devMode ? (
+          {DEV_AUTH_ENABLED ? (devMode ? (
             <View style={styles.devBox}>
               <Text style={styles.devLabel}>TEST ACCOUNT</Text>
               <TextInput
@@ -156,21 +156,25 @@ export default function SignInScreen() {
             >
               <Text style={styles.devToggleText}>Use a test email instead</Text>
             </Pressable>
-          )}
+          )) : null}
         </View>
 
+        {!appleAvailable && !googleAvailable && !DEV_AUTH_ENABLED ? <Text style={styles.error}>Sign-in is unavailable in this build. Please try reopening the app or contact SeenSnap support.</Text> : null}
         {/* Legal */}
         <Text style={styles.legal}>
-          By continuing you agree to SeenSnap's Terms of Service and Privacy Policy.
+          By continuing you agree to SeenSnap's{" "}
+          <Text accessibilityRole="link" style={{ textDecorationLine: "underline" }} onPress={() => void Linking.openURL(process.env.EXPO_PUBLIC_TERMS_URL || "https://seensnap.app/terms").catch(() => setError("Couldn't open the terms. Please try again."))}>Terms of Service</Text>
+          {" and "}<Text accessibilityRole="link" style={{ textDecorationLine: "underline" }} onPress={() => void Linking.openURL(process.env.EXPO_PUBLIC_PRIVACY_URL || "https://seensnap.app/privacy").catch(() => setError("Couldn't open the privacy policy. Please try again."))}>Privacy Policy</Text>.
         </Text>
       </View>
-    </View>
+    </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
   root: {
-    flex: 1,
+    flexGrow: 1,
     backgroundColor: colors.background,
     justifyContent: "center",
     alignItems: "center",

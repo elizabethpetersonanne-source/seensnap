@@ -28,7 +28,7 @@ function resolveApiBaseUrl(): string | null {
   // Web bundles have no dev-tunnel fallback — hostUri only exists inside
   // Metro's runtime. If EXPO_PUBLIC_API_BASE_URL wasn't set at build time,
   // the browser build has no API to talk to and should say so out loud.
-  if (Platform.OS === "web") return null;
+  if (Platform.OS === "web" || !__DEV__) return null;
 
   const expoManifest = Constants as typeof Constants & {
     manifest2?: { extra?: { expoClient?: { hostUri?: string } } };

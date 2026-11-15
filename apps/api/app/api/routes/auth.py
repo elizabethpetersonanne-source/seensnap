@@ -38,7 +38,7 @@ from app.models.social import (
 from app.models.analytics import AnalyticsEvent
 from app.models.taste import CompatibilityScore, TeamAnalyticsSnapshot, RecommendationSignal, SwipeRecord, UserTasteProfile, WrappedStat
 from app.models.user import AuthIdentity, Device, User, UserPreferences, UserProfile
-from app.schemas.auth import AppleAuthRequest, DevAuthRequest, GoogleAuthRequest, SessionResponse, SessionUserResponse
+from app.schemas.auth import AppleAuthRequest, DeleteAccountRequest, DevAuthRequest, GoogleAuthRequest, SessionResponse, SessionUserResponse
 from app.services.auth import (
     AppleAuthError,
     GoogleAuthError,
@@ -87,9 +87,19 @@ def apple_auth(request: Request, payload: AppleAuthRequest) -> SessionResponse:
         db.close()
 
 
+@router.get("/deletion-requirements")
+def deletion_requirements(current_user: CurrentUser, db: DbSession) -> dict:
+    from app.services.apple_revocation import requires_apple_reauthorization
+    return {"apple_reauthorization_required": requires_apple_reauthorization(db, current_user.id)}
+
+
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
-def delete_account(current_user: CurrentUser, db: DbSession) -> None:
+def delete_account(current_user: CurrentUser, db: DbSession, payload: DeleteAccountRequest | None = None) -> None:
     uid = current_user.id
+    from app.services.apple_revocation import revoke_apple_for_deletion
+    from app.services.billing import delete_billing_customer
+    revoke_apple_for_deletion(db, uid, payload.apple_authorization_code if payload else None)
+    delete_billing_customer(uid)
     from app.services.social_feed import delete_feed_events
     delete_feed_events(db, db.scalars(select(FeedEvent.id).where(FeedEvent.actor_user_id == uid)).all())
 

@@ -94,7 +94,7 @@ export async function registerPushToken(sessionToken: string): Promise<string | 
     }
 
     const easProjectId =
-      (Constants.expoConfig?.extra as Record<string, string> | undefined)?.easProjectId ||
+      (Constants.expoConfig?.extra?.eas as { projectId?: string } | undefined)?.projectId ||
       (Constants.easConfig as { projectId?: string } | undefined)?.projectId ||
       "";
 
@@ -135,7 +135,7 @@ export async function deactivatePushToken(sessionToken: string): Promise<void> {
     if (status !== Notifications.PermissionStatus.GRANTED) return;
 
     const easProjectId =
-      (Constants.expoConfig?.extra as Record<string, string> | undefined)?.easProjectId ||
+      (Constants.expoConfig?.extra?.eas as { projectId?: string } | undefined)?.projectId ||
       (Constants.easConfig as { projectId?: string } | undefined)?.projectId ||
       "";
 

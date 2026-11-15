@@ -37,19 +37,25 @@ class GoogleIdentity:
 
 
 def verify_google_identity_token(token: str) -> GoogleIdentity:
-    if not settings.google_oauth_client_id:
-        raise GoogleAuthError("GOOGLE_OAUTH_CLIENT_ID is not configured")
+    audiences = [value for value in (settings.google_oauth_client_id,
+        settings.google_oauth_ios_client_id, settings.google_oauth_android_client_id) if value]
+    if not audiences:
+        raise GoogleAuthError("Google sign-in is not configured")
 
     try:
         payload = google_id_token.verify_oauth2_token(
             token,
             google_requests.Request(),
-            settings.google_oauth_client_id,
+            audiences,
         )
     except Exception as exc:  # noqa: BLE001
         raise GoogleAuthError("Google ID token verification failed") from exc
 
-    if not payload.get("email_verified"):
+    if payload.get("aud") not in audiences or (payload.get("azp") and payload["azp"] not in audiences):
+        raise GoogleAuthError("Google token is not intended for SeenSnap")
+    if not payload.get("sub") or not payload.get("email"):
+        raise GoogleAuthError("Google identity is incomplete")
+    if payload.get("email_verified") not in (True, "true"):
         raise GoogleAuthError("Google account email is not verified")
 
     return GoogleIdentity(
@@ -117,6 +123,7 @@ def verify_apple_identity_token(token: str, *, audience: str | None = None) -> A
             algorithms=["RS256"],
             audience=audience or settings.apple_bundle_id,
             issuer=APPLE_ISSUER,
+            options={"require": ["exp", "iat", "sub", "aud", "iss"]},
         )
     except Exception as exc:
         raise AppleAuthError("Apple identity token verification failed") from exc
@@ -124,6 +131,8 @@ def verify_apple_identity_token(token: str, *, audience: str | None = None) -> A
     subject = payload.get("sub")
     if not subject:
         raise AppleAuthError("Apple identity token missing subject claim")
+    if payload.get("email") and payload.get("email_verified") not in (True, "true"):
+        raise AppleAuthError("Apple account email is not verified")
 
     return AppleIdentity(
         subject=subject,

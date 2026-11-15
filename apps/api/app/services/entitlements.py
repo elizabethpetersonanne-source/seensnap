@@ -15,6 +15,7 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.entitlements import ConciergeAllowanceEntry, EntitlementGrant
+from app.core.config import settings
 
 
 # Oct-18 brief §9 configured defaults; put in named config so they're
@@ -59,7 +60,10 @@ def _active_grants(db: Session, user_id: UUID, now: datetime | None = None) -> l
             or_(EntitlementGrant.ends_at.is_(None), EntitlementGrant.ends_at > now),
         )
     ).all()
-    return list(rows)
+    billing_test = str(user_id) in settings.billing_test_users()
+    return [g for g in rows
+        if not (billing_test and g.source == "beta")
+        and not (g.source == "purchase" and g.payload.get("environment") == "SANDBOX" and not billing_test)]
 
 
 def resolve_entitlement(db: Session, user_id: UUID, now: datetime | None = None) -> Entitlement:
@@ -81,22 +85,22 @@ def resolve_entitlement(db: Session, user_id: UUID, now: datetime | None = None)
         tier="premium" if is_premium else "free",
         sources=sorted({g.source for g in grants}),
         expires_at=expires_at,
-        verified=all(g.verified for g in grants) if grants else False,
+        verified=True,  # an authenticated server-confirmed Free plan is also known
         concierge_monthly_cap=monthly_cap,
         is_beta=is_beta,
     )
 
 
-def grant_beta_premium(db: Session, user_id: UUID) -> EntitlementGrant:
-    """Idempotent: creates a beta Premium grant for a user if they
-    don't already have an active one. Called from the auth flow on
-    every new signup during beta so there's no race between signup
-    and the backfill migration."""
+def grant_beta_premium(db: Session, user_id: UUID) -> EntitlementGrant | None:
+    """Create once during beta. Expired/revoked grants must never resurrect."""
+    if not settings.beta_premium_auto_grant or str(user_id) in settings.billing_test_users():
+        return None
+    from app.models.user import User
+    db.scalar(select(User.id).where(User.id == user_id).with_for_update())
     existing = db.scalar(
         select(EntitlementGrant).where(
             EntitlementGrant.user_id == user_id,
             EntitlementGrant.source == "beta",
-            EntitlementGrant.revoked_at.is_(None),
         )
     )
     if existing is not None:

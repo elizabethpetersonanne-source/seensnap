@@ -57,3 +57,4 @@ jobs:
       - run: npm run test:client
       - run: npm run typecheck
       - run: npm run web:build
+      - run: npx expo export --platform ios --output-dir /tmp/seensnap-ios-bundle

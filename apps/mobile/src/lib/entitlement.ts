@@ -1,3 +1,5 @@
+import { AppState } from "react-native";
+import { onMembershipChanged } from "./membership-events";
 import { useEffect, useState } from "react";
 
 import { apiRequest } from "./api";
@@ -16,6 +18,13 @@ export async function fetchEntitlement(token: string): Promise<EntitlementRespon
 }
 
 export function useEntitlement(token: string | null): EntitlementResponse | null {
+  const [revision, setRevision] = useState(0);
+  useEffect(() => {
+    const changed = () => setRevision(value => value + 1);
+    const stop = onMembershipChanged(changed);
+    const subscription = AppState.addEventListener("change", value => { if (value === "active") changed(); });
+    return () => { stop(); subscription.remove(); };
+  }, []);
   const [state, setState] = useState<EntitlementResponse | null>(null);
 
   useEffect(() => {
@@ -46,7 +55,7 @@ export function useEntitlement(token: string | null): EntitlementResponse | null
     return () => {
       cancelled = true;
     };
-  }, [token]);
+  }, [token, revision]);
 
   return state;
 }

@@ -1,6 +1,10 @@
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+
+
+class DeleteAccountRequest(BaseModel):
+    apple_authorization_code: str | None = Field(default=None, max_length=4096)
 
 
 class GoogleAuthRequest(BaseModel):

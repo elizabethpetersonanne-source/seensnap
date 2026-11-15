@@ -1,6 +1,6 @@
 {
   "name": "seensnap-mobile",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
   "main": "expo-router/entry",
   "scripts": {
@@ -12,7 +12,10 @@
     "web:serve": "npx serve dist -l 8081 --single",
     "typecheck": "tsc --noEmit",
     "test:concierge": "node --test tests/concierge-recovery.test.cjs",
-    "test:client": "node --test tests/*.test.cjs"
+    "test:client": "node --test tests/*.test.cjs",
+    "release:check": "node scripts/check-native-release.cjs --release",
+    "eas-build-pre-install": "node scripts/check-native-release.cjs",
+    "eas-build-post-install": "python3 scripts/prepare-native-ios.py"
   },
   "engines": {
     "node": ">=20 <21"
@@ -40,6 +43,7 @@
     "react": "19.1.0",
     "react-dom": "19.1.0",
     "react-native": "0.81.5",
+    "react-native-purchases": "9.6.7",
     "react-native-safe-area-context": "~5.6.0",
     "react-native-screens": "~4.16.0",
     "react-native-web": "^0.21.0",

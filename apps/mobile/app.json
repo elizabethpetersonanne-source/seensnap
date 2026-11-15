@@ -4,7 +4,7 @@
     "slug": "seensnap",
     "owner": "gregtusar",
     "scheme": "seensnap",
-    "version": "0.1.0",
+    "version": "1.0.0",
     "orientation": "default",
     "userInterfaceStyle": "dark",
     "icon": "./assets/branding/seensnap-logo.png",
@@ -31,25 +31,26 @@
           "cameraPermission": false,
           "microphonePermission": false
         }
-      ]
+      ],
+      "expo-apple-authentication"
     ],
     "experiments": {
       "typedRoutes": true
     },
-    "extra": {
-      "easProjectId": ""
-    },
+    "extra": {},
     "ios": {
       "bundleIdentifier": "com.seensnap.app",
       "associatedDomains": [
-        "applinks:seensnap.app"
+        "applinks:seensnapalpha.netlify.app"
       ],
       "infoPlist": {
         "UIBackgroundModes": [
           "remote-notification"
         ]
       },
-      "supportsTablet": true
+      "supportsTablet": true,
+      "usesAppleSignIn": true,
+      "appleTeamId": "7Z8CYNB749"
     },
     "android": {
       "package": "com.seensnap.app",
