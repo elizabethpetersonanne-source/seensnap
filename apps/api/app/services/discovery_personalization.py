@@ -6,6 +6,7 @@ Every candidate is scored by the shared scorer and passes feed eligibility.
 """
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -16,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.models.content import ContentTitle
 from app.services.title_compatibility import title_features
+from app.services.concierge_runtime import timeout_for, ConciergeDeadlineExceeded
 from app.services.tmdb import (
     _fetch_genre_map, _match_genre_id, _tmdb_headers,
     _upsert_title_from_tmdb_result, _fresh_stamp, TmdbConfigurationError,
@@ -53,20 +55,31 @@ def positive_seeds(db, scorer, state, preferred_type=None):
             if x and y:
                 total += weight * len(x & y) / len(x | y)
         return total
+    offset = int(state.get("seed_offset", 0))
     selected = []
-    # A mixed feed must not accidentally hydrate only films and leave all TV
-    # preferences at genre-only resolution (or vice versa).
+    # Scoring uses ALL current evidence. The bounded network sample must
+    # represent it too: perfect scores cannot crowd out 6–8s or right-swipe/
+    # saved interest. Rotate within each group on successive feed pages.
+    groups = [
+        [t for t in rows if positive[t.id].kind == "rating" and (positive[t.id].rating or 0) >= 9],
+        [t for t in rows if positive[t.id].kind == "rating" and (positive[t.id].rating or 0) < 9],
+        [t for t in rows if positive[t.id].kind != "rating"],
+    ]
+    for group in groups:
+        if group:
+            selected.append(group[offset % len(group)])
     if not wanted:
         for kind in ("movie", "series"):
-            row = next((t for t in rows if t.content_type == kind), None)
-            if row:
-                selected.append(row)
+            if not any(t.content_type == kind for t in selected):
+                row = next((t for t in rows if t.content_type == kind), None)
+                if row and len(selected) < 4:
+                    selected.append(row)
     while len(selected) < min(4, len(rows)):
         remaining = [t for t in rows if t not in selected]
         selected.append(max(remaining, key=lambda t: (
             positive[t.id].utility * positive[t.id].boost *
             (1 - max((similarity(t, other) for other in selected), default=0)), str(t.id))))
-    offset = int(state.get("seed_offset", 0))
+    state["retrieval_seeds"] = [str(t.id) for t in selected]
     rotating = rows[offset % len(rows):] + rows[:offset % len(rows)] if rows else []
     for title in rotating:
         if title not in selected:
@@ -75,7 +88,7 @@ def positive_seeds(db, scorer, state, preferred_type=None):
             break
     state["rotating_seed"] = str(rotating[0].id) if rotating else None
     state["rotating_seeds"] = [str(t.id) for t in selected[4:]]
-    state["seed_offset"] = offset + 2
+    state["seed_offset"] = offset + 1
     return selected
 
 
@@ -91,7 +104,7 @@ def negative_seeds(scorer, state):
 
 
 def fetch_evidence(kind, tmdb_id):
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=3) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(3)) as client:
         response = client.get(f"/{kind}/{tmdb_id}", params={
             "language": "en-US", "append_to_response": "credits,keywords,watch/providers",
         })
@@ -123,7 +136,7 @@ of no availability and never overwrites a prior positive provider check.
         title.metadata_raw = {**meta, "_discovery_evidence_attempts": {**meta.get("_discovery_evidence_attempts", {}), region: now}}
     failed = 0
     with ThreadPoolExecutor(max_workers=8) as pool:
-        futures = [(title, pool.submit(fetch_evidence, "tv" if title.content_type == "series" else "movie", title.tmdb_id)) for title in work]
+        futures = [(title, pool.submit(copy_context().run, fetch_evidence, "tv" if title.content_type == "series" else "movie", title.tmdb_id)) for title in work]
         for title, future in futures:
             try:
                 raw = future.result()
@@ -144,7 +157,7 @@ of no availability and never overwrites a prior positive provider check.
                             stamps.pop(f"{region}:{mode}", None)
                     meta.update(_discovery_provider_checks=checks, _discovery_availability=stamps)
                 title.metadata_raw = meta
-            except (httpx.HTTPError, TmdbConfigurationError, ValueError, TypeError):
+            except (httpx.HTTPError, TmdbConfigurationError, ConciergeDeadlineExceeded, ValueError, TypeError):
                 failed += 1
     return failed
 
@@ -173,7 +186,9 @@ def plan_sources(scorer, seeds, state, preferred_type=None, genre=None):
         primary = [t for t in eligible if t not in rotating]
         offset = cycle % len(primary) if primary else 0
         primary = primary[offset:] + primary[:offset]
-        selected = sorted(primary, key=lambda t: progress.get(f"seed:{t.id}", {}).get("page", 1))[:4-len(rotating)] + rotating
+        representative = [t for t in eligible if str(t.id) in state.get("retrieval_seeds", [])]
+        selected = representative[:4] or (sorted(primary,
+            key=lambda t: progress.get(f"seed:{t.id}", {}).get("page", 1))[:4-len(rotating)] + rotating)
         for title in selected:
             kind = "tv" if title.content_type == "series" else "movie"
             jobs.append({"key": f"seed:{title.id}", "kind": kind, "seed": str(title.id),
@@ -226,7 +241,7 @@ def fetch_source(job, genre, region, mode, as_of):
             ("primary_release_date.lte" if kind == "movie" else "first_air_date.lte"): as_of.isoformat()})
         if ids:
             params["with_genres"] = ",".join(str(g) for g in dict.fromkeys(ids))
-    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=4) as client:
+    with httpx.Client(base_url=settings.tmdb_base_url, headers=_tmdb_headers(), timeout=timeout_for(4)) as client:
         response = client.get(job["path"], params=params)
         response.raise_for_status()
     data = response.json()

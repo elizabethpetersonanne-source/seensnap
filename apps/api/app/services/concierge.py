@@ -167,6 +167,8 @@ class PersonalContext:
     next_watch_total: int = 0
     # Highest-score Watched titles (score >= 8), up to 5.
     favorites_sample: list[dict] = field(default_factory=list)
+    disliked_sample: list[dict] = field(default_factory=list)
+    viewing_preferences: dict = field(default_factory=dict)
     # Rough signal of history breadth. The model gets a count, not the
     # full list — "haven't seen X" filtering happens server-side.
     watched_total: int = 0
@@ -267,6 +269,27 @@ def build_personal_context(db: Session, user_id: UUID) -> PersonalContext:
     ctx.favorites_sample = [
         _title_dict(t, extra={"score": int(round(float(r.score)))}) for r, t in fav_rows
     ]
+    # The interpreter sees diverse current evidence, not just the same five
+    # highest scores. The actual #1 and manual ranking above remain unchanged.
+    from app.services.taste_candidates import history
+    scorer, positives, negatives, _ = history(db, user_id)
+    from app.services.viewing_style import title_style
+    diversified = [t for t in positives if scorer.evidence[t.id].kind == "rating"]
+    if diversified:
+        ctx.favorites_sample = [_title_dict(t, extra={
+            "score": scorer.evidence[t.id].rating, "viewing_style": title_style(t),
+        }) for t in diversified]
+    ctx.disliked_sample = [_title_dict(t, extra={"viewing_style": title_style(t)}) for t in negatives]
+    affinity = {}
+    for key, signal in scorer.evidence.items():
+        for feature, weight in scorer.features[key].get("exemplars", {}).items():
+            affinity[feature] = affinity.get(feature, 0.) + weight * signal.utility * signal.boost
+    for feature, weight in sorted(affinity.items(), key=lambda item: -item[1]):
+        if weight <= 0 or not feature.startswith("style:"):
+            continue
+        _, axis, value = feature.split(":", 2)
+        values = ctx.viewing_preferences.setdefault(axis, [])
+        if len(values) < 2: values.append(value)
     ctx.watched_total = int(db.scalar(
         select(sqlfunc.count()).select_from(Rating).where(
             Rating.user_id == user_id,
@@ -316,6 +339,7 @@ def _context_summary_for_prompt(ctx: PersonalContext) -> str:
             "media_type": t.get("media_type"),
             **({"rank": t["rank"]} if "rank" in t else {}),
             **({"score": t["score"]} if "score" in t else {}),
+            **({"viewing_style": t["viewing_style"]} if t.get("viewing_style") else {}),
         }
     payload = {
         "cold_start": ctx.is_cold_start(),
@@ -326,6 +350,8 @@ def _context_summary_for_prompt(ctx: PersonalContext) -> str:
         "next_watch_sample": [_pick(t) for t in ctx.next_watch_sample],
         "next_watch_total": ctx.next_watch_total,
         "favorites": [_pick(t) for t in ctx.favorites_sample],
+        "disliked": [_pick(t) for t in ctx.disliked_sample],
+        "viewing_preferences": ctx.viewing_preferences,
         "watched_total": ctx.watched_total,
         "scene_dna_signals": ctx.scene_dna_signals,
     }
@@ -1071,6 +1097,11 @@ PERSONAL CONTEXT — use this to interpret references like "my #1",
 "something from my list", or "on my services". Do not fabricate a
 favorite the context doesn't contain. If `cold_start` is true, prefer
 explicit constraints over taste inference.
+Use viewing_preferences and diverse favorites for open-ended personal requests.
+Disliked titles are negative evidence, not similarity anchors. Style describes
+tone, humor, storytelling, pacing and visuals; shared plot topics alone do not
+prove a similar viewing experience. An explicit topic request can still require
+that subject. Never override the user's requested person, list or constraints.
 
 Context: {context_summary}
 

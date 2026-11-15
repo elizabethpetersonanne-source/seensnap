@@ -163,7 +163,7 @@ def get_person_details(tmdb_person_id: int) -> PersonDetailResponse:
 
 
 @router.get("/by-tmdb/{media_type}/{tmdb_id}", response_model=TitleResponse)
-def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession, current_user: OptionalCurrentUser = None) -> TitleResponse:
+def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession, current_user: OptionalCurrentUser = None, include_related: bool = True) -> TitleResponse:
     """Look up (or create) a ContentTitle from a TMDB id + media type.
     Used when the client only has a TMDB id (e.g. Person Detail filmography credits).
     Returns the full TitleResponse so the client can open the canonical detail modal."""
@@ -206,13 +206,7 @@ def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession, current_u
         gallery = fetch_title_gallery(title, limit=14)
     except (TmdbConfigurationError, httpx.HTTPError):
         gallery = []
-    try:
-        related_titles = fetch_related_titles(db, title, limit=30 if current_user else 10)
-        if current_user:
-            from app.services.related_titles import rank_related_titles
-            related_titles = rank_related_titles(db, current_user.id, title, related_titles)
-    except (TmdbConfigurationError, httpx.HTTPError):
-        related_titles = []
+    related_titles = _related_candidates(db, title, current_user) if include_related else []
     availability = db.scalars(
         select(ContentAvailability)
         .where(ContentAvailability.content_title_id == title.id)
@@ -222,7 +216,7 @@ def get_title_by_tmdb_id(media_type: str, tmdb_id: int, db: DbSession, current_u
 
 
 @router.get("/{title_id}", response_model=TitleResponse)
-def get_title(title_id: UUID, db: DbSession, enrich: bool = True, current_user: OptionalCurrentUser = None) -> TitleResponse:
+def get_title(title_id: UUID, db: DbSession, enrich: bool = True, current_user: OptionalCurrentUser = None, include_related: bool = True) -> TitleResponse:
     title = db.scalar(select(ContentTitle).where(ContentTitle.id == title_id))
     if title is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
@@ -257,19 +251,32 @@ def get_title(title_id: UUID, db: DbSession, enrich: bool = True, current_user: 
         gallery = fetch_title_gallery(title, limit=14)
     except (TmdbConfigurationError, httpx.HTTPError):
         gallery = []
-    try:
-        related_titles = fetch_related_titles(db, title, limit=30 if current_user else 10)
-        if current_user:
-            from app.services.related_titles import rank_related_titles
-            related_titles = rank_related_titles(db, current_user.id, title, related_titles)
-    except (TmdbConfigurationError, httpx.HTTPError):
-        related_titles = []
+    related_titles = _related_candidates(db, title, current_user) if include_related else []
     availability = db.scalars(
         select(ContentAvailability)
         .where(ContentAvailability.content_title_id == title.id)
         .order_by(ContentAvailability.provider_name.asc())
     ).all()
     return _to_title_response(title, wikipedia_metadata, availability, gallery, related_titles)
+
+
+def _related_candidates(db, title, current_user):
+    try:
+        rows = fetch_related_titles(db, title, limit=30)
+        from app.services.related_titles import rank_related_titles
+        return rank_related_titles(db, current_user.id if current_user else None, title, rows)
+    except (TmdbConfigurationError, httpx.HTTPError):
+        return []
+
+
+@router.get("/{title_id}/related", response_model=list[RelatedTitleResponse])
+def get_related_titles(title_id: UUID, db: DbSession, current_user: OptionalCurrentUser = None):
+    title = db.get(ContentTitle, title_id)
+    if title is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Title not found")
+    return [RelatedTitleResponse(id=row.id, title=row.title, content_type=row.content_type,
+        poster_url=row.poster_url, release_date=row.release_date)
+        for row in _related_candidates(db, title, current_user)]
 
 
 @router.get("/{title_id}/videos")
@@ -328,8 +335,6 @@ def get_my_recommendations(
     from app.services.for_you import for_you_recommendations
     try:
         result = for_you_recommendations(db, current_user.id, limit=limit, preferred_type=preferred_type, genre=genre)
-        from app.services.catalog_enrichment import enrich_for_you
-        background_tasks.add_task(enrich_for_you, current_user.id, [row.title.id for row in result], preferred_type, genre, sparse=len(result) < 5)
         return result
     except (TmdbConfigurationError, httpx.HTTPError) as exc:
         raise HTTPException(status_code=503, detail="Your picks could not load right now. Please retry.") from exc

@@ -31,6 +31,7 @@ export type DiscoverTitle = {
   poster_url: string | null;
   backdrop_url: string | null;
   year: number | null;
+  reason?: string | null;
 };
 
 export function DiscoverSection({
@@ -58,13 +59,14 @@ export function DiscoverSection({
   onSeeAll?: () => void;
 }) {
   const { width } = useWindowDimensions();
-  const [featuredId, setFeaturedId] = useState<string | null>(null);
+  const [featuredId, setFeaturedId] = useState<string | null>(hero?.id ?? null);
   const [stripWidth, setStripWidth] = useState(width);
   const [browseOffset, setBrowseOffset] = useState(0);
   const candidates = [...(hero ? [hero] : []), ...four].filter(
     (item, i, all) => all.findIndex((x) => x.id === item.id) === i,
   );
   const featured = candidates.find((t) => t.id === featuredId) ?? hero;
+  const featuredReason = featured?.reason ?? subtitle;
   const remaining = candidates.filter((t) => t.id !== featured?.id);
   const sidePadding = spacing.lg;
   const gap = 8;
@@ -77,7 +79,7 @@ export function DiscoverSection({
       <View style={styles.headerRow}>
         <View style={{ flex: 1 }}>
           <Text style={styles.kicker}>{kicker}</Text>
-          {subtitle ? <Text style={styles.subtitle}>{subtitle}</Text> : null}
+          {featuredReason ? <Text style={styles.subtitle}>{featuredReason}</Text> : null}
           {locationLabel ? (
             <View style={styles.locationRow}>
               <Ionicons name="location-sharp" size={12} color={colors.muted} />

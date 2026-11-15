@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Image,
+  Keyboard,
   Pressable,
   ScrollView,
   Text,
@@ -104,7 +105,10 @@ export function OnboardingTitleSearch({
   return (
     <View style={{ paddingVertical: 16, gap: 10, width: "100%" }}>
       <Text style={{ color: colors.ink, fontSize: 16 }}>
-        Know what you love? Search and rate it.
+        Start with a favorite film or show.
+      </Text>
+      <Text style={{ color: colors.muted, fontSize: 14 }}>
+        Rate titles you have watched, from loved to not for you. Choosing a #1 is optional; you can reorder My Picks later.
       </Text>
       <TextInput
         accessibilityLabel="Search films and series to rate"
@@ -180,7 +184,7 @@ export function OnboardingTitleSearch({
             <Pressable
               accessibilityLabel={`Rate ${t.title}`}
               style={{ minHeight: 44, minWidth: 44, justifyContent: "center" }}
-              onPress={() => onRate(t)}
+              onPress={() => { Keyboard.dismiss(); onRate(t); }}
             >
               <Text style={{ color: colors.accent }}>Rate</Text>
             </Pressable>
@@ -189,6 +193,7 @@ export function OnboardingTitleSearch({
               accessibilityLabel={`Choose ${t.title} as your number one`}
               style={{ minHeight: 44, minWidth: 44, justifyContent: "center" }}
               onPress={() => {
+                Keyboard.dismiss();
                 setSaveError(null);
                 setChosen(t);
               }}

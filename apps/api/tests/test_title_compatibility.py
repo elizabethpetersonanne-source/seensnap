@@ -47,9 +47,10 @@ def test_effective_signal_supersedes_duplicates_and_neutral_actions():
         {a: {"right"}, b: {"down"}, d: {"right"}, e: {"left"}, f: {"up", "right"}},
         {f},
     )
-    assert count == 2 and len(evidence) == 3
+    assert count == 2 and len(evidence) == 4
     assert evidence[a].utility == -1 and evidence[a].boost == 1
-    assert b not in evidence and e not in evidence and f not in evidence
+    assert 0 < evidence[b].utility < .25 and evidence[b].kind == "rating"
+    assert e not in evidence and f not in evidence
     assert evidence[c].utility == 0.3 and 1 < evidence[c].boost <= 1.2
     assert evidence[d].utility == 0.3
     without, _ = effective_evidence({a: None}, {}, {}, {a: {"right"}}, set())
@@ -107,7 +108,7 @@ def test_coverage_and_sign_are_conservative_and_versioned():
     ).score_features(candidate)
     assert 50 < positive.percentage < 100 and 0 < negative.percentage < 50
     assert positive.confidence >= 0.35 and positive.evidence_count == 12
-    assert positive.score_version == "scenedna_title_v5"
+    assert positive.score_version == "scenedna_title_v6"
     cold = TitleScorer({}, 0, {}).score_features(candidate)
     assert cold.score is None and cold.percentage is None and cold.confidence == 0
     custom = dict(WEIGHTS)
@@ -213,7 +214,7 @@ def test_tv_for_you_responds_to_two_real_users_and_keeps_movie_pool_out(db):
     assert all(r.title.content_type == "series" for r in a + b)
     assert all("Comedy" in r.title.genres for r in a)
     assert all("Documentary" in r.title.genres for r in b)
-    assert a[0].title.scenedna.score_version == "scenedna_title_v5"
+    assert a[0].title.scenedna.score_version == "scenedna_title_v6"
     again = scorer_for_user(db, comedy_user.id, [db.get(ContentTitle, a[0].title.id)]).score(
         db.get(ContentTitle, a[0].title.id)
     )

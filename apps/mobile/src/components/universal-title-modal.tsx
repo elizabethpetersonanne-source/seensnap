@@ -34,6 +34,7 @@ import { SendToUserSheet } from "@/components/send-to-user-sheet";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 import { apiRequest, resolveMediaUrl } from "@/lib/api";
 import { trackEvent } from "@/lib/analytics";
+import { useRelatedTitles } from "@/lib/use-related-titles";
 import { useAuth } from "@/lib/auth";
 import { recordWatchHandoff } from "@/lib/watch-handoff";
 import {
@@ -320,6 +321,7 @@ export function UniversalTitleModal({
   ]);
 
   const currentTitle = activeTitle;
+  const related = useRelatedTitles(sessionToken, visible ? currentTitle?.id ?? null : null);
   const isBusy = loading || internalLoading;
 
   const galleryImages = useMemo(() => {
@@ -724,11 +726,17 @@ export function UniversalTitleModal({
                 ) : null}
 
                 {/* More Like This — comes AFTER core informational sections per §7.4. */}
-                {(currentTitle?.relatedTitles ?? []).length > 0 ? (
+                {related.loading ? <Text style={styles.sectionTitle}>Finding similar titles…</Text> : null}
+                {related.error ? (
+                  <Pressable onPress={related.retry} accessibilityRole="button" accessibilityLabel="Retry More Like This" style={{ minHeight: 44, justifyContent: "center" }}>
+                    <Text style={styles.sectionTitle}>More Like This unavailable · Retry</Text>
+                  </Pressable>
+                ) : null}
+                {related.items.length > 0 ? (
                   <View style={styles.section}>
                     <Text style={styles.sectionTitle}>More Like This</Text>
                     <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.relatedRail}>
-                      {(currentTitle?.relatedTitles ?? []).map((related) => (
+                      {related.items.map((related) => (
                         <Pressable key={related.id} style={styles.relatedCard} onPress={() => void openRelatedTitle(related.id)}>
                           {related.posterUrl ? (
                             <Image source={{ uri: resolveMediaUrl(related.posterUrl) ?? related.posterUrl }} style={styles.relatedPoster} />

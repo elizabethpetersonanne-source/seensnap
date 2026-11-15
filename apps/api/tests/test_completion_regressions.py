@@ -64,7 +64,12 @@ def test_related_titles_keep_source_relevance_and_remove_known_dislikes(db):
     rows = [ContentTitle(tmdb_id=i, title=f"Title {i}", content_type="movie", genres=genres,
                          release_date=date(2020,1,1), poster_url="https://example.invalid/poster")
             for i, genres in enumerate([["Comedy"], ["Comedy"], ["Comedy"], ["Crime"]], 1)]
+    for row in rows[:3]:
+        row.metadata_raw = {"keywords": {"keywords": [{"name": "deadpan humor"}, {"name": "character study"}, {"name": "highly stylized"}]}}
     db.add_all(rows); db.flush()
+    # One disliked title must be excluded without making its unrelated style
+    # a negative preference for the source and the genuinely similar candidate.
+    rows[2].metadata_raw = {"keywords": {"keywords": [{"name": "slapstick"}, {"name": "episodic"}]}}
     db.add(Rating(user_id=user.id, content_title_id=rows[2].id, score=2)); db.commit()
     result = rank_related_titles(db, user.id, rows[0], rows)
     assert [t.id for t in result] == [rows[1].id]
