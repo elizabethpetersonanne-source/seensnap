@@ -1,5 +1,5 @@
 /** Shared list reader; UUID links and explicit share tokens use distinct API paths. */
-import { useEffect, useRef, useState } from "react";
+import { useRef } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -13,7 +13,7 @@ import {
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AppHeader } from "@/components/headers/app-header";
-import { apiRequest, ApiError } from "@/lib/api";
+import { useAudiencePages } from "@/lib/use-audience-pages";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts } from "@/constants/theme";
 type Item = {
@@ -37,67 +37,14 @@ type List = {
 export function ListReader({ endpoint }: { endpoint: string }) {
   const { sessionToken } = useAuth();
   const { width } = useWindowDimensions();
-  const [list, setList] = useState<List | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const generation = useRef(0),
-    loading = useRef(false);
+  const { data: list, nextOffset, checking, busy, error, more, refresh, scope } = useAudiencePages<List>(endpoint, sessionToken);
+  const grid = useRef<FlatList<Item>>(null);
+  const position = useRef({ scope, y: 0 });
+  if (position.current.scope !== scope) position.current = { scope, y: 0 };
   const returnTo = endpoint.startsWith("/public/lists/")
     ? endpoint.replace("/public/lists/", "/lists/")
     : endpoint.replace("/lists/", "/list/");
   const columns = width >= 900 ? 4 : width >= 600 ? 3 : 2;
-  async function load(offset: number, version = generation.current) {
-    if (loading.current) return;
-    loading.current = true;
-    setBusy(true);
-    setError(null);
-    try {
-      const next = await apiRequest<List>(
-        `${endpoint}?limit=40&offset=${offset}`,
-        { token: sessionToken },
-      );
-      if (version !== generation.current) return;
-      setList((previous) => ({
-        ...next,
-        items:
-          offset && previous
-            ? [
-                ...new Map(
-                  [...previous.items, ...next.items].map((t) => [
-                    t.title_id,
-                    t,
-                  ]),
-                ).values(),
-              ]
-            : next.items,
-      }));
-    } catch (failure) {
-      if (version !== generation.current) return;
-      const unavailable =
-        failure instanceof ApiError && [403, 404].includes(failure.status);
-      if (unavailable) setList(null);
-      setError(
-        unavailable
-          ? "This list is private, deleted, or no longer shared with you."
-          : "Couldn't load the list. Please try again.",
-      );
-    } finally {
-      if (version === generation.current) {
-        loading.current = false;
-        setBusy(false);
-      }
-    }
-  }
-  useEffect(() => {
-    const version = ++generation.current;
-    loading.current = false;
-    setList(null);
-    void load(0, version);
-    return () => {
-      generation.current++;
-      loading.current = false;
-    };
-  }, [endpoint, sessionToken]);
   return (
     <SafeAreaView style={styles.root} edges={[]}>
       <AppHeader
@@ -112,7 +59,7 @@ export function ListReader({ endpoint }: { endpoint: string }) {
           </Text>
           <Pressable
             style={styles.button}
-            onPress={() => void load(list?.next_offset ?? 0)}
+            onPress={() => list ? void more() : refresh()}
           >
             <Text style={styles.accent}>Retry</Text>
           </Pressable>
@@ -134,20 +81,24 @@ export function ListReader({ endpoint }: { endpoint: string }) {
           <Text style={styles.accent}>Sign in to SeenSnap</Text>
         </Pressable>
       ) : null}
-      {busy && !list ? (
+      {checking ? (
         <ActivityIndicator style={{ margin: 24 }} color={colors.accent} />
       ) : null}
       {list ? (
         <FlatList
-          key={columns}
+          ref={grid}
+          key={`${scope}|${columns}`}
+          onScroll={event => { position.current.y = event.nativeEvent.contentOffset.y; }}
+          contentOffset={{ x: 0, y: position.current.y }}
+            scrollEventThrottle={100}
+          onLayout={() => grid.current?.scrollToOffset({ offset: position.current.y, animated: false })}
           numColumns={columns}
           data={list.items}
           keyExtractor={(item) => item.title_id}
           contentContainerStyle={styles.content}
           columnWrapperStyle={{ gap: 12 }}
           onEndReached={() => {
-            if (list.next_offset !== null && !error)
-              void load(list.next_offset);
+            if (nextOffset !== null && !error) void more();
           }}
           onEndReachedThreshold={0.5}
           ListHeaderComponent={
@@ -192,10 +143,10 @@ export function ListReader({ endpoint }: { endpoint: string }) {
           ListFooterComponent={
             busy ? (
               <ActivityIndicator color={colors.accent} />
-            ) : list.next_offset !== null ? (
+            ) : nextOffset !== null ? (
               <Pressable
                 style={styles.button}
-                onPress={() => void load(list.next_offset!)}
+                onPress={() => void more()}
               >
                 <Text style={styles.accent}>Load more titles</Text>
               </Pressable>

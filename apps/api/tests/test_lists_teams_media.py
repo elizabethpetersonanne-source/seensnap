@@ -174,6 +174,36 @@ def test_message_list_reads_never_publish_or_reveal_private_snapshot(db, people)
     assert hydrate_message(db, msg, owner.id)["list"]["name"] == "Private secrets"
 
 
+def test_larger_team_all_members_filter_uses_current_explicit_statuses(db, people):
+    owner, member, third = people
+    team, rows = team_fixture(db, people, count=3)
+    membership = TeamMember(team_id=team.id, user_id=third.id, status="active", role="member")
+    db.add(membership)
+    db.commit()
+    for person in [owner, member]:
+        for title in rows:
+            share_team_state(team.id, title.id, SharedStateRequest(state="want_to_watch", expected_version=0), person, db)
+    share_team_state(team.id, rows[0].id, SharedStateRequest(state="want_to_watch", expected_version=0), third, db)
+    any_pair = get_team_page(team.id, "both_want_to_watch", owner, db, limit=40, offset=0, all_members=False)
+    everyone = get_team_page(team.id, "both_want_to_watch", owner, db, limit=1, offset=0, all_members=True)
+    assert any_pair.total == 3 and everyone.total == 1
+    assert [item.id for item in everyone.items] == [str(rows[0].id)]
+    # Personal state is not inferred: all three must explicitly share Watched.
+    for person in [owner, member, third]:
+        share_team_state(team.id, rows[0].id, SharedStateRequest(state="watched", expected_version=1), person, db)
+    watched = get_team_page(team.id, "watched", owner, db, limit=40, offset=0, all_members=True)
+    assert watched.total == 1 and [item.id for item in watched.items] == [str(rows[0].id)]
+    membership.status = "left"
+    db.commit()
+    remaining = get_team_page(team.id, "both_want_to_watch", owner, db, limit=1, offset=0, all_members=True)
+    assert remaining.total == 2 and remaining.next_offset == 1
+    second_page = get_team_page(team.id, "both_want_to_watch", owner, db, limit=1, offset=1, all_members=True)
+    assert second_page.next_offset is None and second_page.items[0].id != remaining.items[0].id
+    with pytest.raises(HTTPException) as refused:
+        get_team_page(team.id, "watched", third, db, limit=40, offset=0, all_members=True)
+    assert refused.value.status_code == 403
+
+
 def test_team_pagination_and_explicit_status_not_private_list_inference(db, people):
     owner, member, stranger = people
     team, rows = team_fixture(db, people)

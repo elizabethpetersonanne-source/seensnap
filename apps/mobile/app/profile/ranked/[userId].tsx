@@ -10,7 +10,7 @@ import { AppHeader } from "@/components/headers/app-header";
  */
 import { Ionicons } from "@expo/vector-icons";
 import { router, useLocalSearchParams } from "expo-router";
-import { useCallback, useEffect, useState } from "react";
+import { useRef } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -22,7 +22,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 
-import { apiRequest } from "@/lib/api";
+import { useAudiencePages } from "@/lib/use-audience-pages";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
 
@@ -49,30 +49,12 @@ type RankedResponse = {
 export default function PublicRankedScreen() {
   const { sessionToken } = useAuth();
   const { userId } = useLocalSearchParams<{ userId: string }>();
-  const [data, setData] = useState<RankedResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    if (!sessionToken || !userId) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const res = await apiRequest<RankedResponse>(
-        `/profiles/${userId}/favorites/ranked?limit=100`,
-        { token: sessionToken },
-      );
-      setData(res);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Couldn't load rankings");
-    } finally {
-      setLoading(false);
-    }
-  }, [sessionToken, userId]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const { data, nextOffset, checking, busy, error, more, refresh, scope } = useAudiencePages<RankedResponse>(
+    `/profiles/${userId}/favorites/ranked`, sessionToken, !!sessionToken && !!userId,
+  );
+  const list = useRef<FlatList<RankedRow>>(null);
+  const position = useRef({ scope, y: 0 });
+  if (position.current.scope !== scope) position.current = { scope, y: 0 };
 
   const ownerName = data?.owner_display_name ?? "This user";
 
@@ -80,12 +62,12 @@ export default function PublicRankedScreen() {
     <SafeAreaView style={styles.root} edges={["top"]}>
       <AppHeader variant="detail" leftKind="back" title={`${ownerName}'s rankings`} ownsSafeArea={false} />
 
-      {loading ? (
+      {checking ? (
         <View style={styles.center}><ActivityIndicator color={colors.accent} /></View>
-      ) : error ? (
+      ) : error && !data ? (
         <View style={styles.center}>
           <Text style={styles.emptyBody}>{error}</Text>
-          <Pressable onPress={load} style={styles.previewBtn}>
+          <Pressable onPress={refresh} style={styles.previewBtn}>
             <Text style={styles.previewBtnLabel}>Retry</Text>
           </Pressable>
         </View>
@@ -112,12 +94,31 @@ export default function PublicRankedScreen() {
           </Pressable>
 
           <FlatList
+            ref={list}
+            key={scope}
+            onScroll={event => { position.current.y = event.nativeEvent.contentOffset.y; }}
+            contentOffset={{ x: 0, y: position.current.y }}
+            scrollEventThrottle={100}
+            onLayout={() => list.current?.scrollToOffset({ offset: position.current.y, animated: false })}
+            onEndReached={() => { if (!error) void more(); }}
+            onEndReachedThreshold={0.5}
+            ListHeaderComponent={<Text style={styles.emptyBody}>{data.total} ranked titles</Text>}
+            ListFooterComponent={busy ? <ActivityIndicator color={colors.accent} /> : nextOffset !== null ? (
+              <View>
+                {error ? <Text accessibilityRole="alert" style={styles.emptyBody}>{error}</Text> : null}
+                <Pressable accessibilityRole="button" accessibilityLabel="Load more rankings" onPress={() => void more()} style={styles.previewBtn}>
+                  <Text style={styles.previewBtnLabel}>{error ? "Retry" : "Load more rankings"}</Text>
+                </Pressable>
+              </View>
+            ) : null}
             data={data.items}
             keyExtractor={(r) => r.title_id}
             contentContainerStyle={styles.listBody}
             renderItem={({ item }) => (
               <Pressable
-                onPress={() => router.push(`/titles/${item.media_type === "movie" ? "movie" : "show"}/${item.tmdb_id}`)}
+                accessibilityRole="button"
+                accessibilityLabel={`Open ${item.title}`}
+                onPress={() => router.push(`/titles/${item.media_type === "movie" ? "movie" : "tv"}/${item.tmdb_id}`)}
                 style={styles.row}
               >
                 <Text style={styles.rank}>{item.position}</Text>

@@ -105,10 +105,16 @@ export default function PublicProfileScreen() {
   const params = useLocalSearchParams<{ userId: string }>();
   const userId = typeof params.userId === "string" ? params.userId : undefined;
 
-  const [profile, setProfile] = useState<PublicProfile | null>(null);
-  const [ranked, setRanked] = useState<RankedRow[]>([]);
-  const [lists, setLists] = useState<PublicList[]>([]);
-  const [posts, setPosts] = useState<PublicPost[]>([]);
+  const scope = `${sessionToken}|${userId}`;
+  const scopeRef = useRef(scope);
+  scopeRef.current = scope;
+  const [loadedScope, setLoadedScope] = useState<string | null>(null);
+  const detailRequest = useRef<AbortController | null>(null);
+  const followRequest = useRef<AbortController | null>(null);
+  const [storedProfile, setProfile] = useState<PublicProfile | null>(null);
+  const [storedRanked, setRanked] = useState<RankedRow[]>([]);
+  const [storedLists, setLists] = useState<PublicList[]>([]);
+  const [storedPosts, setPosts] = useState<PublicPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError,setLoadError]=useState<string|null>(null);
   const [retry,setRetry]=useState(0);
@@ -118,46 +124,59 @@ export default function PublicProfileScreen() {
   const [universalTitle, setUniversalTitle] = useState<UniversalTitle | null>(null);
   const [titleLoading, setTitleLoading] = useState(false);
 
+  const profile = loadedScope === scope ? storedProfile : null;
+  const ranked = loadedScope === scope ? storedRanked : [];
+  const lists = loadedScope === scope ? storedLists : [];
+  const posts = loadedScope === scope ? storedPosts : [];
+  const position = useRef({ scope, y: 0 });
+  if (position.current.scope !== scope) position.current = { scope, y: 0 };
   const listRef = useRef<FlatList<{ key: PageKey }>>(null);
 
   useFocusEffect(
     useCallback(() => {
-      let cancelled = false;
-      if (!sessionToken || !userId) return;
-      setLoading(true);setLoadError(null);
+      const request = new AbortController();
+      setLoadedScope(null);
+      setProfile(null); setRanked([]); setLists([]); setPosts([]);
+      setTitleModalId(null); setUniversalTitle(null); setShowCompatSheet(false);
+      setLoading(true); setLoadError(null);
+      if (!sessionToken || !userId) { setLoading(false); return; }
       Promise.allSettled([
-        apiRequest<PublicProfile>(`/profiles/${userId}`, { token: sessionToken }),
-        apiRequest<{ items: RankedRow[]; total: number }>(`/profiles/${userId}/favorites/ranked`, { token: sessionToken }),
-        apiRequest<PublicList[]>(`/profiles/${userId}/public-lists`, { token: sessionToken }),
-        apiRequest<PublicPost[]>(`/profiles/${userId}/posts?limit=10`, { token: sessionToken }),
+        apiRequest<PublicProfile>(`/profiles/${userId}`, { token: sessionToken, signal: request.signal }),
+        apiRequest<{ items: RankedRow[]; total: number }>(`/profiles/${userId}/favorites/ranked`, { token: sessionToken, signal: request.signal }),
+        apiRequest<PublicList[]>(`/profiles/${userId}/public-lists`, { token: sessionToken, signal: request.signal }),
+        apiRequest<PublicPost[]>(`/profiles/${userId}/posts?limit=10`, { token: sessionToken, signal: request.signal }),
       ]).then((results) => {
-        if (cancelled) return;
+        if (request.signal.aborted || scopeRef.current !== scope) return;
         if(results.some(r=>r.status==="rejected"))setLoadError("Some profile content could not be loaded. Please retry.");
-        if (results[0].status === "fulfilled") setProfile(results[0].value); else {setProfile(null);setRanked([]);setLists([]);setPosts([]);return;}
-        if (results[1].status === "fulfilled") setRanked(results[1].value?.items ?? []);
+        if (results[0].status === "fulfilled") { setProfile(results[0].value); setLoadedScope(scope); } else {setProfile(null);setRanked([]);setLists([]);setPosts([]);return;}
+        if (results[1].status === "fulfilled") setRanked(results[1].value?.items ?? []); else setRanked([]);
         if (results[2].status === "fulfilled") setLists(results[2].value ?? []);else setLists([]);
-        if (results[3].status === "fulfilled") setPosts(results[3].value ?? []);
+        if (results[3].status === "fulfilled") setPosts(results[3].value ?? []); else setPosts([]);
       }).finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!request.signal.aborted && scopeRef.current === scope) setLoading(false);
       });
-      return () => { cancelled = true; };
-    }, [sessionToken, userId,retry]),
+      return () => { request.abort(); detailRequest.current?.abort(); followRequest.current?.abort(); };
+    }, [sessionToken, userId, scope, retry]),
   );
 
   const [sectionHeight,setSectionHeight]=useState(Math.max(320,height-insets.top-insets.bottom-120));
   const [rankedSelection,setRankedSelection]=useState<string|null>(null);
 
   async function openTitle(titleId: string) {
-    if (!sessionToken) return;
+    if (!sessionToken || !profile) return;
+    detailRequest.current?.abort();
+    const request = new AbortController();
+    detailRequest.current = request;
     setTitleModalId(titleId);
+    setUniversalTitle(null);
     setTitleLoading(true);
     try {
-      const detail = await fetchUniversalTitle(sessionToken, titleId);
-      setUniversalTitle(detail);
+      const detail = await fetchUniversalTitle(sessionToken, titleId, undefined, { signal: request.signal });
+      if (!request.signal.aborted && scopeRef.current === scope) setUniversalTitle(detail);
     } catch {
-      setUniversalTitle(null);
+      if (!request.signal.aborted && scopeRef.current === scope) setUniversalTitle(null);
     } finally {
-      setTitleLoading(false);
+      if (!request.signal.aborted && scopeRef.current === scope) setTitleLoading(false);
     }
   }
 
@@ -198,18 +217,23 @@ export default function PublicProfileScreen() {
   }, [rankedHero, lists.length, activityPost]);
 
   async function toggleFollow() {
-    if (!sessionToken || !profile) return;
+    if (!sessionToken || !profile || (followRequest.current && !followRequest.current.signal.aborted)) return;
+    const request = new AbortController();
+    followRequest.current = request;
     const next = !profile.is_following;
-    setProfile({ ...profile, is_following: next });
     try {
       await apiRequest(`/profiles/${profile.user_id}/follow`, {
-        method: next ? "POST" : "DELETE",
-        token: sessionToken,
+        method: next ? "POST" : "DELETE", token: sessionToken, signal: request.signal,
       });
+      if (request.signal.aborted || scopeRef.current !== scope) return;
       trackEvent(next ? "profile_follow" : "profile_unfollow", { target_user_id: profile.user_id });
+      // Following changes which content the viewer can read. Recheck all sections.
+      setRetry(value => value + 1);
     } catch {
-      // Revert on failure.
-      setProfile({ ...profile, is_following: !next });
+      if (!request.signal.aborted && scopeRef.current === scope)
+        setLoadError("Couldn't confirm the follow change. Please retry.");
+    } finally {
+      if (followRequest.current === request) followRequest.current = null;
     }
   }
 
@@ -243,6 +267,10 @@ export default function PublicProfileScreen() {
       ) : (
         <FlatList
           ref={listRef}
+          contentOffset={{ x: 0, y: position.current.y }}
+          onScroll={event => { position.current.y = event.nativeEvent.contentOffset.y; }}
+          scrollEventThrottle={100}
+          onLayout={() => listRef.current?.scrollToOffset({ offset: position.current.y, animated: false })}
           data={pages}
           keyExtractor={(p) => p.key}
           snapToInterval={sectionHeight}
@@ -356,16 +384,17 @@ export default function PublicProfileScreen() {
 
       </View>
       <UniversalTitleModal
-        visible={titleModalId !== null}
+        visible={loadedScope === scope && titleModalId !== null}
         title={universalTitle}
         loading={titleLoading}
         onClose={() => {
+          detailRequest.current?.abort();
           setTitleModalId(null);
           setUniversalTitle(null);
         }}
       />
       <CompatibilitySheet
-        visible={showCompatSheet}
+        visible={loadedScope === scope && showCompatSheet}
         userId={profile?.user_id ?? null}
         displayName={profile?.display_name ?? profile?.username ?? null}
         onClose={() => setShowCompatSheet(false)}

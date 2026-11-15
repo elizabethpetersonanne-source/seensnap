@@ -41,17 +41,18 @@ export type TeamHomeSections = Record<SectionKey, TeamHomeTitle[]> & {
   totals: Record<SectionKey, number>;
   next_offsets: Record<SectionKey, number | null>;
 };
-export function fetchTeamHome(token: string, teamId: string) {
-  return apiRequest<TeamHomeSections>(`/teams/${teamId}/home`, { token });
+export function fetchTeamHome(token: string, teamId: string, signal?: AbortSignal) {
+  return apiRequest<TeamHomeSections>(`/teams/${teamId}/home`, { token, signal });
 }
 export function fetchTeamPage(
   token: string,
   teamId: string,
   section: SectionKey,
   offset: number,
+  options: { allMembers?: boolean; signal?: AbortSignal } = {},
 ) {
   return apiRequest<TeamPage>(
-    `/teams/${teamId}/home/${section}?offset=${offset}&limit=40`,
-    { token },
+    `/teams/${teamId}/home/${section}?offset=${offset}&limit=40&all_members=${options.allMembers === true}`,
+    { token, signal: options.signal },
   );
 }
