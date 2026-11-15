@@ -186,7 +186,12 @@ class TitleScorer:
 
     def score_features(self, candidate):
         breakdown = []
-        comparable_weight = 0.0
+        # Missing candidate metadata is neutral, not a smaller denominator.
+        # Otherwise a bare Drama record can outscore a richly described match
+        # simply by omitting the themes/cast where we know the viewer's taste.
+        comparable_weight = sum(self.weights[d] for d in self.known_dimensions)
+        if self.semantic_index:
+            comparable_weight += self.weights["exemplars"]
         for dimension, configured_weight in self.weights.items():
             attrs = candidate.get(dimension) or {}
             if not attrs:
@@ -194,11 +199,6 @@ class TitleScorer:
             # Unknown attributes contribute neutral fit, without pretending to
             # carry confidence. Otherwise omitting an unseen genre can make it
             # outrank a known favorite merely by changing the denominator.
-            if dimension == "exemplars":
-                if self.semantic_index:
-                    comparable_weight += configured_weight
-            elif dimension in self.known_dimensions:
-                comparable_weight += configured_weight
             supported_mass = 1.0
             if dimension == "exemplars":
                 numerator = denominator = quality = 0.0

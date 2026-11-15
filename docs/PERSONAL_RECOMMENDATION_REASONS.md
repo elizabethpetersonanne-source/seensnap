@@ -4,7 +4,7 @@ The prior explanation often named generic dimensions ("your genres, release deca
 
 ## Product behavior
 
-- Prefer a shared director, a named TMDB keyword, or cast member over a broad genre connection. Example with synthetic data: "You rated Your Favorite 9/10. This is also directed by Example Director."
+- Require a shared director, named TMDB keyword, or cast member for a named metadata connection. A broad genre overlap cannot borrow a favorite's name. Choose the closest verified title connection, not automatically the highest numeric rating. Example with synthetic data: "You rated Your Favorite 9/10. This is also directed by Example Director."
 - Use the real numeric rating, including a fractional rating if present. A save says "You saved"; a right swipe says "You swiped right". Neither says the person watched or loved it.
 - Personal rankings without a numeric rating can say "[Title] is your #3 pick". Current ratings take precedence over saves and rankings, including neutral and negative ratings.
 - Only cite an anchor belonging to the current viewer's evidence. Shared names alone do not establish a connection: the same metadata identity must occur in both titles and contribute a positive aggregate preference. Do not invent emotional, pacing or story similarities from broad genres.
@@ -14,7 +14,7 @@ The prior explanation often named generic dimensions ("your genres, release deca
 
 ## Implementation boundaries
 
-`recommendation_reasons.py` uses current owner-scoped evidence and already-loaded title metadata. It adds no provider calls, database queries or model calls. The numeric SceneDNA formula and percentage confidence gates are unchanged. Numeric feature-cache results are kept separate from title-specific copy so equivalent features cannot reuse another title's explanation or cite the title itself.
+`recommendation_reasons.py` uses current owner-scoped evidence and already-loaded title metadata. It adds no provider calls, database queries or model calls. The explanation generator does not alter numeric scores. The accompanying Swipe quality correction versions the scorer to v3 to remove sparse-metadata inflation; percentage confidence gates are unchanged. See `SWIPE_PERSONALIZATION.md`. Numeric feature-cache results are kept separate from title-specific copy so equivalent features cannot reuse another title's explanation or cite the title itself.
 
 `discovery_feed.py` and `discovery_resume.py` regenerate reasons from current evidence. Persisted origins are not authority to retain a positive claim after the seed is re-rated or removed. No schema migration is added. The existing frontend can display the richer backend strings immediately; the new frontend adds the readable explanation sheet.
 

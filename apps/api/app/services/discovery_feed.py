@@ -26,7 +26,7 @@ from app.services import discovery_personalization as personal
 from app.services.tmdb import _fetch_genre_map, _match_genre_id, _tmdb_headers, _upsert_title_from_tmdb_result, fetch_title_videos, TmdbConfigurationError
 
 from app.core.scenedna_config import SCORE_VERSION
-ALGORITHM = "discovery_v4:" + SCORE_VERSION
+ALGORITHM = "discovery_v5:" + SCORE_VERSION
 log = logging.getLogger(__name__)
 WEIGHTS = (0.50, 0.30, 0.15, 0.05)
 
@@ -209,7 +209,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     seeds = personal.positive_seeds(db, taste, state, preferred_type)
     jobs = []
     if seeds and settings.tmdb_api_key:
-        personal.enrich_evidence(db, seeds, region, limit=4)
+        personal.enrich_evidence(db, [*seeds, *personal.negative_seeds(taste, state)], region, limit=8)
         taste = scorer_for_user(db, user_id)
         jobs = personal.plan_sources(taste, seeds, state, preferred_type, genre)
     pending = {str(t.id): t for t in db.scalars(select(ContentTitle).where(
@@ -221,9 +221,14 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     counts_by_band = [sum(age_band(t.release_date, as_of) == band for t in pending.values()) for band in range(4)]
     work = [(key, source) for key, source in state["sources"].items()
             if not source["done"] and counts_by_band[int(key.split(":")[1])] < max(12, limit)]
+    if jobs and len(work) > 2:
+        work.sort(key=lambda item: (int(item[0].split(":")[1]), item[0]))
+        offset = int(state.get("catalog_cycle", 0)) % len(work)
+        work = (work[offset:] + work[:offset])[:2]
+        state["catalog_cycle"] = offset + 2
     upstream_failure = False
     # HTTP in workers; SQLAlchemy session and title mutations stay on this thread.
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         futures = {key: pool.submit(catalog_page, key.split(":")[0], int(key.split(":")[1]), source["page"], genre, region, mode, as_of) for key, source in work}
         personal_futures = [(job, pool.submit(personal.fetch_source, job, genre, region, mode, as_of)) for job in jobs]
         for key, future in futures.items():
@@ -271,13 +276,24 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     def evidence_order(title):
         match = preliminary.score(title)
         return (-(match.score if match.score is not None else 50), str(title.id))
-    waiting = dict(sorted(waiting.items(), key=lambda pair: evidence_order(pair[1]))[:personal.MAX_WAITING])
+    # Retain breadth across sources. Sparse genre-only scoring must not decide
+    # which source gets its detail metadata examined in the first place.
+    groups = {}
+    for key, title in waiting.items():
+        groups.setdefault(origins[key].get("source", "related"), []).append((key, title))
+    for rows in groups.values():
+        rows.sort(key=lambda pair: (origins[pair[0]].get("position", 999), evidence_order(pair[1])))
+    waiting = {}
+    while any(groups.values()) and len(waiting) < personal.MAX_WAITING:
+        for source in sorted(groups):
+            if groups[source] and len(waiting) < personal.MAX_WAITING:
+                key, title = groups[source].pop(0)
+                waiting[key] = title
     if seeds and settings.tmdb_api_key:
-        # One worker wave, including catalog discoveries: learn more about the
-        # strongest prospects before choosing the page, not after displaying it.
-        prospects = [t for t in waiting.values() if personal.needs_evidence(t, region)][:6]
-        prospects += [t for t in sorted(pending.values(), key=evidence_order) if personal.needs_evidence(t, region)][:2]
-        if personal.enrich_evidence(db, prospects, region, limit=8):
+        # Inspect enough real candidates to build a 20-card page. Twenty-four
+        # is a hard budget (eight HTTP workers), with cached detail reuse.
+        prospects = personal.evidence_prospects(waiting, pending, origins, preliminary, region)
+        if personal.enrich_evidence(db, prospects, region, limit=24):
             upstream_failure = True
     now = datetime.now(timezone.utc)
     for key, title in waiting.items():
@@ -324,11 +340,19 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     )}
     scorer = scorer_for_user(db, user_id, pending.values())
     scores = {key: scorer.score(title) for key, title in pending.items()}
+    rejected = {key for key, match in scores.items() if personal.conflicts_with_taste(match)}
+    # Scanned exclusions are session-local, not watched/pass mutations. They
+    # must not stay pending and create an endless empty continuation loop.
+    served.update(rejected)
+    pending = {key: title for key, title in pending.items() if key not in rejected}
+    state["taste_waiting"] = {key: origin for key, origin in state.get("taste_waiting", {}).items() if key not in rejected}
     bands = {band: sorted([key for key, t in pending.items() if age_band(t.release_date, as_of) == band],
                          key=lambda key: (-(scores[key].score if scores[key].score is not None else 50.), key)) for band in range(4)}
     warm = any(e.utility > 0 for e in scorer.evidence.values())
     history = state.get("mix_history", [])
-    personalized_order, _ = personal.compose(pending, scores, source_reasons, 48, history) if warm else ([], [])
+    anchors, related = personal.ranking_context(scorer, pending, state.get("taste_waiting", {}))
+    personalized_order, _ = personal.compose(pending, scores, source_reasons, 48, history,
+                                            anchors=anchors, related=related) if warm else ([], [])
     selected, video_cache, checked = [], {}, 0
     counts = list(state["counts"])
     if surface == "preview":
@@ -350,7 +374,8 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
                 if video is None:
                     pending.pop(key, None); served.add(key)
             selectable = {key: title for key, title in pending.items() if video_cache.get(key)}
-        selected, history = personal.compose(selectable, scores, source_reasons, limit, history)
+        selected, history = personal.compose(selectable, scores, source_reasons, limit, history,
+                                              anchors=anchors, related=related)
         for key in selected:
             counts[age_band(pending[key].release_date, as_of)] += 1
     while not warm and len(selected) < limit and any(bands.values()) and checked < 60:
@@ -427,9 +452,9 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     state.update(pending=list(pending), served=sorted(served), counts=counts, mix_history=history)
     state["served_origins"] = dict(list(state.get("served_origins", {}).items())[-200:])
     # Aggregate diagnostics only: no account IDs, seed titles, or viewing data.
-    log.info("discovery_page mode=%s candidates=%s personal_candidates=%s returned=%s specific_matches=%s upstream_degraded=%s",
+    log.info("discovery_page mode=%s candidates=%s personal_candidates=%s returned=%s specific_matches=%s rejected_conflicts=%s upstream_degraded=%s",
              "personalized" if warm else "learning", len(scores), len(waiting), len(items),
-             sum(personal.specific_match(scores[key]) for key in selected), upstream_failure)
+             sum(personal.specific_match(scores[key]) for key in selected), len(rejected), upstream_failure)
     session.state, session.last_response = state, response
     db.commit()
     return response

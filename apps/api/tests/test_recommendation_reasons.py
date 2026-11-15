@@ -83,8 +83,8 @@ def test_save_is_interest_not_enjoyment_and_current_rating_wins(db):
 
 def test_rank_without_rating_and_private_evidence_are_viewer_scoped(db):
     owner, stranger = viewer(db), viewer(db)
-    anchor = title(db, 1, "Private Favorite")
-    candidate = title(db, 2)
+    anchor = title(db, 1, "Private Favorite", keyword={"id": 11, "name": "found family"})
+    candidate = title(db, 2, keyword={"id": 11, "name": "found family"})
     db.add(RankedFavorite(user_id=owner.id, content_title_id=anchor.id, position=3)); db.commit()
     assert "Private Favorite is your #3 pick" in scorer_for_user(db, owner.id, [candidate]).score(candidate).explanation
     assert "Private Favorite" not in scorer_for_user(db, stranger.id, [candidate]).score(candidate).explanation
@@ -115,8 +115,8 @@ def test_net_negative_genre_cannot_be_presented_as_a_favorite(db):
 
 def test_feature_cache_never_reuses_another_titles_personal_reason(db):
     user = viewer(db)
-    anchor = title(db, 1, "Only Favorite")
-    candidate = title(db, 2)
+    anchor = title(db, 1, "Only Favorite", keyword={"id": 11, "name": "found family"})
+    candidate = title(db, 2, keyword={"id": 11, "name": "found family"})
     rate(db, user, anchor, 10)
     scorer = scorer_for_user(db, user.id, [candidate])
     assert "Only Favorite" in scorer.score(candidate).explanation
@@ -126,7 +126,7 @@ def test_feature_cache_never_reuses_another_titles_personal_reason(db):
 @pytest.mark.parametrize("surface", ["swipe", "preview"])
 def test_fresh_replay_resume_and_rerank_keep_reasons_and_drop_outdated_evidence(db, monkeypatch, surface):
     user = viewer(db)
-    anchor = title(db, 1, "Recent Favorite")
+    anchor = title(db, 1, "Recent Favorite", keyword={"id": 11, "name": "found family"})
     rate(db, user, anchor, 9)
     monkeypatch.setattr(settings, "tmdb_api_key", "")
     monkeypatch.setattr(personal, "enrich_evidence", lambda *a, **k: 0)
@@ -134,7 +134,7 @@ def test_fresh_replay_resume_and_rerank_keep_reasons_and_drop_outdated_evidence(
     monkeypatch.setattr(feed, "_video", lambda row: {"provider": "YouTube", "external_key": str(row.tmdb_id),
                                                    "type": "Trailer", "name": "Trailer", "official": True})
     monkeypatch.setattr(feed, "catalog_page", lambda kind, band, page, *a: {
-        "rows": [raw(100+band*100+n) for n in range(8)], "done": True, "cap": False})
+        "rows": [raw(100+band*100+n, keyword={"id": 11, "name": "found family"}) for n in range(8)], "done": True, "cap": False})
     reason = lambda i: i["reason"]["label"] if surface == "preview" else i["reason"]
     first = feed.get_feed(db, user.id, preferred_type="movie", limit=6, surface=surface)
     assert first["items"] and all("Recent Favorite 9/10" in reason(i) for i in first["items"])
