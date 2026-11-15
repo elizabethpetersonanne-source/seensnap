@@ -11,6 +11,8 @@ This batch changes the web/native client and regression coverage only. It uses t
 - Teams with more than two members have separate Any member / All members controls for Watched and At least two / All members controls for Want to Watch. The existing server applies the filter to the complete set, including later pages. Counts, empty-state copy and results follow the chosen filter. Top Picks retains team ranking. Only explicitly team-shared statuses count; personal saves and ratings are not inferred or published.
 - Team reads are cancelled on navigation and rechecked on return. Membership failures remove stale team content.
 
+Live follow-through found that a remounted virtual list emits a temporary zero scroll offset before its contents finish laying out. The return-position helper now waits for both viewport and content layout and ignores that temporary zero. This applies to public rankings, shared lists, profiles and team sections. Live ranking acceptance reached Stefan's #105 and opened the correct Ratatouille detail route; return-position acceptance is repeated after this correction.
+
 ## Verification
 
 Client regression cases exercise more than 100 rankings, loaded-page restoration, page failures and retry, revoked audiences, changed accounts/sources, stale title responses and partial profile failures. PostgreSQL coverage exercises three-member filtering, explicit shared state, membership changes and pagination. The full existing suites also cover rating-group insertion/manual ordering, right-swipe save/Undo, story ownership/history and list audiences.

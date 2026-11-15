@@ -1,5 +1,4 @@
 /** Shared list reader; UUID links and explicit share tokens use distinct API paths. */
-import { useRef } from "react";
 import {
   ActivityIndicator,
   FlatList,
@@ -13,6 +12,7 @@ import {
 import { router } from "expo-router";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { AppHeader } from "@/components/headers/app-header";
+import { useRetainedScroll } from "@/lib/use-retained-scroll";
 import { useAudiencePages } from "@/lib/use-audience-pages";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts } from "@/constants/theme";
@@ -38,9 +38,7 @@ export function ListReader({ endpoint }: { endpoint: string }) {
   const { sessionToken } = useAuth();
   const { width } = useWindowDimensions();
   const { data: list, nextOffset, checking, busy, error, more, refresh, scope } = useAudiencePages<List>(endpoint, sessionToken);
-  const grid = useRef<FlatList<Item>>(null);
-  const position = useRef({ scope, y: 0 });
-  if (position.current.scope !== scope) position.current = { scope, y: 0 };
+  const scroll = useRetainedScroll<Item>(scope, !!list);
   const returnTo = endpoint.startsWith("/public/lists/")
     ? endpoint.replace("/public/lists/", "/lists/")
     : endpoint.replace("/lists/", "/list/");
@@ -86,12 +84,7 @@ export function ListReader({ endpoint }: { endpoint: string }) {
       ) : null}
       {list ? (
         <FlatList
-          ref={grid}
-          key={`${scope}|${columns}`}
-          onScroll={event => { position.current.y = event.nativeEvent.contentOffset.y; }}
-          contentOffset={{ x: 0, y: position.current.y }}
-            scrollEventThrottle={100}
-          onLayout={() => grid.current?.scrollToOffset({ offset: position.current.y, animated: false })}
+          {...scroll}
           numColumns={columns}
           data={list.items}
           keyExtractor={(item) => item.title_id}
