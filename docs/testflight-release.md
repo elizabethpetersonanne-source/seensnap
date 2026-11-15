@@ -29,6 +29,8 @@
 - Dashboard: https://expo.dev/accounts/lizzy456/projects/seensnap
 - The project was created successfully and the repository now links to it through `extra.eas.projectId`. The TestFlight profile also declares the same public owner/project identifiers. No dependency on `gregtusar` remains in the app configuration.
 - Six public variables are saved in the project's EAS `preview` environment: owner, project ID, release-build flag, dev-auth disabled, staging environment label and the existing staging API URL. Native Google and RevenueCat keys are not configured yet.
+- The Expo GitHub app is authorized for only `elizabethpetersonanne-source/seensnap`, and that repository is connected to this project. The saved base directory is `/apps/mobile`. No automatic build trigger has been enabled.
+- Expo's iOS credentials page has no configured distribution certificate or provisioning profile yet. The first signed build/upload has not been started.
 - Browser sign-in does not authenticate the local EAS CLI. CLI/build authentication, native Google configuration and signing still need verification before starting a build.
 
 ## Account setup still required
@@ -41,6 +43,16 @@
 4. Set backend `APPLE_BUNDLE_ID=com.seensnap.app`, `IOS_TEAM_ID=7Z8CYNB749`, and Apple Sign in key ID/private key through Secret Manager. Account Holder/admin creates the Apple signing key with the requested authorization. Never paste private keys into chat or a public client env variable.
 5. Have EAS use the SeenSnap Apple team, distribution certificate and provisioning profile. APNs credentials are also required to test push. Credential creation/access may require the Apple Account Holder/admin.
 6. Confirm public Terms, Privacy and support URLs contain approved, accessible content. This branch links existing URLs; it does not fabricate legal policy text.
+
+#### Native Google client setup
+
+In the existing `seensnap-staging` Google Cloud project, open Google Auth Platform → Clients (or APIs & Services → Credentials). Check for an existing **iOS** OAuth client for `com.seensnap.app` before creating a duplicate. If none exists, create an iOS client named **SeenSnap iOS**, bundle `com.seensnap.app`, Team ID `7Z8CYNB749`. The optional App Store ID can remain blank until the app is published. Leave existing web clients unchanged.
+
+Copy only the public client ID ending in `.apps.googleusercontent.com` to the Expo `preview` environment as `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` and to the API as `GOOGLE_OAUTH_IOS_CLIENT_ID`. Do not place a client secret in the app. App Check has not been integrated into this AuthSession-based client; enabling enforcement needs separate implementation and device validation.
+
+Google Cloud Console could not be loaded by the setup browser on November 15, so its current OAuth clients and permissions have **not** been inspected. An account owner must complete or verify this step. The release preflight correctly blocks the current configuration on the missing iOS Google client ID.
+
+Reference: https://developers.google.com/identity/sign-in/ios/api-access
 
 ### Real transactions
 
