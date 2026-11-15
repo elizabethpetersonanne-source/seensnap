@@ -45,6 +45,9 @@ class Settings(BaseSettings):
     concierge_ai_model: str = ""
     concierge_ai_project: str = ""
     concierge_ai_location: str = "us"
+    # Public-title style classification reuses the configured provider. Cached
+    # evidence is optional; disable without affecting Swipe availability.
+    discovery_style_enrichment: bool = True
     # Optional internal scheduler credential. Empty disables the HTTP trigger.
     internal_job_token: str = ""
     # Optional native launch configuration; empty means web-only beta.

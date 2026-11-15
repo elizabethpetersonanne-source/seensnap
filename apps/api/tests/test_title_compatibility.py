@@ -27,7 +27,7 @@ def title(number=1, **kwargs):
         release_date=date(2020, 1, 1),
         metadata_raw={
             "original_language": "en",
-            "keywords": {"results": [{"id": 7, "name": "found family"}]},
+            "keywords": {"results": [{"id": 7, "name": "deadpan humor"}, {"id": 8, "name": "highly stylized"}]},
             "credits": {
                 "cast": [{"id": 10, "order": 0}],
                 "crew": [{"id": 20, "job": "Director"}, {"id": 30, "job": "Screenplay"}],
@@ -107,7 +107,7 @@ def test_coverage_and_sign_are_conservative_and_versioned():
     ).score_features(candidate)
     assert 50 < positive.percentage < 100 and 0 < negative.percentage < 50
     assert positive.confidence >= 0.35 and positive.evidence_count == 12
-    assert positive.score_version == "scenedna_title_v4"
+    assert positive.score_version == "scenedna_title_v5"
     cold = TitleScorer({}, 0, {}).score_features(candidate)
     assert cold.score is None and cold.percentage is None and cold.confidence == 0
     custom = dict(WEIGHTS)
@@ -213,7 +213,7 @@ def test_tv_for_you_responds_to_two_real_users_and_keeps_movie_pool_out(db):
     assert all(r.title.content_type == "series" for r in a + b)
     assert all("Comedy" in r.title.genres for r in a)
     assert all("Documentary" in r.title.genres for r in b)
-    assert a[0].title.scenedna.score_version == "scenedna_title_v4"
+    assert a[0].title.scenedna.score_version == "scenedna_title_v5"
     again = scorer_for_user(db, comedy_user.id, [db.get(ContentTitle, a[0].title.id)]).score(
         db.get(ContentTitle, a[0].title.id)
     )

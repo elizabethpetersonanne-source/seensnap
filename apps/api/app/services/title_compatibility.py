@@ -1,8 +1,9 @@
 """One owner-scoped title scorer. No popularity, source quotas or query boosts.
 
 Each canonical title contributes once. Categorical attributes split its weight;
-semantic exemplars use weighted Jaccard on actual TMDB keywords and separately
-enriched features, never the old genre-derived semantic labels. Affinity is regularized once; metadata coverage is reported separately.
+exemplars compare multi-axis viewing style, never plot subjects or the old
+genre-derived semantic labels. Affinity is regularized once; metadata coverage
+is reported separately.
 This is a preference match, not a calibrated probability of enjoyment.
 """
 
@@ -30,7 +31,8 @@ from app.models.taste import SwipeRecord, TitleFeatures
 from app.models.user import UserProfile
 from app.models.watch_handoff import WatchHandoff
 from app.schemas.scenedna import TitleCompatibility, SceneDnaDimension
-from app.services.taste_semantics import personal_keyword, semantic_similarity
+from app.services.taste_semantics import semantic_similarity
+from app.services.viewing_style import style_features, VOCAB
 
 
 def _utc(value):
@@ -60,28 +62,25 @@ def title_features(title, enriched=None, providers=()):
     cast = [r for r in _rows(credits.get("cast")) if isinstance(r, dict)]
     cast.sort(key=lambda r: r.get("order") if type(r.get("order")) is int else 9999)
     crew = [r for r in _rows(credits.get("crew")) if isinstance(r, dict)]
-    keywords = meta.get("keywords", {})
-    if isinstance(keywords, dict):
-        keywords = keywords.get("keywords", keywords.get("results", []))
-    if not isinstance(keywords, list):
-        keywords = []
-    semantic = {
-        "keyword:" + str(k["id"])
-        for k in keywords
-        if personal_keyword(k)
-    }
+    semantic = style_features(title)
     # tmdb_v0 tone/pacing/story labels are broad genre/runtime heuristics.
     # They cannot earn another 28% of apparent evidence for the same genre.
     if enriched and enriched.enrichment_version > 0 and enriched.source != "tmdb_v0":
-        for field in ("tone", "story_style", "themes", "visual_style"):
-            semantic.update(
-                field + ":" + str(x).casefold() for x in getattr(enriched, field, []) or []
-            )
-        if enriched.pacing:
-            semantic.add("pacing:" + enriched.pacing)
+        for field, axis in (("tone", "tone"), ("story_style", "story"), ("visual_style", "visual")):
+            for value in getattr(enriched, field, []) or []:
+                if value in VOCAB[axis]:
+                    semantic[f"style:{axis}:{value}"] = 1
+        pace = {"slow": "deliberate", "medium": "measured", "propulsive": "propulsive"}.get(enriched.pacing)
+        if pace:
+            semantic[f"style:pacing:{pace}"] = 1
+    # Balance axes so two tone labels cannot outweigh an entire story axis.
+    axes = defaultdict(list)
+    for key in semantic:
+        axes[key.split(":")[1]].append(key)
+    semantic = {key: 1 / (len(axes) * len(keys)) for keys in axes.values() for key in keys}
     language = meta.get("original_language")
     return {
-        "exemplars": _normalized(semantic),
+        "exemplars": semantic,
         "genres": _normalized(
             str(g).strip().casefold() for g in title.genres or [] if str(g).strip()
         ),
@@ -260,7 +259,7 @@ class TitleScorer:
             key=lambda d: -(d.score - 50) * d.weight * d.confidence,
         )
         labels = {
-            "exemplars": "similar title themes",
+            "exemplars": "viewing style",
             "genres": "genres",
             "actors": "cast",
             "decade": "release decades",

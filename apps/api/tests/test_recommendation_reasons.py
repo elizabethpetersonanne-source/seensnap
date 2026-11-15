@@ -25,7 +25,7 @@ def raw(n, name=None, *, genre="Comedy", director=None, actor=None, keyword=None
     return {"id": n, "media_type": "movie", "title": name or f"Film {n}",
             "overview": "A complete synopsis", "poster_path": "/poster.jpg", "release_date": "2020-01-01",
             "genres": [{"id": 35 if genre == "Comedy" else 99, "name": genre}],
-            "original_language": "en", "keywords": {"keywords": [keyword] if keyword else []},
+            "original_language": "en", "keywords": {"keywords": [keyword, {"id": 99, "name": "highly stylized"}] if keyword else []},
             "credits": {"cast": [{**actor, "order": 0}] if actor else [],
                         "crew": [{**director, "job": "Director"}] if director else []},
             "watch/providers": {"results": {"US": {"flatrate": [{"provider_id": 8}]}}}}
@@ -83,23 +83,23 @@ def test_save_is_interest_not_enjoyment_and_current_rating_wins(db):
 
 def test_rank_without_rating_and_private_evidence_are_viewer_scoped(db):
     owner, stranger = viewer(db), viewer(db)
-    anchor = title(db, 1, "Private Favorite", keyword={"id": 11, "name": "found family"})
-    candidate = title(db, 2, keyword={"id": 11, "name": "found family"})
+    anchor = title(db, 1, "Private Favorite", keyword={"id": 11, "name": "deadpan humor"})
+    candidate = title(db, 2, keyword={"id": 11, "name": "deadpan humor"})
     db.add(RankedFavorite(user_id=owner.id, content_title_id=anchor.id, position=3)); db.commit()
     assert "Private Favorite is your #3 pick" in scorer_for_user(db, owner.id, [candidate]).score(candidate).explanation
     assert "Private Favorite" not in scorer_for_user(db, stranger.id, [candidate]).score(candidate).explanation
 
 
-def test_keywords_require_identity_not_coincidental_text_and_no_invented_mood(db):
+def test_style_requires_multiple_axes_and_no_invented_mood(db):
     user = viewer(db)
-    anchor = title(db, 1, "Family Film", keyword={"id": 11, "name": "found family"})
-    candidate = title(db, 2, keyword={"id": 11, "name": "found family"})
+    anchor = title(db, 1, "Family Film", keyword={"id": 11, "name": "deadpan humor"})
+    candidate = title(db, 2, keyword={"id": 11, "name": "deadpan humor"})
     rate(db, user, anchor, 8)
     reason = scorer_for_user(db, user.id, [candidate]).score(candidate).explanation
-    assert reason == "You rated Family Film 8/10. What they share: found family."
-    unrelated = title(db, 3, genre="Documentary", keyword={"id": 12, "name": "found family"})
+    assert reason == "You rated Family Film 8/10. Both lean toward deadpan humor and stylized visuals."
+    unrelated = title(db, 3, genre="Documentary", keyword={"id": 12, "name": "family conflict"})
     reason = scorer_for_user(db, user.id, [unrelated]).score(unrelated).explanation
-    assert "Family Film" not in reason and "found family" not in reason
+    assert "Family Film" not in reason and "family conflict" not in reason
     assert "change of pace" in reason  # Same year/format/language alone is insufficient.
 
 
@@ -115,8 +115,8 @@ def test_net_negative_genre_cannot_be_presented_as_a_favorite(db):
 
 def test_feature_cache_never_reuses_another_titles_personal_reason(db):
     user = viewer(db)
-    anchor = title(db, 1, "Only Favorite", keyword={"id": 11, "name": "found family"})
-    candidate = title(db, 2, keyword={"id": 11, "name": "found family"})
+    anchor = title(db, 1, "Only Favorite", keyword={"id": 11, "name": "deadpan humor"})
+    candidate = title(db, 2, keyword={"id": 11, "name": "deadpan humor"})
     rate(db, user, anchor, 10)
     scorer = scorer_for_user(db, user.id, [candidate])
     assert "Only Favorite" in scorer.score(candidate).explanation
@@ -126,7 +126,7 @@ def test_feature_cache_never_reuses_another_titles_personal_reason(db):
 @pytest.mark.parametrize("surface", ["swipe", "preview"])
 def test_fresh_replay_resume_and_rerank_keep_reasons_and_drop_outdated_evidence(db, monkeypatch, surface):
     user = viewer(db)
-    anchor = title(db, 1, "Recent Favorite", keyword={"id": 11, "name": "found family"})
+    anchor = title(db, 1, "Recent Favorite", keyword={"id": 11, "name": "deadpan humor"})
     rate(db, user, anchor, 9)
     monkeypatch.setattr(settings, "tmdb_api_key", "")
     monkeypatch.setattr(personal, "enrich_evidence", lambda *a, **k: 0)
@@ -134,7 +134,7 @@ def test_fresh_replay_resume_and_rerank_keep_reasons_and_drop_outdated_evidence(
     monkeypatch.setattr(feed, "_video", lambda row: {"provider": "YouTube", "external_key": str(row.tmdb_id),
                                                    "type": "Trailer", "name": "Trailer", "official": True})
     monkeypatch.setattr(feed, "catalog_page", lambda kind, band, page, *a: {
-        "rows": [raw(100+band*100+n, keyword={"id": 11, "name": "found family"}) for n in range(8)], "done": True, "cap": False})
+        "rows": [raw(100+band*100+n, keyword={"id": 11, "name": "deadpan humor"}) for n in range(8)], "done": True, "cap": False})
     reason = lambda i: i["reason"]["label"] if surface == "preview" else i["reason"]
     first = feed.get_feed(db, user.id, preferred_type="movie", limit=6, surface=surface)
     assert first["items"] and all("Recent Favorite 9/10" in reason(i) for i in first["items"])

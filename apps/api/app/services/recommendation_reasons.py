@@ -62,11 +62,33 @@ class PersonalReasons:
             return self.connections[title.id]
         labels = metadata_labels(title)
         options = []
-        for dim, specificity in (("directors", 4), ("exemplars", 3), ("actors", 2)):
+        # Subject keywords are absent from the style vector. A named style
+        # reason requires positive, multi-axis evidence, never one plot tag.
+        positive_style = {a: w for a, w in features.get("exemplars", {}).items()
+                          if self.semantic_affinity[a] > 0}
+        candidates = set().union(*(self.index["exemplars", attr] for attr in positive_style))
+        for key in candidates:
+            if key == title.id:
+                continue
+            signal = self.scorer.evidence[key]
+            other = self.scorer.features.get(key, {}).get("exemplars", {})
+            strength = semantic_similarity(positive_style, other)
+            if not strength:
+                continue
+            shared = set(positive_style) & set(other)
+            descriptions = []
+            for axis in ("humor", "tone", "story", "pacing", "visual"):
+                values = sorted(k.split(":", 2)[2] for k in shared if k.startswith(f"style:{axis}:"))
+                if values:
+                    suffix = {"humor": "humor", "tone": "tone", "story": "storytelling",
+                              "pacing": "pacing", "visual": "visuals"}[axis]
+                    descriptions.append(f"{values[0]} {suffix}")
+            phrase = "Both lean toward " + " and ".join(descriptions[:2]) + "."
+            options.append((.6 * strength * signal.utility * signal.boost, 3, str(key), "exemplars", phrase, key))
+        for dim, specificity in (("directors", 4), ("actors", 2)):
             for attr in features.get(dim, {}):
                 name = labels[dim].get(attr)
-                affinity = (self.semantic_affinity[attr] if dim == "exemplars" else
-                            self.scorer.attribute_sum[dim, attr])
+                affinity = self.scorer.attribute_sum[dim, attr]
                 if not name or affinity <= 0:
                     continue
                 for key in self.index[dim, attr]:
@@ -82,8 +104,6 @@ class PersonalReasons:
                         continue
                     other = self.scorer.features.get(key, {})
                     theme_overlap = semantic_similarity(features.get("exemplars", {}), other.get("exemplars", {}))
-                    if dim == "exemplars" and not theme_overlap:
-                        continue
                     strength = .6 * theme_overlap
                     for dimension, weight in (("directors", .25), ("actors", .15)):
                         a, b = set(features.get(dimension, {})), set(other.get(dimension, {}))
@@ -98,7 +118,7 @@ class PersonalReasons:
         connection = {
             "directors": f"This is also directed by {name}.",
             "actors": f"This also stars {name}.",
-            "exemplars": f"What they share: {name}.",
+            "exemplars": name,
         }[dim]
         result = {"anchor": str(key), "strength": strength, "dimension": dim,
                   "text": f"{action}. {connection}"}

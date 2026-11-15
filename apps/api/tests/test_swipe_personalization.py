@@ -24,8 +24,9 @@ def raw(n, genre="Comedy", *, kind="movie", year=2020, keyword=101):
     return {"id": n, "media_type": kind, "title": f"{genre} {n}", "name": f"{genre} {n}",
             "overview": "A complete synopsis", "poster_path": "/poster.jpg", "release_date": f"{year}-01-01",
             "first_air_date": f"{year}-01-01", "genres": [{"id": 35 if genre == "Comedy" else 99, "name": genre}],
-            "original_language": "en", "keywords": {"keywords": [{"id": keyword,
-                "name": {101: "psychological thriller", 202: "wildlife conservation", 999: "car chase"}.get(keyword, "found family")}]},
+            "original_language": "en", "keywords": {"keywords": [{"id": keyword*10+i, "name": name}
+                for i, name in enumerate({101: ["deadpan humor", "highly stylized"], 202: ["bleak", "naturalistic"],
+                                          999: ["slapstick", "whimsical"]}.get(keyword, ["family conflict"]))]},
             "credits": {"cast": [], "crew": []},
             "watch/providers": {"results": {"US": {"flatrate": [{"provider_id": 8}]}}}}
 
@@ -201,7 +202,7 @@ def test_rerank_updates_unseen_titles_but_keeps_front_and_cursor(db, monkeypatch
     first = feed.get_feed(db, user.id, preferred_type="movie", limit=10)
     ids = [UUID(i["title"]["id"]) for i in first["items"]]
     favorite = db.get(ContentTitle, ids[-1]); favorite.genres = ["Documentary"]
-    favorite.metadata_raw = {**favorite.metadata_raw, "keywords": {"keywords": [{"id": 202, "name": "wildlife conservation"}]}}
+    favorite.metadata_raw = {**favorite.metadata_raw, "keywords": raw(999, keyword=202)["keywords"]}
     for n in range(6): seed(db, user, 10000+n, "Documentary", keyword=202)
     result = resume_discovery(ResumeRequest(cursor=first["resume_cursor"], title_ids=ids,
         surface="swipe", preferred_type="movie", rerank=True), user, db)

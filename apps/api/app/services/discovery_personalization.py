@@ -152,10 +152,11 @@ of no availability and never overwrites a prior positive provider check.
 def attribute_affinities(scorer):
     affinities = defaultdict(float)
     for key, evidence in scorer.evidence.items():
-        for dim in ("exemplars", "directors", "actors", "genres"):
+        # Plot subjects cannot power personalized retrieval. Style vectors do
+        # not map to TMDB keyword IDs; use owned title/creator sources instead.
+        for dim in ("directors", "actors", "genres"):
             for attr, share in scorer.features.get(key, {}).get(dim, {}).items():
-                if dim != "exemplars" or attr.startswith("keyword:"):
-                    affinities[dim, attr] += evidence.utility * evidence.boost * share
+                affinities[dim, attr] += evidence.utility * evidence.boost * share
     return affinities
 
 
@@ -180,9 +181,9 @@ def plan_sources(scorer, seeds, state, preferred_type=None, genre=None):
     affinities = attribute_affinities(scorer)
     for turn in range(2):
         kind = kinds[(cycle + turn) % len(kinds)]
-        # Alternate theme/creator retrieval; fall back to positive genres when
-        # the library lacks credits/keywords. Never infer those from a genre.
-        dims = ("exemplars", "directors", "actors", "genres") if turn == 0 else ("directors", "actors", "exemplars", "genres")
+        # Creator-led sources supplement owned-title retrieval. Broad genres
+        # can provide discovery supply but never prove a personal style match.
+        dims = ("directors", "actors", "genres") if turn == 0 else ("actors", "directors", "genres")
         for dim in dims:
             if kind == "tv" and dim in {"directors", "actors"}:
                 continue  # TMDB TV Discover has no movie with_cast/with_crew contract.
@@ -192,7 +193,7 @@ def plan_sources(scorer, seeds, state, preferred_type=None, genre=None):
             if not values:
                 continue
             attr = values[(cycle + turn) % len(values)][0]
-            param = {"exemplars": "with_keywords", "directors": "with_crew", "actors": "with_cast", "genres": "taste_genre"}[dim]
+            param = {"directors": "with_crew", "actors": "with_cast", "genres": "taste_genre"}[dim]
             key = f"trait:{kind}:{dim}:{attr}"
             if any(j["key"] == key for j in jobs):
                 continue
@@ -333,22 +334,25 @@ not a hidden alteration of the displayed SceneDNA percentage.
         buckets = defaultdict(list)
         for key in remaining:
             match = scores[key]
-            if conflicts_with_taste(match):
-                continue  # Never pad a page with known thematic/creator dislikes.
-            personal = specific_match(match) or (key in related and match.score is not None and match.score >= 50)
+            if match.score is not None and match.score < 50:
+                continue  # A short page beats padding it with negative fits.
+            # Being in a TMDB related-title list is retrieval provenance, not
+            # proof of shared taste or permission to fill the taste quota.
+            personal = specific_match(match)
             kind = "social" if key in social else "taste" if personal else "discovery"
             if kind == "social" and sum(x["kind"] == "social" for x in recent[-19:]) >= 2:
                 continue
             buckets[kind].append(key)
-        # Explicitly poor fits are last-resort exploration, never required filler.
-        nonnegative = {key for keys in buckets.values() for key in keys if scores[key].score is None or scores[key].score >= 50}
-        if nonnegative:
-            buckets = {kind: [key for key in keys if key in nonnegative] for kind, keys in buckets.items()}
         buckets = {kind: keys for kind, keys in buckets.items() if keys}
         if not buckets:
             break
         counts = {kind: sum(x["kind"] == kind for x in recent) for kind in MIX}
         target = max(buckets, key=lambda kind: ((len(recent) + 1) * MIX[kind] - counts[kind], MIX[kind]))
+        if target == "discovery" and buckets.get("taste"):
+            best_taste = max(scores[key].score or 50 for key in buckets["taste"])
+            best_exploration = max(scores[key].score or 50 for key in buckets["discovery"])
+            if best_taste > best_exploration + 8:
+                target = "taste"  # A quota must not displace a materially better fit.
         choices = buckets[target]
         def anchor_count(key):
             return sum(h.get("anchor") == anchors[key] for h in recent[-9:]) if key in anchors else 0
@@ -390,9 +394,7 @@ not a hidden alteration of the displayed SceneDNA percentage.
 def personal_reason(db, scorer, origin, candidate=None):
     if candidate is not None:
         features = scorer.candidate_features.get(candidate.id) or title_features(candidate)
-        reason = scorer.reasons.for_title(candidate, features)
-        if reason:
-            return reason
+        return scorer.reasons.for_title(candidate, features)
     seed_id = origin.get("seed") if origin else None
     if not seed_id:
         return None

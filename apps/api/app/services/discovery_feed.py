@@ -207,9 +207,10 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     served = set(state["served"])
     taste = scorer_for_user(db, user_id)
     seeds = personal.positive_seeds(db, taste, state, preferred_type)
+    negative_seeds = personal.negative_seeds(taste, state) if seeds else []
     jobs = []
     if seeds and settings.tmdb_api_key:
-        personal.enrich_evidence(db, [*seeds, *personal.negative_seeds(taste, state)], region, limit=8)
+        personal.enrich_evidence(db, [*seeds, *negative_seeds], region, limit=8)
         taste = scorer_for_user(db, user_id)
         jobs = personal.plan_sources(taste, seeds, state, preferred_type, genre)
     pending = {str(t.id): t for t in db.scalars(select(ContentTitle).where(
@@ -289,6 +290,7 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
             if groups[source] and len(waiting) < personal.MAX_WAITING:
                 key, title = groups[source].pop(0)
                 waiting[key] = title
+    prospects = []
     if seeds and settings.tmdb_api_key:
         # Inspect enough real candidates to build a 20-card page. Twenty-four
         # is a hard budget (eight HTTP workers), with cached detail reuse.
@@ -338,9 +340,20 @@ def get_feed(db, user_id, *, preferred_type=None, genre=None, cursor=None, limit
     pending = {key: t for key, t in pending.items() if eligible(
         t, excluded, preferred_type, genre, region, mode, as_of, now,
     )}
+    from app.services.viewing_style import enrich_styles
+    # One bounded public-metadata pass for both history and candidate styles.
+    # No user actions/identity leave the service; unknown styles stay unknown.
+    if seeds:
+        style_candidates = personal.evidence_prospects(waiting, pending, origins, preliminary, region)
+        # The metadata pass may already have cached all prospects; include
+        # inspected and cached candidates, not just metadata misses.
+        style_candidates = list(dict.fromkeys([*prospects, *style_candidates, *pending.values()]))[:24]
+        enrich_styles([*seeds, *negative_seeds, *style_candidates])
     scorer = scorer_for_user(db, user_id, pending.values())
     scores = {key: scorer.score(title) for key, title in pending.items()}
-    rejected = {key for key, match in scores.items() if personal.conflicts_with_taste(match)}
+    rejected = {key for key, match in scores.items() if personal.conflicts_with_taste(match) or (
+        match.score is not None and match.score < 50 and
+        (not settings.tmdb_api_key or not personal.needs_evidence(pending[key], region)))}
     # Scanned exclusions are session-local, not watched/pass mutations. They
     # must not stay pending and create an endless empty continuation loop.
     served.update(rejected)
