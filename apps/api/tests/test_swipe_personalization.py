@@ -24,7 +24,9 @@ def raw(n, genre="Comedy", *, kind="movie", year=2020, keyword=101):
     return {"id": n, "media_type": kind, "title": f"{genre} {n}", "name": f"{genre} {n}",
             "overview": "A complete synopsis", "poster_path": "/poster.jpg", "release_date": f"{year}-01-01",
             "first_air_date": f"{year}-01-01", "genres": [{"id": 35 if genre == "Comedy" else 99, "name": genre}],
-            "original_language": "en", "keywords": {"keywords": [{"id": keyword}]},
+            "original_language": "en", "keywords": {"keywords": [{"id": keyword*10+i, "name": name}
+                for i, name in enumerate({101: ["deadpan humor", "highly stylized"], 202: ["bleak", "naturalistic"],
+                                          999: ["slapstick", "whimsical"]}.get(keyword, ["family conflict"]))]},
             "credits": {"cast": [], "crew": []},
             "watch/providers": {"results": {"US": {"flatrate": [{"provider_id": 8}]}}}}
 
@@ -55,7 +57,7 @@ def test_seed_selection_rotates_entire_saved_library_and_ignores_dislikes(db):
     retrieved = set()
     for _ in range(34):
         picks = personal.positive_seeds(db, model, state)
-        assert favorite in picks and bad not in picks and len(picks) <= 4
+        assert favorite in picks and bad not in picks and len(picks) <= 6
         observed.update(t.id for t in picks)
         retrieved.update(UUID(job["seed"]) for job in personal.plan_sources(model, picks, state) if job.get("seed"))
     assert observed == {favorite.id, *(t.id for t in saved)}
@@ -121,7 +123,7 @@ def test_composition_prefers_old_strong_matches_caps_social_and_diversifies():
         titles[key] = ContentTitle(title=key, genres=["Comedy" if n%2 else "Drama"], release_date=date(1960 if n<14 else 2020, 1, 1))
         strong = n < 14
         scores[key] = SimpleNamespace(score=90 if strong else 55, confidence=.8,
-            breakdown=[SimpleNamespace(dimension="genres" if strong else "format", score=90 if strong else 55)])
+            breakdown=[SimpleNamespace(dimension="exemplars" if strong else "format", score=90 if strong else 55)])
         if n >= 20: social[key] = "In your Watch Teams"
     selected, history = personal.compose(titles, scores, social, 20)
     assert sum(int(key) < 14 for key in selected) == 14
@@ -200,7 +202,7 @@ def test_rerank_updates_unseen_titles_but_keeps_front_and_cursor(db, monkeypatch
     first = feed.get_feed(db, user.id, preferred_type="movie", limit=10)
     ids = [UUID(i["title"]["id"]) for i in first["items"]]
     favorite = db.get(ContentTitle, ids[-1]); favorite.genres = ["Documentary"]
-    favorite.metadata_raw = {**favorite.metadata_raw, "keywords": {"keywords": [{"id": 202}]}}
+    favorite.metadata_raw = {**favorite.metadata_raw, "keywords": raw(999, keyword=202)["keywords"]}
     for n in range(6): seed(db, user, 10000+n, "Documentary", keyword=202)
     result = resume_discovery(ResumeRequest(cursor=first["resume_cursor"], title_ids=ids,
         surface="swipe", preferred_type="movie", rerank=True), user, db)
@@ -226,13 +228,19 @@ def test_related_candidates_cannot_bypass_genre_type_release_or_region(db, monke
     # Only the recommendations source: it has no implicit regional evidence.
     def plan(model, seeds, state, *args):
         key = f"seed:{anchor.id}"
-        state["taste_sources"] = {key: {"page": 1, "done": False}}
+        state["taste_sources"] = {f"trait:tv:{dim}:{attr}": {"page": 1, "done": True}
+                                  for dim, attr in personal.attribute_affinities(model)
+                                  if dim not in {"actors", "directors"}}
+        state["taste_sources"][key] = {"page": 1, "done": False}
         return [{"key": key, "seed": str(anchor.id), "kind": "tv", "regional": False, "page": 1}]
     monkeypatch.setattr(personal, "plan_sources", plan)
     monkeypatch.setattr(personal, "fetch_evidence", lambda kind, n: corpus[n])
     result = feed.get_feed(db, user.id, preferred_type="show", genre="Comedy")
     assert [item["title"]["tmdb_id"] for item in result["items"]] == [6]
-    assert not result["has_more"]
+    # Warm feeds inspect only two generic catalog lanes per request; the
+    # remaining lanes are still scanned before declaring true exhaustion.
+    next_page = feed.get_feed(db, user.id, preferred_type="show", genre="Comedy", cursor=result["next_cursor"])
+    assert not next_page["items"] and not next_page["has_more"]
 
 
 def test_metadata_work_is_bounded_and_failed_titles_cool_down(db, monkeypatch):

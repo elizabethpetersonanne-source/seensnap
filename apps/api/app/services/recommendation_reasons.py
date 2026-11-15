@@ -5,6 +5,7 @@ connection. A save is interest, not proof of enjoyment; broad format/language
 overlap alone is not a personal recommendation. Never infer mood from a genre.
 """
 from collections import defaultdict
+from app.services.taste_semantics import semantic_similarity
 
 
 def action_phrase(signal, title):
@@ -47,6 +48,7 @@ class PersonalReasons:
         self.index = defaultdict(set)
         self.semantic_affinity = defaultdict(float)
         self.labels = {}
+        self.connections = {}
         for key, signal in scorer.evidence.items():
             for dim in ("directors", "actors", "exemplars", "genres"):
                 for attr, weight in scorer.features.get(key, {}).get(dim, {}).items():
@@ -55,14 +57,38 @@ class PersonalReasons:
                     if signal.utility > 0 and key in titles and action_phrase(signal, titles[key]):
                         self.index[dim, attr].add(key)
 
-    def for_title(self, title, features):
+    def connection(self, title, features):
+        if title.id in self.connections:
+            return self.connections[title.id]
         labels = metadata_labels(title)
         options = []
-        for dim, specificity in (("directors", 4), ("exemplars", 3), ("actors", 2), ("genres", 1)):
+        # Subject keywords are absent from the style vector. A named style
+        # reason requires positive, multi-axis evidence, never one plot tag.
+        positive_style = {a: w for a, w in features.get("exemplars", {}).items()
+                          if self.semantic_affinity[a] > 0}
+        candidates = set().union(*(self.index["exemplars", attr] for attr in positive_style))
+        for key in candidates:
+            if key == title.id:
+                continue
+            signal = self.scorer.evidence[key]
+            other = self.scorer.features.get(key, {}).get("exemplars", {})
+            strength = semantic_similarity(positive_style, other)
+            if not strength:
+                continue
+            shared = set(positive_style) & set(other)
+            descriptions = []
+            for axis in ("humor", "tone", "story", "pacing", "visual"):
+                values = sorted(k.split(":", 2)[2] for k in shared if k.startswith(f"style:{axis}:"))
+                if values:
+                    suffix = {"humor": "humor", "tone": "tone", "story": "storytelling",
+                              "pacing": "pacing", "visual": "visuals"}[axis]
+                    descriptions.append(f"{values[0]} {suffix}")
+            phrase = "Both lean toward " + " and ".join(descriptions[:2]) + "."
+            options.append((.6 * strength * signal.utility * signal.boost, 3, str(key), "exemplars", phrase, key))
+        for dim, specificity in (("directors", 4), ("actors", 2)):
             for attr in features.get(dim, {}):
                 name = labels[dim].get(attr)
-                affinity = (self.semantic_affinity[attr] if dim == "exemplars" else
-                            self.scorer.attribute_sum[dim, attr])
+                affinity = self.scorer.attribute_sum[dim, attr]
                 if not name or affinity <= 0:
                     continue
                 for key in self.index[dim, attr]:
@@ -76,18 +102,32 @@ class PersonalReasons:
                         self.labels[key] = metadata_labels(anchor)
                     if attr not in self.labels[key][dim]:
                         continue
-                    options.append((specificity, signal.utility * signal.boost, str(key), dim, name, key))
+                    other = self.scorer.features.get(key, {})
+                    theme_overlap = semantic_similarity(features.get("exemplars", {}), other.get("exemplars", {}))
+                    strength = .6 * theme_overlap
+                    for dimension, weight in (("directors", .25), ("actors", .15)):
+                        a, b = set(features.get(dimension, {})), set(other.get(dimension, {}))
+                        if a and b:
+                            strength += weight * len(a & b) / len(a | b)
+                    options.append((strength * signal.utility * signal.boost, specificity, str(key), dim, name, key))
         if not options:
+            self.connections[title.id] = None
             return None
-        _, _, _, dim, name, key = max(options)
+        strength, _, _, dim, name, key = max(options)
         action = action_phrase(self.scorer.evidence[key], self.titles[key])
         connection = {
             "directors": f"This is also directed by {name}.",
             "actors": f"This also stars {name}.",
-            "exemplars": f"What they share: {name}.",
-            "genres": f"Here's another {name.lower()} pick for you.",
+            "exemplars": name,
         }[dim]
-        return f"{action}. {connection}"
+        result = {"anchor": str(key), "strength": strength, "dimension": dim,
+                  "text": f"{action}. {connection}"}
+        self.connections[title.id] = result
+        return result
+
+    def for_title(self, title, features):
+        connection = self.connection(title, features)
+        return connection["text"] if connection else None
 
     def from_seed(self, seed_id):
         signal = self.scorer.evidence.get(seed_id)

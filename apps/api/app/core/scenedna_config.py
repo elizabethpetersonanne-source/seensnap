@@ -2,7 +2,7 @@
 
 from types import MappingProxyType
 
-SCORE_VERSION = "scenedna_title_v2"
+SCORE_VERSION = "scenedna_title_v5"
 WEIGHTS = MappingProxyType(
     {
         "exemplars": 28,

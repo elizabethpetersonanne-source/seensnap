@@ -112,11 +112,16 @@ def resume_discovery(payload: ResumeRequest, current_user: CurrentUser, db: DbSe
         rows = [row for row in rows if videos.get(str(row.id))]
     scorer = scorer_for_user(db, current_user.id, rows)
     if payload.rerank and len(rows) > 2:
-        from app.services.discovery_personalization import compose
+        from app.services.discovery_personalization import compose, ranking_context, specific_match
         # The visible card and its immediate successor never jump. Only titles
         # already served to this owner/session can be reconsidered here.
         tail = {str(row.id): row for row in rows[2:]}
-        order, _ = compose(tail, {key: scorer.score(row) for key, row in tail.items()}, {}, len(tail))
+        anchors, related = ranking_context(scorer, {str(row.id): row for row in rows}, state.get("served_origins", {}))
+        pinned_history = [{"kind": "taste" if specific_match(scorer.score(row)) or str(row.id) in related else "discovery",
+                           "anchor": anchors.get(str(row.id)),
+                           "genres": [g.casefold() for g in row.genres or []]} for row in rows[:2]]
+        order, _ = compose(tail, {key: scorer.score(row) for key, row in tail.items()}, {}, len(tail),
+                           pinned_history, anchors=anchors, related=related)
         rows = rows[:2] + [tail[key] for key in order]
     items = []
     from app.services.discovery_personalization import personal_reason
