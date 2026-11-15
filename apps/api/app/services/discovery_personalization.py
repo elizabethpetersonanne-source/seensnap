@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.core.config import settings
 from app.models.content import ContentTitle
+from app.services.title_compatibility import title_features
 from app.services.tmdb import (
     _fetch_genre_map, _match_genre_id, _tmdb_headers,
     _upsert_title_from_tmdb_result, _fresh_stamp, TmdbConfigurationError,
@@ -257,17 +258,20 @@ not a hidden alteration of the displayed SceneDNA percentage.
     return selected, recent
 
 
-def personal_reason(db, scorer, origin):
+def personal_reason(db, scorer, origin, candidate=None):
+    if candidate is not None:
+        features = scorer.candidate_features.get(candidate.id) or title_features(candidate)
+        reason = scorer.reasons.for_title(candidate, features)
+        if reason:
+            return reason
     seed_id = origin.get("seed") if origin else None
     if not seed_id:
         return None
-    evidence = scorer.evidence.get(UUID(seed_id))
-    if not evidence or evidence.utility <= 0:
+    try:
+        seed_id = UUID(seed_id)
+    except (ValueError, TypeError, AttributeError):
         return None
-    title = db.get(ContentTitle, UUID(seed_id))
-    if title is None:
-        return None
-    return f"Because you {'saved' if evidence.kind in {'save', 'interest'} else 'liked'} {title.title}"
+    return scorer.reasons.from_seed(seed_id)
 
 
 def has_more_sources(scorer, state, preferred_type):

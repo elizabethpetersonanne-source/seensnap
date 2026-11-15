@@ -95,7 +95,7 @@ def test_personalized_retrieval_changes_movie_and_tv_decks_between_users(db, mon
             assert len(items) == 20
             assert sum(wanted in item["title"]["genres"] for item in items) >= 14
             assert sum(item["title"]["release_date"].startswith("1980") for item in items) >= 6
-            assert any(item["reason"].startswith("Because you liked") for item in items)
+            assert any(item["reason"].startswith("You rated") for item in items)
         ids = [{x["title"]["id"] for x in d["items"]} for d in decks]
         assert len(ids[0] & ids[1]) <= 6
 
@@ -186,7 +186,7 @@ def test_trait_query_preserves_genre_region_and_media(monkeypatch, kind):
 def test_cached_seed_reason_is_removed_when_user_dislikes_seed(db):
     user = owner(db); title = seed(db, user, 1)
     origin = {"seed": str(title.id)}
-    assert personal.personal_reason(db, scorer_for_user(db, user.id), origin).startswith("Because you liked")
+    assert personal.personal_reason(db, scorer_for_user(db, user.id), origin).startswith("You rated")
     rating = db.scalar(select(Rating).where(Rating.user_id == user.id)); rating.score = 1; db.commit()
     assert personal.personal_reason(db, scorer_for_user(db, user.id), origin) is None
 

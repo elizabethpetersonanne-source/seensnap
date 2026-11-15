@@ -92,6 +92,8 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
       patchTitleState(id, state) { patches.push({id, ...state}); for (const fn of stateListeners) fn({ title_id: id, ...state }); },
     };
     if (name === '@/components/rating-editor') return { RatingEditor: 'RatingEditor', subscribeRatingChanges: () => () => {} };
+    if (name === '@/components/editorial-sheet') return { EditorialSheet: ({ children, right, ...props }) =>
+      React.createElement('EditorialSheet', props, props.visible ? right : null, props.visible ? children : null) };
     if (name.startsWith('@/components/')) return new Proxy({}, { get: (_, key) => String(key) });
     if (name === '@/lib/backdrop') return { selectSafeBackdrop: () => null };
     if (name === '@/lib/streaming') return { getStreamingServiceMeta: () => null };
@@ -112,6 +114,23 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
     swipes() { return requests.filter(r => r.url === '/titles/swipes'); },
   };
 }
+
+test('full personal reason opens without swiping or moving the active poster', async () => {
+  for (const width of [390, 1024]) {
+    const h = await mount({ width });
+    try {
+      await h.click('Why this is for you: Your taste');
+      const sheet = () => h.screen.root.findByType('EditorialSheet');
+      assert.equal(sheet().props.visible, true);
+      assert.equal(sheet().props.supporting, 'title 0');
+      assert.ok(h.button('Flip title 0 to details'));
+      assert.equal(h.swipes().length, 0);
+      await h.click('Close recommendation explanation');
+      assert.equal(sheet().props.visible, false);
+      assert.ok(h.button('Flip title 0 to details'));
+    } finally { await h.close(); }
+  }
+});
 
 test('a slow swipe shows progress, blocks duplicate gestures, and advances exactly once', async () => {
   const h = await mount(), request = deferred(); h.sendWith(() => request.promise);

@@ -105,6 +105,8 @@ class Evidence:
     utility: float
     kind: str
     boost: float = 1.0
+    rating: float | None = None
+    rank: int | None = None
 
 
 def effective_evidence(ratings, ranks, saved, swipes, watched):
@@ -133,7 +135,8 @@ def effective_evidence(ratings, ranks, saved, swipes, watched):
             if utility > 0 and title_id in ranks
             else 1.0
         )
-        evidence[title_id] = Evidence(title_id, utility, kind, boost)
+        evidence[title_id] = Evidence(title_id, utility, kind, boost,
+                                      float(score) if kind == "rating" else None, ranks.get(title_id))
     return evidence, numeric_count
 
 
@@ -148,6 +151,7 @@ class TitleScorer:
         weights=WEIGHTS,
         now=None,
         candidate_features=None,
+        titles=None,
     ):
         if (
             set(weights) != set(WEIGHTS)
@@ -177,6 +181,8 @@ class TitleScorer:
                     weight = share * signal.boost
                     self.attribute_sum[dimension, attribute] += weight * signal.utility
                     self.attribute_weight[dimension, attribute] += weight
+        from app.services.recommendation_reasons import PersonalReasons
+        self.reasons = PersonalReasons(self, titles or {})
 
     def score_features(self, candidate):
         breakdown = []
@@ -300,7 +306,11 @@ class TitleScorer:
         # taste-state reuse; identical feature sets need evaluating only once.
         if key not in self.score_cache:
             self.score_cache[key] = self.score_features(features)
-        return self.score_cache[key]
+        match = self.score_cache[key]
+        # Feature-equivalent candidates share numeric work, never another
+        # title's explanation. Names and self-exclusion are title-specific.
+        explanation = self.reasons.for_title(title, features) or self.reasons.fallback()
+        return match.model_copy(update={"explanation": explanation})
 
 
 def load_effective_evidence(db, user_id):
@@ -400,5 +410,5 @@ def scorer_for_user(db, user_id, candidates=()):
             features[row.content_title_id]["services"] = {row.provider_code: 1.0}
             chosen.add(row.content_title_id)
     return TitleScorer(
-        evidence, numeric_count, features, now=now, candidate_features=candidate_features
+        evidence, numeric_count, features, now=now, candidate_features=candidate_features, titles=titles
     )
