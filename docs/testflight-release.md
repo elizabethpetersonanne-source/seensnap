@@ -28,10 +28,10 @@
 - Project ID: `e4706328-2b26-4812-87c4-08a17bac292e`.
 - Dashboard: https://expo.dev/accounts/lizzy456/projects/seensnap
 - The project was created successfully and the repository now links to it through `extra.eas.projectId`. The TestFlight profile also declares the same public owner/project identifiers. No dependency on `gregtusar` remains in the app configuration.
-- Six public variables are saved in the project's EAS `preview` environment: owner, project ID, release-build flag, dev-auth disabled, staging environment label and the existing staging API URL. Native Google and RevenueCat keys are not configured yet.
+- Seven public variables are saved in the project's EAS `preview` environment: owner, project ID, release-build flag, dev-auth disabled, staging environment label, the existing staging API URL and the iOS Google client ID below. RevenueCat is not configured yet.
 - The Expo GitHub app is authorized for only `elizabethpetersonanne-source/seensnap`, and that repository is connected to this project. The saved base directory is `/apps/mobile`. No automatic build trigger has been enabled.
 - Expo's iOS credentials page has no configured distribution certificate or provisioning profile yet. The first signed build/upload has not been started.
-- Browser sign-in does not authenticate the local EAS CLI. CLI/build authentication, native Google configuration and signing still need verification before starting a build.
+- Browser sign-in does not authenticate the local EAS CLI. CLI/build authentication and Apple signing still need setup before starting a build. Google sign-in must be verified on a device after the backend receives the same client ID.
 
 ## Account setup still required
 
@@ -39,7 +39,7 @@
 
 1. Use the confirmed Expo owner `lizzy456` and project above. Do not create a duplicate project or sign into the previous developer's account.
 2. Authenticate EAS CLI as an account with access to this project. Pull the `preview` environment into local build configuration before release checks (`npx eas-cli env:pull --environment preview`). The committed TestFlight profile and the saved EAS environment already supply the confirmed owner/project identifiers during builds.
-3. Configure an **iOS** Google OAuth client for `com.seensnap.app`. Put its public ID in `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` and the same ID in the API's `GOOGLE_OAUTH_IOS_CLIENT_ID`. Keep the existing web client configured separately. The post-install script writes the reversed iOS callback to the committed native plist on the build worker; Expo plugins alone do not update a checked-in native project.
+3. The user supplied the public iOS Google client below, and it is saved in Expo. Deploy the same ID to the API using `--google-ios-client-id`. Keep the existing web client configured separately. The post-install script writes the reversed iOS callback to the committed native plist on the build worker; Expo plugins alone do not update a checked-in native project.
 4. Set backend `APPLE_BUNDLE_ID=com.seensnap.app`, `IOS_TEAM_ID=7Z8CYNB749`, and Apple Sign in key ID/private key through Secret Manager. Account Holder/admin creates the Apple signing key with the requested authorization. Never paste private keys into chat or a public client env variable.
 5. Have EAS use the SeenSnap Apple team, distribution certificate and provisioning profile. APNs credentials are also required to test push. Credential creation/access may require the Apple Account Holder/admin.
 6. Confirm public Terms, Privacy and support URLs contain approved, accessible content. This branch links existing URLs; it does not fabricate legal policy text.
@@ -50,7 +50,15 @@ In the existing `seensnap-staging` Google Cloud project, open Google Auth Platfo
 
 Copy only the public client ID ending in `.apps.googleusercontent.com` to the Expo `preview` environment as `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` and to the API as `GOOGLE_OAUTH_IOS_CLIENT_ID`. Do not place a client secret in the app. App Check has not been integrated into this AuthSession-based client; enabling enforcement needs separate implementation and device validation.
 
-Google Cloud Console could not be loaded by the setup browser on November 15, so its current OAuth clients and permissions have **not** been inspected. An account owner must complete or verify this step. The release preflight correctly blocks the current configuration on the missing iOS Google client ID.
+On November 15, Elizabeth supplied this public iOS client ID after completing Google setup:
+
+```text
+451179869201-io7v9k8pv43ap31h8p7nq01jnrlshtt8.apps.googleusercontent.com
+```
+
+It is saved in Expo's `preview` environment as `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID`. The expected native callback scheme is `com.googleusercontent.apps.451179869201-io7v9k8pv43ap31h8p7nq01jnrlshtt8`. Local release configuration and callback generation are checked with this ID; this does not prove provider authentication works.
+
+Google Cloud Console could not be loaded by the setup browser, so the client's iOS type, bundle ID and consent audience have not been independently inspected. The API update and real-device sign-in remain pending. If the Google consent screen is in testing, ensure the intended Google testers are allowed before device acceptance.
 
 Reference: https://developers.google.com/identity/sign-in/ios/api-access
 
@@ -70,7 +78,7 @@ RevenueCat integration is implemented but **disabled until configured**. No acco
 
 ## Deployment and build order
 
-1. Deploy this backend commit with the existing reviewed `deploy/rollout_existing.py` flow. Billing defaults off and does not remove existing beta grants. No schema migration is introduced by this branch, but the rollout still runs its normal backup/migration checks.
+1. Deploy the reviewed backend commit with `deploy/rollout_existing.py --apply --expected-commit <reviewed SHA> --google-ios-client-id 451179869201-io7v9k8pv43ap31h8p7nq01jnrlshtt8.apps.googleusercontent.com`. The new flag validates the public ID, applies it only to the no-traffic candidate and checks it before promotion. It also verifies that the existing Google web client setting is unchanged. Structural checks now include native auth, account-deletion requirements and billing routes. Billing defaults off and does not remove existing beta grants. No schema migration is introduced by this branch, but the rollout still runs its normal backup/migration checks.
 2. Configure native auth and verify the new `/auth/deletion-requirements` and billing endpoints. Keep environment out of `local`/`development`; `/auth/dev` and demo token must remain disabled.
 3. Merge the frontend only after backend checks pass. Netlify then publishes the release sign-in UI and the association file. Verify the association URL returns JSON over HTTPS with no redirect; verify an authenticated account can still sign in on web.
 4. In `apps/mobile`, after the confirmed Expo project/environment is linked, run:
