@@ -99,7 +99,7 @@ export async function registerPushToken(sessionToken: string): Promise<string | 
       "";
 
     if (!easProjectId) {
-      console.warn("[notifications] easProjectId not configured in app.json extra.easProjectId");
+      console.warn("[notifications] Expo project ID not configured in extra.eas.projectId");
       return null;
     }
 

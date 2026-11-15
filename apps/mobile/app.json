@@ -2,7 +2,7 @@
   "expo": {
     "name": "SeenSnap",
     "slug": "seensnap",
-    "owner": "gregtusar",
+    "owner": "lizzy456",
     "scheme": "seensnap",
     "version": "1.0.0",
     "orientation": "default",
@@ -37,7 +37,11 @@
     "experiments": {
       "typedRoutes": true
     },
-    "extra": {},
+    "extra": {
+      "eas": {
+        "projectId": "e4706328-2b26-4812-87c4-08a17bac292e"
+      }
+    },
     "ios": {
       "bundleIdentifier": "com.seensnap.app",
       "associatedDomains": [

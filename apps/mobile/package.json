@@ -13,7 +13,7 @@
     "typecheck": "tsc --noEmit",
     "test:concierge": "node --test tests/concierge-recovery.test.cjs",
     "test:client": "node --test tests/*.test.cjs",
-    "release:check": "node scripts/check-native-release.cjs --release",
+    "release:check": "node --env-file-if-exists=.env --env-file-if-exists=.env.local scripts/check-native-release.cjs --release",
     "eas-build-pre-install": "node scripts/check-native-release.cjs",
     "eas-build-post-install": "python3 scripts/prepare-native-ios.py"
   },

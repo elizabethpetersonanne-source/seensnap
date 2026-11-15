@@ -21,12 +21,22 @@
 - Account deletion warns that Apple subscriptions must be canceled separately. Apple-linked accounts reauthorize, exchange the one-use code, verify the linked Apple identity, revoke Apple access, then delete. Provider credentials stay server-side. RevenueCat customer records are removed when configured; deleting them does not cancel an Apple subscription.
 - Universal-link association file for the current share host `seensnapalpha.netlify.app`; title/list/profile/post/team links have a web fallback. The marketing domain `seensnap.app` must serve its own association file before adding it to the entitlement.
 
+## Confirmed Expo project
+
+- Owner: `lizzy456` (Elizabeth's signed-in account, confirmed November 15, 2026).
+- Project: `seensnap`; display name SeenSnap.
+- Project ID: `e4706328-2b26-4812-87c4-08a17bac292e`.
+- Dashboard: https://expo.dev/accounts/lizzy456/projects/seensnap
+- The project was created successfully and the repository now links to it through `extra.eas.projectId`. The TestFlight profile also declares the same public owner/project identifiers. No dependency on `gregtusar` remains in the app configuration.
+- Six public variables are saved in the project's EAS `preview` environment: owner, project ID, release-build flag, dev-auth disabled, staging environment label and the existing staging API URL. Native Google and RevenueCat keys are not configured yet.
+- Browser sign-in does not authenticate the local EAS CLI. CLI/build authentication, native Google configuration and signing still need verification before starting a build.
+
 ## Account setup still required
 
 ### Expo and signing
 
-1. Confirm the Expo owner/organization. The older repo names `gregtusar`, but no EAS project is linked. Do not build under that personal account by assumption.
-2. Sign into the confirmed Expo account, create/link the SeenSnap project, and set `SEENSNAP_EXPO_OWNER` plus `SEENSNAP_EAS_PROJECT_ID` in EAS's `preview` environment and the local CLI environment used for the build.
+1. Use the confirmed Expo owner `lizzy456` and project above. Do not create a duplicate project or sign into the previous developer's account.
+2. Authenticate EAS CLI as an account with access to this project. Pull the `preview` environment into local build configuration before release checks (`npx eas-cli env:pull --environment preview`). The committed TestFlight profile and the saved EAS environment already supply the confirmed owner/project identifiers during builds.
 3. Configure an **iOS** Google OAuth client for `com.seensnap.app`. Put its public ID in `EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID` and the same ID in the API's `GOOGLE_OAUTH_IOS_CLIENT_ID`. Keep the existing web client configured separately. The post-install script writes the reversed iOS callback to the committed native plist on the build worker; Expo plugins alone do not update a checked-in native project.
 4. Set backend `APPLE_BUNDLE_ID=com.seensnap.app`, `IOS_TEAM_ID=7Z8CYNB749`, and Apple Sign in key ID/private key through Secret Manager. Account Holder/admin creates the Apple signing key with the requested authorization. Never paste private keys into chat or a public client env variable.
 5. Have EAS use the SeenSnap Apple team, distribution certificate and provisioning profile. APNs credentials are also required to test push. Credential creation/access may require the Apple Account Holder/admin.
