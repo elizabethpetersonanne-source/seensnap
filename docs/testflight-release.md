@@ -122,6 +122,14 @@ Elizabeth supplied and approved the navy spotlight / gold camera / SEENSNAP artw
 
 The native asset catalog is compiled into each iOS binary, so build 2 will retain its original icon. Build a new archive with the existing `testflight` profile (remote build numbers increment automatically), verify it, and submit that exact new build to App Store Connect. Assign the new build to the intended testing group once Apple processes it. This asset-only change requires no backend deployment. Netlify receives the favicon change when the frontend branch is released.
 
+### Verified icon build
+
+- Source: `8b74ebd39569ca9a52b441f2cfcc889e58329c49`; GitHub Actions run `43797135334` passed all jobs.
+- EAS build: `a710fd77-0d8a-4ac9-abad-b162e20651c1`, version **1.0.0 (3)**, `testflight` / `preview`, **Succeeded** (3m 50s build, 4m 16s total).
+- Dashboard: https://expo.dev/accounts/lizzy456/projects/seensnap/builds/a710fd77-0d8a-4ac9-abad-b162e20651c1
+- The validated source icons are identical 1024-square, opaque sRGB PNGs. Native archive compilation succeeded. The build 3 IPA was not downloaded or independently inspected locally.
+- **Apple upload is still pending for build 3.** Submit this exact EAS build ID using Elizabeth's authenticated Cloud Shell and the existing App Store Connect team key. The Expo browser only shows the prior successful build 2 submission; no build 3 submission has been scheduled by this work. Existing build 2 review remains active.
+
 ## Device acceptance before external testing
 
 - Existing Google user retains picks, rankings and teams; new Apple user (including Hide My Email) completes onboarding. Sign-out/account switch and a canceled/error login leave usable controls.
