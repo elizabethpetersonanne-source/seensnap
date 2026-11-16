@@ -118,7 +118,9 @@ function AuthGate() {
     return () => { cancelled = true; };
   }, [sessionToken, user?.user_id,onboardingRetry]);
 
-  if (isLoading || (sessionToken && onboardingStatus === "unknown")) {
+  // Keep sign-in mounted while the provider sheet is open so cancellation and
+  // failed exchanges can return to the same form with its error message.
+  if ((isLoading && !inAuthRoute) || (sessionToken && onboardingStatus === "unknown")) {
     return <BootScreen />;
   }
 
@@ -191,7 +193,7 @@ function AuthGate() {
 }
 
 export default function RootLayout() {
-  const [fontsLoaded] = useFonts({
+  const [fontsLoaded, fontError] = useFonts({
     BodoniModa_500Medium,
     BodoniModa_700Bold,
     InstrumentSans_400Regular,
@@ -203,7 +205,9 @@ export default function RootLayout() {
     IBMPlexMono_600SemiBold,
   });
 
-  if (!fontsLoaded) {
+  // A failed font must not leave the entire app behind the startup spinner.
+  // Native text can fall back to the system font while the app remains usable.
+  if (!fontsLoaded && !fontError) {
     return (
       <View style={styles.boot}>
         <ActivityIndicator color={colors.accent} size="small" />

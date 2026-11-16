@@ -396,7 +396,7 @@ def apple_app_site_association() -> JSONResponse:
             "details": [
                 {
                     "appID": f"{settings.ios_team_id}.{settings.apple_bundle_id}",
-                    "paths": ["/lists/*", "/titles/*", "/events/*", "/profiles/*"],
+                    "paths": ["/lists/*", "/titles/*", "/share/t/*", "/list/*", "/profile/*", "/post/*", "/teams/*"],
                 }
             ],
         }

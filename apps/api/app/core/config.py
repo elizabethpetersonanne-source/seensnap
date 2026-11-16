@@ -19,6 +19,18 @@ class Settings(BaseSettings):
     firebase_project_id: str = ""
     apple_bundle_id: str = ""
     google_oauth_client_id: str = ""
+    google_oauth_ios_client_id: str = ""
+    google_oauth_android_client_id: str = ""
+    # Preserve complimentary access during beta; never re-create revoked grants.
+    beta_premium_auto_grant: bool = True
+    billing_test_user_ids: str = ""  # comma-separated UUIDs; no beta/sandbox crossover
+    billing_enabled: bool = False
+    revenuecat_secret_api_key: str = ""
+    revenuecat_webhook_token: str = ""
+    revenuecat_app_id: str = ""
+    premium_product_ids: str = ""  # approved App Store subscription identifiers
+    apple_signin_key_id: str = ""
+    apple_signin_private_key: str = ""  # Secret Manager; never EXPO_PUBLIC_*
     app_auth_secret: str = "replace-me"
     app_auth_audience: str = "seensnap-mobile"
     uploads_dir: str = "uploads"
@@ -65,6 +77,13 @@ class Settings(BaseSettings):
     def parsed_cors_origins(self) -> list[str]:
         return [o.strip() for o in self.cors_allowed_origins.split(",") if o.strip()]
 
+    def billing_test_users(self) -> set[str]:
+        from uuid import UUID
+        return {str(UUID(value.strip())) for value in self.billing_test_user_ids.split(",") if value.strip()}
+
+    def premium_products(self) -> set[str]:
+        return {value.strip() for value in self.premium_product_ids.split(",") if value.strip()}
+
     @property
     def is_production(self) -> bool:
         return self.environment == "production"
@@ -75,6 +94,10 @@ class Settings(BaseSettings):
 
     def validate_production_safety(self) -> None:
         """Raise on startup if production environment has unsafe credentials."""
+        self.billing_test_users()  # fail on malformed cohort IDs at startup
+        if self.billing_enabled and not all([self.revenuecat_secret_api_key,
+            self.revenuecat_webhook_token, self.revenuecat_app_id, self.premium_products()]):
+            raise RuntimeError("Billing is enabled but its server verification configuration is incomplete.")
         if self.is_production and self.app_auth_secret in _UNSAFE_SECRETS:
             raise RuntimeError(
                 "APP_AUTH_SECRET must be set to a secure value in production. "

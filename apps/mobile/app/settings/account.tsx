@@ -1,3 +1,4 @@
+import * as AppleAuthentication from "expo-apple-authentication";
 import { ConfirmDialog } from "@/components/confirm-dialog";
 import { AppHeader } from "@/components/headers/app-header";
 /**
@@ -11,6 +12,7 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -59,11 +61,21 @@ export default function AccountSettingsScreen() {
     setDeleting(true);
     setDeleteError(null);
     try {
-      await apiRequest("/auth/me", { method: "DELETE", token: sessionToken });
+      const requirements = await apiRequest<{apple_reauthorization_required: boolean}>("/auth/deletion-requirements", { token: sessionToken });
+      let appleCode: string | undefined;
+      if (requirements.apple_reauthorization_required) {
+        if (Platform.OS !== "ios") throw new Error("Please delete your Apple-linked account from SeenSnap on your iPhone or iPad, where you can confirm your Apple sign-in.");
+        const credential = await AppleAuthentication.signInAsync({ requestedScopes: [] });
+        if (!credential.authorizationCode) throw new Error("Apple confirmation did not finish. Please try again.");
+        appleCode = credential.authorizationCode;
+      }
+      await apiRequest("/auth/me", { method: "DELETE", token: sessionToken,
+        body: JSON.stringify({ apple_authorization_code: appleCode }), timeoutMs: 45000 });
       await signOut();
       router.replace("/sign-in");
     } catch (err) {
-      setDeleteError("Your account could not be deleted. Please try again.");
+      if ((err as {code?: string}).code === "ERR_REQUEST_CANCELED") return;
+      setDeleteError(err instanceof Error ? err.message : "Your account could not be deleted. Please try again.");
     } finally {
       setDeleting(false);
     }
@@ -128,7 +140,7 @@ export default function AccountSettingsScreen() {
       )}
 
       <ConfirmDialog visible={confirmDelete} title="Delete account?"
-        message={`This permanently removes your profile, lists, ratings and activity. This cannot be undone.${deleteError ? "\n\n"+deleteError : ""}`}
+        message={`This permanently removes your profile, lists, ratings and activity. This cannot be undone. Deleting your account does not cancel an App Store subscription; manage any subscription in Apple Settings.${deleteError ? "\n\n"+deleteError : ""}`}
         confirmLabel="Delete my account" busy={deleting} onCancel={()=>setConfirmDelete(false)} onConfirm={()=>void handleDeleteAccount()} />
       <PremiumPaywallSheet
         visible={showPaywall}

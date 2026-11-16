@@ -17,6 +17,7 @@ COMMIT = "a" * 40
 SOURCE_COMMIT = "c" * 40
 BUILD_ID = "cda1b727-58d4-4b8b-9c76-4f6590930471"
 SQL = f"{PROJECT}:us-central1:beta-db"
+IOS_CLIENT = "123456-testios.apps.googleusercontent.com"
 ENV = [
     {"name": "DATABASE_URL", "valueFrom": {"secretKeyRef": {"name": "db", "key": "latest"}}},
     {"name": "TMDB_API_KEY", "valueFrom": {"secretKeyRef": {"name": "tmdb", "key": "latest"}}},
@@ -193,11 +194,19 @@ class RolloutSafetyTests(unittest.TestCase):
                 with self.assertRaises(RuntimeError):
                     rollout.validate(service, job, PROJECT)
 
-    def execute(self, failure=None, reuse=False):
+    def execute(self, failure=None, reuse=False, google_ios_client_id=None, web_client=None):
         service, job = fixtures()
+        if web_client:
+            service["spec"]["template"]["spec"]["containers"][0]["env"].append(copy.deepcopy(web_client))
         suffix = "beta-aaaaaaaaaa-123"
         revision = f"{rollout.SERVICE}-{suffix}"
         candidate = copy.deepcopy(service)
+        candidate_env = candidate["spec"]["template"]["spec"]["containers"][0]["env"]
+        if google_ios_client_id and failure != "google-missing":
+            candidate_env.append({"name": "GOOGLE_OAUTH_IOS_CLIENT_ID", "value":
+                                  "wrong-client" if failure == "google-config" else google_ios_client_id})
+        if failure == "web-config":
+            candidate_env[:] = [entry for entry in candidate_env if entry["name"] != "GOOGLE_OAUTH_CLIENT_ID"]
         candidate["spec"]["template"]["spec"]["containers"][0]["image"] = IMAGE + "@sha256:" + "b" * 64
         candidate["status"].update(latestReadyRevisionName=revision)
         candidate["status"]["traffic"].append({"tag": suffix, "revisionName": revision, "url": "https://candidate.run.app"})
@@ -237,12 +246,47 @@ class RolloutSafetyTests(unittest.TestCase):
              patch.object(rollout.subprocess, "run") as archive, patch("builtins.print"):
             if failure:
                 with self.assertRaises(RuntimeError):
-                    rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db", reuse=reuse_receipt)
+                    rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db", reuse=reuse_receipt,
+                                    google_ios_client_id=google_ios_client_id)
             else:
-                rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db", reuse=reuse_receipt)
+                rollout.rollout(PROJECT, service, job, COMMIT, IMAGE, "beta-db", reuse=reuse_receipt,
+                                google_ios_client_id=google_ios_client_id)
             if reuse:
                 archive.assert_not_called()
         return calls
+
+    def test_invalid_ios_client_stops_before_any_cloud_operation(self):
+        for client in ("", "web-client", IOS_CLIENT + ",OTHER=value", IOS_CLIENT + "\n", "--clear-env-vars"):
+            with self.subTest(client=client), patch.object(rollout, "cloud") as cloud, \
+                 patch.object(rollout, "cloud_action") as action, patch.object(rollout, "command") as command, \
+                 patch.object(sys, "argv", ["rollout", "--google-ios-client-id=" + client]):
+                with self.assertRaisesRegex(RuntimeError, "public iOS Google OAuth client ID"):
+                    rollout.main()
+                cloud.assert_not_called()
+                action.assert_not_called()
+                command.assert_not_called()
+
+    def test_ios_client_update_retains_web_client_and_candidate_gates(self):
+        for web_client in (None, {"name": "GOOGLE_OAUTH_CLIENT_ID", "value": "existing-web-client"},
+                           {"name": "GOOGLE_OAUTH_CLIENT_ID", "valueFrom": {
+                               "secretKeyRef": {"name": "web-client", "key": "latest"}}}):
+            with self.subTest(web_client=web_client):
+                calls = self.execute(google_ios_client_id=IOS_CLIENT, web_client=web_client)
+                deployment = next(i for i, a in enumerate(calls) if a[:2] == ("run", "deploy"))
+                self.assertIn("--no-traffic", calls[deployment])
+                self.assertIn(f"--update-env-vars=GOOGLE_OAUTH_IOS_CLIENT_ID={IOS_CLIENT},SEENSNAP_RELEASE_COMMIT={COMMIT}", calls[deployment])
+                probe = next(i for i, a in enumerate(calls) if a[0] == "probe")
+                promote = next(i for i, a in enumerate(calls) if a[:3] == ("run", "services", "update-traffic"))
+                self.assertTrue(deployment < probe < promote)
+                self.assertFalse(any(a.startswith(("--set-env", "--clear-env", "--set-secrets", "--clear-secrets"))
+                                     for call in calls for a in call))
+
+    def test_ios_or_web_configuration_mismatch_blocks_traffic_promotion(self):
+        for failure in ("google-missing", "google-config", "web-config"):
+            with self.subTest(failure=failure):
+                calls = self.execute(failure=failure, google_ios_client_id=IOS_CLIENT,
+                                     web_client={"name": "GOOGLE_OAUTH_CLIENT_ID", "value": "existing-web-client"})
+                self.assertFalse(any(a[:3] == ("run", "services", "update-traffic") for a in calls))
 
     def test_reuse_skips_build_but_retains_backup_migration_and_candidate_gates(self):
         calls = self.execute(reuse=True)

@@ -14,7 +14,7 @@ export function PremiumPaywallSheet({ visible, onClose }: { visible: boolean; on
       <ScrollView contentContainerStyle={{ padding: 24, gap: 20, maxWidth: 640, width: "100%", alignSelf: "center" }}>
         <Text style={{ color: colors.accent, fontFamily: fonts.serifBold, fontSize: 28 }}>SeenSnap Premium</Text>
         <Text style={{ color: colors.ink, fontFamily: fonts.sans, fontSize: 16, lineHeight: 24 }}>
-          {membership?.is_beta ? "Premium is included during beta. No purchase or cancellation is needed." : membership?.verified && membership.tier === "premium" ? "Your Premium membership is active." : "Check your membership and explore Premium benefits. Paid upgrades are not available in this beta."}
+          {membership?.is_beta ? "Premium is included during beta. No purchase or cancellation is needed." : membership?.verified && membership.tier === "premium" ? "Your Premium membership is active." : "Check your membership and available Premium options."}
         </Text>
         <Text style={{ color: colors.muted, fontSize: 16, lineHeight: 24 }}>Get recommendations from SeenSnap Concierge, explore your SceneDNA, and discover titles with your Watch Teams.</Text>
         <Pressable accessibilityRole="button" onPress={() => { onClose(); router.push("/settings/premium"); }} style={{ minHeight: 48, backgroundColor: colors.accent, borderRadius: 12, padding: 16 }}>

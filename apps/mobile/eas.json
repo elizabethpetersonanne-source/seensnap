@@ -1,0 +1,29 @@
+{
+  "cli": { "version": ">= 16.28.0", "appVersionSource": "remote" },
+  "build": {
+    "testflight": {
+      "distribution": "store",
+      "environment": "preview",
+      "autoIncrement": true,
+      "node": "20.19.4",
+      "ios": { "image": "macos-sequoia-15.6-xcode-26.1" },
+      "env": {
+        "SEENSNAP_RELEASE_BUILD": "true",
+        "SEENSNAP_EXPO_OWNER": "lizzy456",
+        "SEENSNAP_EAS_PROJECT_ID": "e4706328-2b26-4812-87c4-08a17bac292e",
+        "EXPO_PUBLIC_ENABLE_DEV_AUTH": "false",
+        "EXPO_PUBLIC_ENVIRONMENT": "staging",
+        "EXPO_PUBLIC_API_BASE_URL": "https://seensnap-api-staging-7znwtd6zta-uc.a.run.app/api/v1"
+      }
+    },
+    "simulator": {
+      "extends": "testflight",
+      "distribution": "internal",
+      "autoIncrement": false,
+      "ios": { "simulator": true }
+    }
+  },
+  "submit": {
+    "testflight": { "ios": { "ascAppId": "6835181142", "appleTeamId": "7Z8CYNB749" } }
+  }
+}

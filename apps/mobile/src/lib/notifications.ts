@@ -94,12 +94,12 @@ export async function registerPushToken(sessionToken: string): Promise<string | 
     }
 
     const easProjectId =
-      (Constants.expoConfig?.extra as Record<string, string> | undefined)?.easProjectId ||
+      (Constants.expoConfig?.extra?.eas as { projectId?: string } | undefined)?.projectId ||
       (Constants.easConfig as { projectId?: string } | undefined)?.projectId ||
       "";
 
     if (!easProjectId) {
-      console.warn("[notifications] easProjectId not configured in app.json extra.easProjectId");
+      console.warn("[notifications] Expo project ID not configured in extra.eas.projectId");
       return null;
     }
 
@@ -135,7 +135,7 @@ export async function deactivatePushToken(sessionToken: string): Promise<void> {
     if (status !== Notifications.PermissionStatus.GRANTED) return;
 
     const easProjectId =
-      (Constants.expoConfig?.extra as Record<string, string> | undefined)?.easProjectId ||
+      (Constants.expoConfig?.extra?.eas as { projectId?: string } | undefined)?.projectId ||
       (Constants.easConfig as { projectId?: string } | undefined)?.projectId ||
       "";
 

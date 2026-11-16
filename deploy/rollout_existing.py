@@ -22,6 +22,11 @@ SERVICE = "seensnap-api-staging"
 REGION = "us-central1"
 JOB = SERVICE + "-migrate"
 REQUIRED_ROUTES = {
+    "/api/v1/auth/google": "post",
+    "/api/v1/auth/apple": "post",
+    "/api/v1/auth/deletion-requirements": "get",
+    "/api/v1/billing/config": "get",
+    "/api/v1/billing/sync": "post",
     "/api/v1/me/stories": "get",
     "/api/v1/me/stories/{story_id}": "get",
     "/api/v1/me/discovery-resume": "post",
@@ -214,7 +219,16 @@ def reusable_build(project, commit, image_repo, build_id, build_commit):
     return {"id": build_id, "commit": build_commit, "api_tree": source_tree, "image": image}
 
 
-def rollout(project, before, job, commit, image_repo, instance, reuse=None, concierge_override=None):
+def google_ios_config(client_id):
+    if client_id is None:
+        return {}
+    require(re.fullmatch(r"[0-9]+-[a-z0-9]+\.apps\.googleusercontent\.com", client_id),
+            "--google-ios-client-id must be a public iOS Google OAuth client ID.")
+    return {"GOOGLE_OAUTH_IOS_CLIENT_ID": client_id}
+
+
+def rollout(project, before, job, commit, image_repo, instance, reuse=None, concierge_override=None, google_ios_client_id=None):
+    native_auth_env = google_ios_config(google_ios_client_id)
     suffix = f"beta-{commit[:10]}-{int(time.time())}"
     revision = f"{SERVICE}-{suffix}"
     tag = suffix
@@ -254,14 +268,20 @@ def rollout(project, before, job, commit, image_repo, instance, reuse=None, conc
     cloud_action(project, "run", "jobs", "execute", JOB, f"--region={REGION}", "--wait")
     require(describe_service(project)["spec"] == before["spec"], "Service changed during migration. Stop and inspect before deployment.")
     print("Deploying a revision with no production traffic; existing settings are retained.", flush=True)
-    release_env = {**(concierge_override or {}), "SEENSNAP_RELEASE_COMMIT": backend_commit}
+    requested_env = {**(concierge_override or {}), **native_auth_env}
+    release_env = {**requested_env, "SEENSNAP_RELEASE_COMMIT": backend_commit}
     overrides = ["--update-env-vars=" + ",".join(f"{key}={value}" for key, value in sorted(release_env.items()))]
     cloud_action(project, "run", "deploy", SERVICE, f"--region={REGION}", f"--image={image}",
           "--no-traffic", f"--tag={tag}", f"--revision-suffix={suffix}", *overrides)
     candidate = describe_service(project)
-    if concierge_override:
+    if requested_env:
         configured = {e["name"]: e.get("value") for e in candidate["spec"]["template"]["spec"]["containers"][0].get("env", [])}
-        require(all(configured.get(k) == v for k, v in concierge_override.items()), "Candidate Concierge configuration did not match the requested update.")
+        require(all(configured.get(k) == v for k, v in requested_env.items()), "Candidate configuration did not match the requested update.")
+    if native_auth_env:
+        def web_client(service):
+            return next((e for e in service["spec"]["template"]["spec"]["containers"][0].get("env", [])
+                         if e["name"] == "GOOGLE_OAUTH_CLIENT_ID"), None)
+        require(web_client(candidate) == web_client(before), "Existing Google web sign-in configuration changed. Stop before traffic promotion.")
     require(traffic(candidate) == old_traffic, "Traffic changed unexpectedly. Stop and inspect Cloud Run.")
     require(candidate["status"].get("latestReadyRevisionName") == revision,
             "The expected new revision is not ready.")
@@ -292,7 +312,9 @@ def main():
     parser.add_argument("--build-commit", help="Full source commit of --reuse-build; API files must match this checkout")
     parser.add_argument("--concierge-model", help="Explicit Vertex model update on the new revision only")
     parser.add_argument("--concierge-location", help="Vertex endpoint location for --concierge-model (for example us)")
+    parser.add_argument("--google-ios-client-id", help="Public iOS Google OAuth client ID; update and verify on the candidate revision only")
     args = parser.parse_args()
+    google_ios_config(args.google_ios_client_id)
     require(bool(args.concierge_model) == bool(args.concierge_location), "Supply --concierge-model and --concierge-location together.")
     concierge_override = None
     if args.concierge_model:
@@ -316,7 +338,8 @@ def main():
     print("Configuration presence checked only; provider credentials/model access still require a live account test.", flush=True)
     reuse = reusable_build(project, commit, image_repo, args.reuse_build, args.build_commit) if args.reuse_build else None
     if args.apply:
-        rollout(project, service, job, commit, image_repo, instance, reuse=reuse, concierge_override=concierge_override)
+        rollout(project, service, job, commit, image_repo, instance, reuse=reuse, concierge_override=concierge_override,
+                google_ios_client_id=args.google_ios_client_id)
     else:
         print("Read-only check complete. No cloud resources changed. Use --apply --expected-commit <reviewed SHA> to deploy.")
 

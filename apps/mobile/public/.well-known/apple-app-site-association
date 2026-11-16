@@ -1,0 +1,19 @@
+{
+  "applinks": {
+    "apps": [],
+    "details": [
+      {
+        "appID": "7Z8CYNB749.com.seensnap.app",
+        "paths": [
+          "/titles/*",
+          "/share/t/*",
+          "/lists/*",
+          "/list/*",
+          "/profile/*",
+          "/post/*",
+          "/teams/*"
+        ]
+      }
+    ]
+  }
+}
