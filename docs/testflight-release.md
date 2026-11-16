@@ -128,7 +128,7 @@ The native asset catalog is compiled into each iOS binary, so build 2 will retai
 - EAS build: `a710fd77-0d8a-4ac9-abad-b162e20651c1`, version **1.0.0 (3)**, `testflight` / `preview`, **Succeeded** (3m 50s build, 4m 16s total).
 - Dashboard: https://expo.dev/accounts/lizzy456/projects/seensnap/builds/a710fd77-0d8a-4ac9-abad-b162e20651c1
 - The validated source icons are identical 1024-square, opaque sRGB PNGs. Native archive compilation succeeded. The build 3 IPA was not downloaded or independently inspected locally.
-- **Apple upload is still pending for build 3.** Submit this exact EAS build ID using Elizabeth's authenticated Cloud Shell and the existing App Store Connect team key. The Expo browser only shows the prior successful build 2 submission; no build 3 submission has been scheduled by this work. Existing build 2 review remains active.
+- **Apple upload succeeded for build 3.** Elizabeth submitted the exact build from Cloud Shell using the existing App Store Connect team key. EAS submission `d3d86bc0-30e6-42f8-94e4-b068b4998827` was independently verified **Succeeded**, showing version **1.0.0 (3)** and source `8b74ebd`. Submission: https://expo.dev/accounts/lizzy456/projects/seensnap/submissions/d3d86bc0-30e6-42f8-94e4-b068b4998827 . Apple's processing, build 3 group assignment and on-device icon appearance have not yet been verified. Existing build 2 review was not canceled.
 
 ## Device acceptance before external testing
 
