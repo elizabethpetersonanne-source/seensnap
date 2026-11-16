@@ -93,7 +93,7 @@ RevenueCat integration is implemented but **disabled until configured**. No acco
    npx --yes eas-cli@latest submit --platform ios --profile testflight --id <verified-build-id>
    ```
 
-   Use the exact successful build for submission, not an unrelated previously built artifact. The first signed build exists, but no upload has been confirmed. Submission credentials are separate from distribution signing and may still require Apple account setup. Configuration preflight needs the public EAS environment variables available locally as well as on the build worker.
+   Use the exact successful build for submission, not an unrelated previously built artifact. Build 2 has been uploaded and processed by Apple (see the verification record below). Submission credentials are separate from distribution signing. Configuration preflight needs the public EAS environment variables available locally as well as on the build worker.
 5. Wait for Apple's processing; resolve export compliance based on the app's audited encryption use. Do not assume an exemption without checking the final archive and SDKs. Native privacy manifests are aggregated by CocoaPods; inspect the archive's Privacy Report before completing App Privacy disclosures.
 6. Add internal testers, verify on an actual iPhone and iPad, then complete Test Information and submit for external TestFlight review. Reviewer access must use a real supported login, not re-enabled email-only authentication.
 
@@ -114,7 +114,13 @@ These are mobile/build changes; do not rerun the API database rollout solely for
 - GitHub Actions run `43760591310` passed deployment safety, API/migrations and mobile/web checks. Client tests, typecheck, dependency compatibility, autolinking and both bundle exports passed.
 - Dependency audit: 0 critical, 13 high, 18 moderate, 2 low; these counts are package findings, not an assessment of runtime exploitability. Further audit triage remains required.
 - A follow-up download of build 2 timed out, then browser URL security blocked inspection. Build success and availability were observed in Expo; the replacement IPA itself was not independently inspected locally.
-- No App Store Connect upload has been confirmed. From the authenticated Cloud Shell EAS session, submit **this exact build ID** using `npx --yes eas-cli@latest submit --platform ios --profile testflight --id 3e95bb1a-b6bb-413f-9d6b-fbc584934596 --no-wait --no-auto-testflight-setup`. Apple upload credentials may still need configuration; signing credentials alone do not confirm submission access.
+- App Store Connect upload succeeded: EAS submission `9b15402f-7895-4f06-a089-6147ab2da8c1`. Apple's TestFlight screen subsequently showed build **1.0.0 (2)** processed, export-compliance questions completed, and then submitted for TestFlight review. Four individual testers and the SeenSnap Internal group are present; the supplied screenshot still showed No Builds Available, so device installation and tester access are not yet confirmed. Do not resubmit build 2 or cancel its review for an icon update.
+
+## Spotlight app icon update — November 16, 2026 (UTC)
+
+Elizabeth supplied and approved the navy spotlight / gold camera / SEENSNAP artwork. Its square composition is preserved and resized to a 1024×1024 sRGB PNG without an alpha channel. The shared Expo app icon and the committed native Xcode `AppIcon.appiconset` contain identical image bytes. The web favicon now references the same shared asset. The in-app header logo, splash screen and notification artwork are separate assets and retain their existing designs.
+
+The native asset catalog is compiled into each iOS binary, so build 2 will retain its original icon. Build a new archive with the existing `testflight` profile (remote build numbers increment automatically), verify it, and submit that exact new build to App Store Connect. Assign the new build to the intended testing group once Apple processes it. This asset-only change requires no backend deployment. Netlify receives the favicon change when the frontend branch is released.
 
 ## Device acceptance before external testing
 
@@ -131,4 +137,4 @@ These are mobile/build changes; do not rerun the API database rollout solely for
 - Apple server-to-server consent revocation/account deletion notifications and native credential-state recovery need a separate end-to-end lifecycle pass. One-use reauthorization covers user-initiated in-app deletion in this branch; it is not a substitute for every Apple account event.
 - A dedicated billing reconciliation/alerting job should recover from webhook delivery exhaustion and detect provider errors. Current access naturally expires and sync retries on purchase/restore or membership return, but dormant renewal recovery depends on successful webhook delivery.
 - The website cannot perform native Apple reauthorization; Apple-linked deletion directs users to their iPhone/iPad. Add a web Apple reauthorization flow if Apple accounts must be fully managed from web.
-- Initial archive signing and native compilation succeeded. The repaired replacement archive also succeeded. App Store Connect upload/processing and real-device acceptance remain pending. Linux TypeScript/web/unit checks cannot certify those device gates.
+- Initial archive signing and native compilation succeeded. The repaired replacement archive also succeeded and build 2 was uploaded and processed by Apple. Real-device acceptance remains pending. Linux TypeScript/web/unit checks cannot certify those device gates.

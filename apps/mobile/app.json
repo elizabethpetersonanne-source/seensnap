@@ -114,7 +114,7 @@
     "web": {
       "bundler": "metro",
       "output": "single",
-      "favicon": "./assets/branding/seensnap-logo.png"
+      "favicon": "./assets/branding/app-icon.png"
     }
   }
 }
