@@ -17,9 +17,9 @@ Based on `codex/testflight-foundation` at `fd22cbc98f8f58c4210d167678f806be35c0c
 
 - TypeScript passes.
 - 90 client regression tests pass, including actual Swipe-screen tests for delayed/failed persistence, no duplicate gestures, immediate exit from release coordinates, four directions, Undo, and recovery from interrupted animations. New tests also cover profile field deltas/read-back, tab ownership, sound reset, fullscreen position and inactive-player removal.
-- Targeted API tests: 28 passed, 12 PostgreSQL-specific tests skipped locally; full PostgreSQL suite is required in GitHub Actions.
-- Web export succeeded before the final gesture/compact-Preview refinements; final export and iOS bundle are required in GitHub Actions.
-- Native release configuration gate passed with the existing EAS preview environment. No development login enabled.
+- Targeted API tests: 28 passed, 12 PostgreSQL-specific tests skipped locally; the full PostgreSQL suite subsequently passed in GitHub Actions.
+- Final web export and iOS bundle export passed in GitHub Actions for candidate `949fb9d3927081adc4dcc279f49df8a720f15f5d`.
+- Native release configuration gate passed with the existing EAS preview environment. No development login enabled. All three GitHub Actions jobs passed (run 44615797148).
 - Local browser visual automation was unavailable in this execution environment. Unit/component tests do not establish real-device frame rate, Safari/WebView autoplay behavior, or keyboard/safe-area correctness.
 
 ## Release and remaining acceptance
@@ -32,3 +32,11 @@ Based on `codex/testflight-foundation` at `fd22cbc98f8f58c4210d167678f806be35c0c
 6. Verify muted initial autoplay, explicit sound on/off across at least ten trailers, immediate silence on scroll/tab/background, fullscreen/rotation/return at the same position, and manual Play/Retry when autoplay is restricted.
 7. Save a large iPhone photo and bio, reopen/relaunch, move a ranking beyond position 100, and verify saved/watched/ranked collections. Use two accounts to verify shared team statuses/ratings, default privacy, and ranking independence.
 8. This candidate does not complete the separate subscription/App Store product configuration or server-side Apple Sign In configuration. Beta Premium behavior remains unchanged. Netlify production is not changed by an EAS build.
+
+## Build result
+
+Expo iOS App Store build **1.0.0 (4)** succeeded on November 19, 2026, from code commit `949fb9d3927081adc4dcc279f49df8a720f15f5d`. Build ID: `7ece279c-40ae-466e-a87a-cb74314f5ab8`.
+
+[Verified build](https://expo.dev/accounts/lizzy456/projects/seensnap/builds/7ece279c-40ae-466e-a87a-cb74314f5ab8) · [Cloud Shell deployment/upload steps](BUILD4_CLOUD_SHELL.md)
+
+Apple submission and backend deployment have not been performed in this session. The private Apple key remains in the owner's Cloud Shell. These documentation-only follow-up changes do not change the built application.
