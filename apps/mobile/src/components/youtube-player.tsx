@@ -7,7 +7,7 @@ import { TrailerPlayback, TrailerProgress } from "@/lib/trailer-playback";
 export type YoutubePlayerProps = {
   videoKey: string; isActive: boolean; muted: boolean; width: number; height: number;
   showControls?: boolean; onFullScreenChange?: (isFull: boolean) => void;
-  onMutedFallback?: () => void;
+  onMutedFallback?: () => void; onMuteChange?: (muted: boolean) => void;
 };
 export type YoutubePlayerHandle = {
   getCurrentTime: () => Promise<number>; seekTo: (seconds: number, allowSeekAhead?: boolean) => void;

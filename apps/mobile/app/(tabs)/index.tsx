@@ -511,10 +511,11 @@ export default function DiscoverScreen() {
     else setConciergeAction({ action, id: title.id, title: title.title, poster: title.poster_url });
   }
 
+  const [trendingError, setTrendingError] = useState<string | null>(null);
   async function loadTrending(mediaOverride?: "movie" | "tv") {
     if (!sessionToken) return;
     const request = ++trendingRequest.current, scope = sourceScope;
-    setTrending(null);
+    setTrendingLoading(true); setTrendingError(null);
     try {
       const media = mediaOverride ?? trendingMedia;
       // DISC01: server-filtered trending so the toggle produces a
@@ -526,7 +527,7 @@ export default function DiscoverScreen() {
       );
       if (request === trendingRequest.current && sourceScopeRef.current === scope) setTrending(result);
     } catch {
-      // silently degrade — trending stays null
+      if (request === trendingRequest.current && sourceScopeRef.current === scope) setTrendingError("Couldn’t load trending titles. Please retry.");
     } finally {
       if (request === trendingRequest.current && sourceScopeRef.current === scope) setTrendingLoading(false);
     }
@@ -1131,11 +1132,12 @@ export default function DiscoverScreen() {
             <View style={styles.coldStartCard}>
               <Text style={styles.coldStartKicker}>TRENDING</Text>
               <Text style={styles.coldStartTitle}>
-                {trendingMedia === "tv" ? "No trending TV right now." : "No trending movies right now."}
+                {trendingError ?? (trendingMedia === "tv" ? "No trending TV right now." : "No trending movies right now.")}
               </Text>
               <Text style={styles.coldStartBody}>
-                Try the other media type or check back later.
+                Try the other media type or retry below.
               </Text>
+              <Pressable accessibilityRole="button" onPress={() => void loadTrending()} style={{minHeight:44,justifyContent:"center"}}><Text style={{color:colors.accent}}>Retry trending</Text></Pressable>
               <View style={{ alignSelf: "flex-end" }}>
                 <MediaToggle value={trendingMedia} onChange={setTrendingMedia} />
               </View>
@@ -1168,8 +1170,9 @@ export default function DiscoverScreen() {
               <Text style={styles.coldStartKicker}>NOW IN THEATERS</Text>
               <Text style={styles.coldStartTitle}>Couldn't load today's lineup.</Text>
               <Text style={styles.coldStartBody}>
-                {nowInTheatersError ?? "Pull to refresh in a moment."}
+                {nowInTheatersError ?? "No theater listings are available for your region right now."}
               </Text>
+              <Pressable accessibilityRole="button" onPress={() => void loadNowInTheaters()} style={{minHeight:44,justifyContent:"center"}}><Text style={{color:colors.accent}}>Retry theaters</Text></Pressable>
             </View>
           )}
 
@@ -1183,6 +1186,7 @@ export default function DiscoverScreen() {
           visible={titleModalVisible}
           title={universalTitle}
           loading={titleLoading}
+          onRetry={() => { if(selectedTitleId) void openTitleModal(selectedTitleId); }}
           onClose={() => {
             titleRequest.current?.abort();
             setTitleModalVisible(false);

@@ -5,9 +5,9 @@ export function swipeDirection(
   horizontalThreshold: number,
   verticalThreshold: number,
 ): "left" | "right" | "up" | "down" | null {
-  if (Math.abs(dx) >= Math.abs(dy) && Math.abs(dx) > horizontalThreshold)
+  if (Math.abs(dx) >= Math.abs(dy) * 1.25 && Math.abs(dx) > horizontalThreshold)
     return dx > 0 ? "right" : "left";
-  if (Math.abs(dy) > Math.abs(dx) && Math.abs(dy) > verticalThreshold)
+  if (Math.abs(dy) >= Math.abs(dx) * 1.25 && Math.abs(dy) > verticalThreshold)
     return dy > 0 ? "down" : "up";
   return null;
 }

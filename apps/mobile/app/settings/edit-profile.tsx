@@ -23,7 +23,8 @@ import { pickImageForm } from "@/lib/image-upload";
 import { AppHeader } from "@/components/headers/app-header";
 import { Avatar } from "@/components/avatar";
 import { colors, fonts, radii, spacing } from "@/constants/theme";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ApiError } from "@/lib/api";
+import { profileChanges, profileMatches } from "@/lib/profile-edit";
 import { useAuth } from "@/lib/auth";
 
 
@@ -68,18 +69,23 @@ export default function EditProfileScreen() {
 
   async function save() {
     if (!sessionToken || saving || photoBusy || !me) return;
-    setSaving(true);
+    setSaving(true); setError(null);
     try {
-      const updated=await apiRequest<Me>("/me", {
+      const changes = profileChanges(me, { display_name: name, username, bio });
+      await apiRequest<Me>("/me", {
         method: "PATCH",
         token: sessionToken,
-        body: JSON.stringify({ display_name: name, username, bio }),
+        body: JSON.stringify(changes),
       });
+      const updated = await apiRequest<Me>("/me", { token: sessionToken });
       if(currentToken.current!==sessionToken)return;
+      if (!profileMatches(updated, changes)) throw new Error("Your changes could not be confirmed. Please retry saving.");
+      setMe(updated);
       await updateSessionUser({display_name:updated.display_name,avatar_url:updated.avatar_url});
       router.back();
     } catch (err) {
-      setError("Could not save those changes. Check your username and try again.");
+      if(currentToken.current!==sessionToken)return;
+      setError(err instanceof ApiError && typeof err.detail === "string" ? err.detail : "Couldn't confirm your saved profile. Your edits are still here; please retry.");
     } finally {
       setSaving(false);
     }
@@ -92,10 +98,13 @@ export default function EditProfileScreen() {
     try{
       const form=remove?null:await pickImageForm();
       if(!remove&&!form)return;
-      const updated=await apiRequest<Me>('/me/avatar',{token:sessionToken,method:remove?'DELETE':'POST',body:form ?? undefined,timeoutMs:30000});
       if(currentToken.current!==sessionToken)return;
+      const result=await apiRequest<Me>('/me/avatar',{token:sessionToken,method:remove?'DELETE':'POST',body:form ?? undefined,timeoutMs:60000});
+      const updated=await apiRequest<Me>('/me',{token:sessionToken});
+      if(currentToken.current!==sessionToken)return;
+      if(updated.avatar_url !== result.avatar_url) throw new Error("Your photo could not be confirmed. Please retry.");
       setMe(updated);await updateSessionUser({avatar_url:updated.avatar_url});
-    }catch(failure){setError(failure instanceof Error && !failure.message.startsWith('{')?failure.message:'Could not upload the picture. Your previous photo is unchanged.');}
+    }catch(failure){if(currentToken.current===sessionToken)setError(failure instanceof ApiError && typeof failure.detail==='string' ? failure.detail : "Couldn't confirm your photo. Check your connection, then retry or reopen your profile.");}
     finally{photoLock.current=false;setPhotoBusy(false);}
   }
 

@@ -1,149 +1,99 @@
-/**
- * Native trailer player (iOS / Android).
- *
- * Oct-27 Stefan/Caroline spec PRE-01: supports native YouTube controls
- * so the user can enter landscape full screen on iPhone through the
- * platform-native player. Mute, pause and video key are driven by
- * props without re-mounting the WebView — the timestamp is preserved
- * across orientation changes.
- *
- * Metro resolves `youtube-player.native.tsx` on iOS/Android and
- * `youtube-player.tsx` on web, so the import site is one path.
- */
+/** Native trailers: only an active player exists; sound is session intent. */
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from "react";
-import { ActivityIndicator, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, Text, View, useWindowDimensions } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import YoutubePlayer, { type YoutubeIframeRef } from "react-native-youtube-iframe";
-
 import { trailerDiagnostic } from "@/lib/trailer-diagnostics";
-import { TrailerProgress } from "@/lib/trailer-playback";
 import { colors } from "@/constants/theme";
 
-
 export type YoutubePlayerProps = {
-  videoKey: string;
-  isActive: boolean;
-  muted: boolean;
-  width: number;
-  height: number;
-  // Show native YT controls (incl. the fullscreen button). Previews
-  // enables this; swipes keep it off for a cleaner cinematic surface.
-  showControls?: boolean;
-  onFullScreenChange?: (isFull: boolean) => void;
-  onMutedFallback?: () => void;
+  videoKey: string; isActive: boolean; muted: boolean; width: number; height: number;
+  showControls?: boolean; onFullScreenChange?: (full: boolean) => void; onMutedFallback?: () => void; onMuteChange?: (muted: boolean) => void;
 };
+export type YoutubePlayerHandle = { getCurrentTime(): Promise<number>; seekTo(seconds: number, allowSeekAhead?: boolean): void };
 
-
-export type YoutubePlayerHandle = {
-  getCurrentTime: () => Promise<number>;
-  seekTo: (seconds: number, allowSeekAhead?: boolean) => void;
-};
-
-
-const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProps>(function YouTubePlayerComponent(
-  { videoKey, isActive, muted, width, height, showControls = true, onFullScreenChange, onMutedFallback },
-  ref,
+const YouTubePlayerComponent = forwardRef<YoutubePlayerHandle, YoutubePlayerProps>(function Player(
+  { videoKey, isActive, muted, width, height, showControls = true, onFullScreenChange, onMuteChange }, ref,
 ) {
-  const [ready, setReady] = useState(false);
-  const [playing, setPlaying] = useState(false);
-  const [attempt, setAttempt] = useState(0);
-  const [error, setError] = useState<string | null>(null);
-  const started = useRef(false);
-  const resumeAt = useRef(0);
-  const activeVideo = useRef(videoKey);
-  if (activeVideo.current !== videoKey) { activeVideo.current = videoKey; resumeAt.current = 0; }
-  const playbackState = useRef(-1);
+  const viewport = useWindowDimensions(), insets = useSafeAreaInsets();
   const inner = useRef<YoutubeIframeRef | null>(null);
-  const fallback = useRef(onMutedFallback); fallback.current = onMutedFallback;
-  useEffect(() => { started.current = false; setReady(false); setPlaying(false); setError(null); }, [videoKey, attempt]);
+  const resume = useRef(0), changing = useRef(false), mounted = useRef(true);
+  const [full, setFull] = useState(false), [ready, setReady] = useState(false);
+  const [attempt, setAttempt] = useState(0), [playing, setPlaying] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [forcedMute, setForcedMute] = useState(false);
+  const lastKey = useRef(videoKey);
+  if (lastKey.current !== videoKey) { lastKey.current = videoKey; resume.current = 0; }
+  const current = useRef({videoKey,isActive}); current.current={videoKey,isActive};
+  useEffect(() => { mounted.current=true; return () => { mounted.current=false; }; }, []);
+  useEffect(() => { setReady(false); setPlaying(false); setNotice(null); }, [videoKey, attempt, full, isActive]);
+  useEffect(() => { setForcedMute(false); }, [videoKey, muted]);
+  useEffect(() => { if (!isActive) { setFull(false); onFullScreenChange?.(false); } }, [isActive]);
+
+  async function readPosition() {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const time = await Promise.race([
+        inner.current?.getCurrentTime() ?? Promise.resolve(resume.current),
+        new Promise<number>(resolve => { timer=setTimeout(() => resolve(resume.current), 700); }),
+      ]);
+      if (Number.isFinite(time) && time >= 0) resume.current = time;
+    } catch { /* Use last confirmed position when the embedded player fails. */ }
+    finally { clearTimeout(timer); }
+    return resume.current;
+  }
+  async function changeFull(next: boolean) {
+    if (changing.current) return;
+    changing.current=true;
+    const key=videoKey;
+    await readPosition();
+    if (mounted.current && current.current.isActive && current.current.videoKey===key) {
+      setReady(false); setFull(next); onFullScreenChange?.(next);
+    }
+    changing.current=false;
+  }
+  useImperativeHandle(ref, () => ({ getCurrentTime: readPosition,
+    seekTo(seconds, ahead=true) { resume.current=Math.max(0,seconds); inner.current?.seekTo(resume.current,ahead); },
+  }));
   useEffect(() => {
-    if (!isActive || playing || started.current) return;
-    const timer = setTimeout(() => {
-      if (ready && !muted && fallback.current) {
-        fallback.current(); setAttempt(n => n + 1);
-      } else setError("Trailer could not start. Tap Play, retry, or swipe to the next title.");
-    }, 15000);
+    if (!isActive || playing) return;
+    const timer=setTimeout(() => {
+      // Autoplay restrictions are local to this video, never overwrite the
+      // user's sound choice for the next video or a fullscreen transition.
+      if (ready && !muted && !forcedMute) { setForcedMute(true); setAttempt(n=>n+1); }
+      setNotice("Tap Play in the video to start. You can also retry or move to the next title.");
+    }, 12000);
     return () => clearTimeout(timer);
-  }, [isActive, ready, muted, playing, videoKey, attempt]);
-
+  }, [isActive, ready, playing, muted, forcedMute, videoKey, attempt, full]);
   useEffect(() => {
-    if (!ready || !isActive) return;
-    let active = true, reading = false;
-    const progress = new TrailerProgress();
-    const timer = setInterval(async () => {
-      if (reading) return;
-      reading = true;
-      try {
-        const time = await inner.current?.getCurrentTime();
-        if (!active || time == null) return;
-        if (Number.isFinite(time) && time >= 0) resumeAt.current = time;
-        const action = progress.sample(isActive, playbackState.current, time, Date.now());
-        if (action === "retry" && !muted) fallback.current?.();
-        if (action === "stalled") setError("The video isn't loading. Tap Play, retry, or swipe to the next title.");
-      } catch { if (active) setError("Couldn't read the trailer. Retry or swipe to the next title."); }
-      finally { reading = false; }
-    }, 1000);
-    return () => { active = false; clearInterval(timer); };
-  }, [ready, isActive, muted, videoKey, attempt]);
+    if (!isActive || !playing) return;
+    let reading=false;
+    const timer=setInterval(() => { if(!reading) { reading=true; void readPosition().finally(()=>{reading=false;}); } },1000);
+    return () => clearInterval(timer);
+  }, [isActive,playing,videoKey]);
 
-  useImperativeHandle(ref, () => ({
-    async getCurrentTime() {
-      try { return await (inner.current?.getCurrentTime?.() ?? Promise.resolve(0)); }
-      catch { return 0; }
-    },
-    seekTo(seconds: number, allowSeekAhead = true) {
-      resumeAt.current = Math.max(0, seconds);
-      try { inner.current?.seekTo?.(seconds, allowSeekAhead); } catch { /* non-fatal */ }
-    },
-  }), []);
-
-  return (
-    <View style={{ width, height, backgroundColor: "#000", overflow: "hidden" }}>
-      <YoutubePlayer
-        key={`${videoKey}:${attempt}`}
-        ref={inner}
-        height={height}
-        width={width}
-        play={isActive}
-        mute={muted}
-        videoId={videoKey}
-        initialPlayerParams={{
-          controls: showControls,
-          modestbranding: true,
-          rel: false,
-          loop: false,
-          // PRE-01: allow native fullscreen so iOS can enter landscape
-          // via the platform player when the user taps the FS icon.
-        }}
-        webViewProps={{
-          allowsFullscreenVideo: true,
-          allowsInlineMediaPlayback: true,
-          mediaPlaybackRequiresUserAction: false,
-        }}
-        onReady={() => {
-          if (resumeAt.current > 0) inner.current?.seekTo(resumeAt.current, true);
-          trailerDiagnostic("ready", attempt);
-          setReady(true);
-        }}
-        onChangeState={(state: string) => { playbackState.current = state === "paused" ? 2 : state === "ended" ? 0 : state === "playing" ? 1 : 3; setPlaying(state === "playing"); if (state === "playing") { if (!started.current) trailerDiagnostic("started", attempt); started.current = true; setError(null); } }}
-        onError={() => { trailerDiagnostic("player_error", attempt); setError("This trailer is unavailable. Retry or swipe to the next title."); }}
-        onFullScreenChange={(isFull: boolean) => {
-          onFullScreenChange?.(isFull);
-        }}
-        webViewStyle={{ opacity: ready ? 1 : 0 }}
-      />
-      {!ready && !error ? (
-        <View style={{ position: "absolute", top: 0, left: 0, right: 0, bottom: 0, alignItems: "center", justifyContent: "center" }}>
-          <ActivityIndicator color={colors.accent} size="small" />
-        </View>
-      ) : null}
-      {error && isActive ? <View style={{ position: "absolute", bottom: 0, left: 0, right: 0, backgroundColor: "rgba(0,0,0,0.85)", padding: 8 }}>
-        <Text style={{ color: "white", fontSize: 12 }}>{error}</Text>
-        <Pressable accessibilityRole="button" onPress={() => { trailerDiagnostic("retry", attempt); setAttempt(n => n + 1); }} style={{ minHeight: 44, justifyContent: "center" }}>
-          <Text style={{ color: "white" }}>Retry trailer</Text>
-        </Pressable>
-      </View> : null}
-    </View>
-  );
+  const availableWidth=viewport.width-insets.left-insets.right;
+  const availableHeight=viewport.height-insets.top-insets.bottom-56;
+  const w=full ? Math.min(availableWidth, availableHeight*16/9) : width;
+  const h=full ? w*9/16 : height;
+  const video=<View style={{ width:w, height:h, backgroundColor:"#000" }}>
+    {isActive ? <YoutubePlayer key={`${videoKey}:${attempt}:${full}`} ref={inner} width={w} height={h}
+      videoId={videoKey} play={ready && isActive} mute={muted || forcedMute} forceAndroidAutoplay
+      initialPlayerParams={{controls:showControls,rel:false,preventFullScreen:true}}
+      webViewProps={{allowsFullscreenVideo:true,allowsInlineMediaPlayback:true,mediaPlaybackRequiresUserAction:false}}
+      onReady={() => { if(resume.current>0)inner.current?.seekTo(resume.current,true); setReady(true); trailerDiagnostic("ready",attempt); }}
+      onChangeState={(state:string) => { setPlaying(state==="playing"); if(state==="playing"){setNotice(null);trailerDiagnostic("started",attempt);} }}
+      onError={() => { trailerDiagnostic("player_error",attempt); setNotice("This trailer is unavailable. Retry or choose another title."); }}
+    /> : null}
+    {!ready && isActive && !notice ? <View pointerEvents="none" style={{position:"absolute",top:0,left:0,right:0,bottom:0,alignItems:"center",justifyContent:"center"}}><ActivityIndicator color={colors.accent}/></View> : null}
+  </View>;
+  const controls=<View style={{flexDirection:"row",justifyContent:"space-between",alignItems:"center",backgroundColor:"#000"}}>
+    {notice ? <Pressable accessibilityRole="button" accessibilityLabel="Retry trailer" onPress={()=>setAttempt(n=>n+1)} style={{minHeight:44,padding:8,flex:1}}><Text style={{color:"white",fontSize:12}}>{notice} Retry</Text></Pressable> : <View/>}
+    {full && onMuteChange ? <Pressable accessibilityRole="button" accessibilityLabel={muted ? "Turn trailer sound on" : "Mute trailer"} onPress={()=>{setForcedMute(false);onMuteChange(!muted);}} style={{minHeight:44,padding:8,justifyContent:"center"}}><Text style={{color:colors.accent}}>{muted ? "Sound on" : "Mute"}</Text></Pressable> : null}
+    {showControls ? <Pressable accessibilityRole="button" accessibilityLabel={full?"Exit fullscreen":"Expand trailer"} onPress={()=>void changeFull(!full)} style={{minWidth:64,minHeight:44,justifyContent:"center",padding:8}}><Text style={{color:colors.accent}}>{full?"Done":"Expand ⛶"}</Text></Pressable> : null}
+  </View>;
+  return full ? <Modal visible animationType="fade" supportedOrientations={["portrait","landscape-left","landscape-right"]} onRequestClose={()=>void changeFull(false)}>
+    <View style={{flex:1,backgroundColor:"#000",alignItems:"center",justifyContent:"center",paddingTop:insets.top,paddingBottom:insets.bottom}}>{video}<View style={{width:w}}>{controls}</View></View>
+  </Modal> : <View style={{width,backgroundColor:"#000"}}>{video}{controls}</View>;
 });
-
 export default YouTubePlayerComponent;

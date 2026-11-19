@@ -15,6 +15,8 @@ import {
   Alert,
   FlatList,
   Image,
+  KeyboardAvoidingView,
+  Platform,
   Modal,
   Pressable,
   StyleSheet,
@@ -26,7 +28,7 @@ import { SafeAreaView } from "react-native-safe-area-context";
 
 import { subscribeRatingChanges } from "@/components/rating-editor";
 import { subscribeTitleState } from "@/lib/title-state";
-import { apiRequest } from "@/lib/api";
+import { apiRequest, ApiError } from "@/lib/api";
 import { useAuth } from "@/lib/auth";
 import { colors, fonts, radii, rules, spacing } from "@/constants/theme";
 
@@ -186,7 +188,7 @@ export default function RankedFavoritesScreen() {
           body: JSON.stringify({ to_position: parsed, expected_version: target.version }),
         },
       );
-      await load(Math.max(100, rows.length));
+      await load(Math.max(100, rows.length, parsed));
       setServerTotal(data.total ?? data.items.length);
       // Reuse the Publish bar so users can post the deliberate move.
       const current = data.items.find((r) => r.title_id === target.title_id);
@@ -201,7 +203,11 @@ export default function RankedFavoritesScreen() {
       setMoveTarget(null);
       setMoveTargetPosition("");
     } catch (e) {
-      Alert.alert("Couldn't move", e instanceof Error ? e.message : "Try again.");
+      if (e instanceof ApiError && e.status === 409) {
+        setMoveTarget(null);
+        await load(loadedCount.current);
+        Alert.alert("Ranking changed", "Your current order has been refreshed. Select the title and try the move again.");
+      } else Alert.alert("Couldn't confirm this move", "Check your connection, refresh your rankings and try again. Your title has not been removed.");
     } finally {
       setBusyId(null);
     }
@@ -469,7 +475,7 @@ export default function RankedFavoritesScreen() {
         animationType="fade"
         onRequestClose={() => setMoveTarget(null)}
       >
-        <Pressable style={styles.modalBackdrop} onPress={() => setMoveTarget(null)}>
+        <KeyboardAvoidingView style={{flex:1}} behavior={Platform.OS === "ios" ? "padding" : undefined}><Pressable style={styles.modalBackdrop} onPress={() => { if(!busyId) setMoveTarget(null); }}>
           <Pressable style={styles.modalSheet} onPress={(e) => e.stopPropagation()}>
             <Text style={styles.modalTitle}>Move to position</Text>
             <Text style={styles.modalBody}>
@@ -480,6 +486,7 @@ export default function RankedFavoritesScreen() {
             <TextInput
               value={moveTargetPosition}
               onChangeText={(text) => setMoveTargetPosition(text.replace(/[^0-9]/g, ""))}
+              accessibilityLabel="New rank position"
               keyboardType="number-pad"
               inputMode="numeric"
               maxLength={5}
@@ -521,7 +528,7 @@ export default function RankedFavoritesScreen() {
               </Pressable>
             </View>
           </Pressable>
-        </Pressable>
+        </Pressable></KeyboardAvoidingView>
       </Modal>
 
       {/* Rebuild-from-ratings confirmation preview. */}
@@ -714,12 +721,14 @@ const styles = StyleSheet.create({
   },
   rowActions: {
     flexDirection: "row",
+    flexWrap: "wrap",
+    maxWidth: 96,
     gap: 4,
     alignItems: "center",
   },
   iconBtn: {
-    width: 32,
-    height: 32,
+    width: 44,
+    height: 44,
     borderRadius: 6,
     justifyContent: "center",
     alignItems: "center",

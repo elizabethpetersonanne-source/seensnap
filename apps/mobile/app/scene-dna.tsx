@@ -90,6 +90,8 @@ export default function SceneDnaScreen() {
 
   const [data, setData] = useState<SceneDnaResponse | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error,setError]=useState<string|null>(null);
+  const [retry,setRetry]=useState(0);
   const [tab, setTab] = useState<TabKey>("overview");
   const [showPaywall, setShowPaywall] = useState(false);
 
@@ -97,13 +99,13 @@ export default function SceneDnaScreen() {
     useCallback(() => {
       let cancelled = false;
       if (!sessionToken) return;
-      setLoading(true);
+      setLoading(true); setError(null);
       apiRequest<SceneDnaResponse>("/me/scene-dna", { token: sessionToken })
         .then((res) => { if (!cancelled) setData(res); })
-        .catch(() => { if (!cancelled) setData(null); })
+        .catch(() => { if (!cancelled) setError("Couldn’t load your SceneDNA. Your taste history is still saved."); })
         .finally(() => { if (!cancelled) setLoading(false); });
       return () => { cancelled = true; };
-    }, [sessionToken]),
+    }, [sessionToken,retry]),
   );
 
   const canView = (t: TabKey): boolean => {
@@ -124,6 +126,7 @@ export default function SceneDnaScreen() {
           return (
             <Pressable
               key={t.key}
+              accessibilityRole="tab" accessibilityLabel={t.label} accessibilityState={{selected:active}}
               onPress={() => {
                 if (locked) {
                   setShowPaywall(true);
@@ -142,7 +145,7 @@ export default function SceneDnaScreen() {
         })}
       </View>
 
-      {loading && !data ? (
+      {error ? <View style={styles.center}><Text style={styles.empty}>{error}</Text><Pressable accessibilityRole="button" onPress={()=>setRetry(n=>n+1)} style={{minHeight:44,padding:12}}><Text style={{color:colors.accent}}>Retry SceneDNA</Text></Pressable></View> : loading && !data ? (
         <View style={styles.center}>
           <ActivityIndicator color={colors.accent} />
         </View>
