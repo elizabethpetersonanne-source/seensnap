@@ -91,6 +91,7 @@ type Props = {
   title: UniversalTitle | null;
   isSaved?: boolean;
   onClose: () => void;
+  onRetry?: () => void;
   onSaveTitle?: ((title: UniversalTitle) => void) | null;
   onSave?: () => void;
   onAddToTeam?: ((title: UniversalTitle) => void) | null;
@@ -102,6 +103,7 @@ export function UniversalTitleModal({
   title,
   isSaved = false,
   onClose,
+  onRetry,
   onSaveTitle,
   onSave,
   onAddToTeam,
@@ -360,8 +362,11 @@ export function UniversalTitleModal({
       Animated.timing(overlayOpacity, { toValue: 0, duration: 220, useNativeDriver: true }),
       Animated.timing(sheetTranslateY, { toValue: viewportHeight.current, duration: 240, useNativeDriver: true }),
     ]);
+    // Native animation callbacks can be interrupted by rotation/backgrounding.
+    // Never leave an invisible Modal intercepting the next screen's touches.
+    const deadline = setTimeout(() => setRendered(false), 350);
     exit.start(({ finished }) => { if (finished) setRendered(false); });
-    return () => exit.stop();
+    return () => { clearTimeout(deadline); exit.stop(); };
   }, [
     actionsOpacity, actionsTranslateY, contentOpacity, contentTranslateY,
     heroOpacity, overlayOpacity, sheetTranslateY, visible,
@@ -573,7 +578,9 @@ export function UniversalTitleModal({
               ) : !currentTitle ? (
                 <View style={styles.loadingDetails}>
                   <Text style={styles.sectionTitle}>Couldn't load this title.</Text>
-                  <Text style={styles.emptyText}>Close this card and tap the poster to try again.</Text>
+                  <Text style={styles.emptyText}>Check your connection and try again.</Text>
+                  {onRetry ? <Pressable accessibilityRole="button" onPress={onRetry} style={{ minHeight: 44, padding: 12 }}><Text style={{ color: colors.accent }}>Retry title details</Text></Pressable> : null}
+                  <Pressable accessibilityRole="button" onPress={onClose} style={{ minHeight: 44, padding: 12 }}><Text style={{ color: colors.ink }}>Close details</Text></Pressable>
                 </View>
               ) : <>
               {/* Hero image carousel — swipeable through the TMDB

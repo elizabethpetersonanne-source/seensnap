@@ -514,7 +514,7 @@ export default function TeamHomeScreen() {
                 <Text style={styles.body}>No shared ratings yet.</Text>
               )}
               <Text style={styles.body}>
-                You shared: {statusTitle?.my_state.replaceAll("_", " ")}
+                {statusTitle?.my_state === "watched" ? "You shared: Watched" : statusTitle?.my_state === "want_to_watch" ? "You shared: Want to Watch" : "You haven’t shared a watch status with this team."}
               </Text>
               {(
                 [

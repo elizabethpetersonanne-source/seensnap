@@ -1,5 +1,6 @@
 import * as ImagePicker from "expo-image-picker";
 import { Platform } from "react-native";
+import { manipulateAsync, SaveFormat } from "expo-image-manipulator";
 /** Native crop UI; web picker retains its browser preview. Server validates bytes. */
 export async function pickImageForm(): Promise<FormData | null> {
   if (Platform.OS !== "web") {
@@ -16,20 +17,23 @@ export async function pickImageForm(): Promise<FormData | null> {
   });
   if (result.canceled || !result.assets[0]) return null;
   const asset = result.assets[0];
-  if (asset.fileSize && asset.fileSize > 6 * 1024 * 1024)
-    throw new Error("Choose an image smaller than 6 MB.");
+  // Convert HEIC and bound large iPhone originals before uploading.
+  const image = await manipulateAsync(asset.uri,
+    Math.max(asset.width, asset.height) > 1024
+      ? [{ resize: asset.width >= asset.height ? { width: 1024 } : { height: 1024 } }]
+      : [], { compress: 0.8, format: SaveFormat.JPEG });
   const form = new FormData();
   if (Platform.OS === "web")
     form.append(
       "file",
-      await (await fetch(asset.uri)).blob(),
-      asset.fileName ?? "photo.jpg",
+      await (await fetch(image.uri)).blob(),
+      "photo.jpg",
     );
   else
     form.append("file", {
-      uri: asset.uri,
-      name: asset.fileName ?? "photo.jpg",
-      type: asset.mimeType ?? "image/jpeg",
+      uri: image.uri,
+      name: "photo.jpg",
+      type: "image/jpeg",
     } as unknown as Blob);
   return form;
 }

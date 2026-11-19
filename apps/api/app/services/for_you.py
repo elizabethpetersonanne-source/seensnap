@@ -14,7 +14,7 @@ from app.schemas.content import RecommendationResponse, RecommendationEvidence
 from app.services.discovery_decisions import excluded_title_ids
 from app.services.title_compatibility import scorer_for_user
 from app.services import taste_candidates as taste
-from app.services.concierge_runtime import request_runtime
+from app.services.concierge_runtime import request_runtime, ConciergeDeadlineExceeded
 
 
 def popularity(title):
@@ -89,18 +89,24 @@ def for_you_recommendations(
             pool.extend(band)
 
     if seeds:
-        with request_runtime("for-you-evidence", seconds=26):
-            if settings.tmdb_api_key:
-                taste.personal.enrich_evidence(db, [*seeds, *negatives], region, limit=8)
-            preliminary = scorer_for_user(db, user_id, pool)
-            related, origins = taste.retrieve_personal(db, preliminary, seeds, source_state,
-                preferred_type=preferred_type, genre=genre, region=region)
-            # Apply exactly the same media/genre/release/exclusion rules to new sources.
-            related = list(db.scalars(query.where(ContentTitle.id.in_([t.id for t in related]))))
-            pool = list({t.id: t for t in [*related, *pool]}.values())
-            preliminary = scorer_for_user(db, user_id, pool)
-            prospects = taste.inspection_order(pool, origins, preliminary)
-            taste.prepare_evidence(db, prospects, seeds=seeds, negatives=negatives, region=region)
+        try:
+            with request_runtime("for-you-evidence", seconds=18):
+                if settings.tmdb_api_key:
+                    taste.personal.enrich_evidence(db, [*seeds, *negatives], region, limit=8)
+                preliminary = scorer_for_user(db, user_id, pool)
+                related, origins = taste.retrieve_personal(db, preliminary, seeds, source_state,
+                    preferred_type=preferred_type, genre=genre, region=region)
+                # Apply exactly the same media/genre/release/exclusion rules to new sources.
+                related = list(db.scalars(query.where(ContentTitle.id.in_([t.id for t in related]))))
+                pool = list({t.id: t for t in [*related, *pool]}.values())
+                preliminary = scorer_for_user(db, user_id, pool)
+                prospects = taste.inspection_order(pool, origins, preliminary)
+                taste.prepare_evidence(db, prospects, seeds=seeds, negatives=negatives, region=region)
+        except (ConciergeDeadlineExceeded, TmdbConfigurationError, httpx.HTTPError):
+            # Optional network enrichment must not discard confirmed local
+            # candidates. They are still ranked by current personal evidence.
+            # Do not catch database/validation errors as successful responses.
+            pass
     # Return usable local results without serial upstream padding. Only a true
     # cold start waits for one bounded page of the requested TMDB media.
     if not pool:

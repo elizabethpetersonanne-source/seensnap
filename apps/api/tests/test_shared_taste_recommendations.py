@@ -287,3 +287,20 @@ def test_onboarding_progress_counts_real_ratings_not_unrated_watched_titles(db):
     db.add_all(TitleWatchStatus(user_id=user.id, content_title_id=t.id, watched_state="watched") for t in rows[1:])
     db.commit()
     assert get_onboarding_progress(user, db).rated_count == 1
+
+
+@pytest.mark.parametrize("failure", ["deadline", "network"])
+def test_for_you_enrichment_failure_keeps_confirmed_personal_candidates(db, monkeypatch, failure):
+    from app.services.concierge_runtime import ConciergeDeadlineExceeded
+    users, favorites, choices, _ = setup(db, monkeypatch)
+    def interrupted(*args, **kwargs):
+        if failure == "deadline":
+            raise ConciergeDeadlineExceeded("budget")
+        raise httpx.ReadTimeout("provider unavailable")
+    monkeypatch.setattr(taste, "retrieve_personal", interrupted)
+    result = for_you.for_you_recommendations(db, users[0].id, preferred_type="show", limit=5)
+    assert len(result) == 5
+    assert all(r.title.content_type == "series" for r in result)
+    assert not {r.title.id for r in result} & {t.id for t in favorites[:6]}
+    # The result remains usable on Retry and does not repeatedly block on TMDB.
+    assert [r.title.id for r in result] == [r.title.id for r in for_you.for_you_recommendations(db, users[0].id, preferred_type="show", limit=5)]

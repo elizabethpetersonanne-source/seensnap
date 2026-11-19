@@ -13,6 +13,7 @@ import {
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { activeTab } from "@/lib/navigation-tabs";
 import { colors, fonts, motion, rules } from "@/constants/theme";
 
 type TabRouteName =
@@ -86,7 +87,7 @@ function TabItem({
   // the size of the icon slot and a slightly heavier underline — not
   // scale. Keeps optical icon scale consistent across tabs.
   return (
-    <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.tab}>
+    <Pressable onPress={onPress} onLongPress={onLongPress} style={styles.tab} accessibilityRole="tab" accessibilityLabel={config.label} accessibilityState={{ selected: isFocused }}>
       <Animated.View style={[styles.activeRule, { opacity: ruleOpacity }, isPrimary && styles.activeRulePrimary]} />
 
       <View style={styles.tabInner}>
@@ -128,7 +129,7 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
   return (
     <View style={[styles.tabBar, { paddingBottom: Math.max(insets.bottom, 8) }]}>
       {state.routes.map((route, index) => {
-        const isFocused = state.index === index;
+        const isFocused = activeTab(state.routes[state.index].name) === route.name;
 
         if (!(route.name in TAB_CONFIG)) return null;
 
@@ -138,7 +139,7 @@ function CustomTabBar({ state, descriptors, navigation }: BottomTabBarProps) {
             target: route.key,
             canPreventDefault: true,
           });
-          if (!isFocused && !event.defaultPrevented) {
+          if (state.index !== index && !event.defaultPrevented) {
             navigation.navigate(route.name, route.params);
           }
         };

@@ -111,6 +111,10 @@ export default function PreviewsScreen() {
   const [error, setError] = useState<string | null>(null);
   const [activeIndex, setActiveIndex] = useState(0);
   const [muted, setMuted] = usePlaybackMute();
+  const [fullscreen, setFullscreen] = useState(false);
+  const [scrolling, setScrolling] = useState(false);
+  const scrollSettled = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if(scrollSettled.current)clearTimeout(scrollSettled.current); }, []);
   const [saveTitleId, setSaveTitleId] = useState<string | null>(null);
   const [showSaveSheet, setShowSaveSheet] = useState(false);
   const [detailTitle, setDetailTitle] = useState<UniversalTitle | null>(null);
@@ -139,8 +143,16 @@ export default function PreviewsScreen() {
 
   const [availableHeight, setAvailableHeight] = useState(0);
   const cardHeight = availableHeight || Math.max(320, viewportHeight - insets.top - insets.bottom - 180);
-  const videoWidth = Math.min(viewportWidth - 24, 720, Math.max(200, cardHeight * 0.48) * 16 / 9);
+  const compactCard = cardHeight < 540;
+  // Reserve room for title/actions and the native player's 44pt Expand row.
+  const videoWidth = Math.min(viewportWidth - 24, 720, Math.max(90, cardHeight - (compactCard ? 300 : 350)) * 16 / 9);
   const videoHeight = videoWidth * 9 / 16;
+  const activeIndexRef = useRef(activeIndex); activeIndexRef.current = activeIndex;
+  useEffect(() => {
+    if (fullscreen) return;
+    const timer=setTimeout(() => listRef.current?.scrollToOffset({offset:activeIndexRef.current*cardHeight,animated:false}),0);
+    return () => clearTimeout(timer);
+  }, [cardHeight,fullscreen]);
 
   const fetchPage = useCallback(async (nextCursor: string | null): Promise<PreviewFeedResponse> => {
     if (rankedSource || listId) {
@@ -257,6 +269,10 @@ export default function PreviewsScreen() {
   }, [activeIndex, items]);
 
   function handleViewableChange(ev: NativeSyntheticEvent<NativeScrollEvent>) {
+    if (fullscreen) return;
+    setScrolling(true);
+    if(scrollSettled.current)clearTimeout(scrollSettled.current);
+    scrollSettled.current=setTimeout(()=>setScrolling(false),180);
     const y = ev.nativeEvent.contentOffset.y;
     const next = Math.round(y / cardHeight);
     if (next !== activeIndex && next >= 0 && next < items.length) {
@@ -290,7 +306,7 @@ export default function PreviewsScreen() {
         variant="immersive"
         mode="preview"
         onModeChange={(next) => {
-          if (next === "swipe") router.push("/swipe");
+          if (next === "swipe") router.navigate("/swipe");
         }}
       />
       {/* Category chips below the header. No magic absolute offsets. */}
@@ -332,10 +348,15 @@ export default function PreviewsScreen() {
           decelerationRate="fast"
           showsVerticalScrollIndicator={false}
           onScroll={handleViewableChange}
+          scrollEnabled={!fullscreen}
+          extraData={{activeIndex,focused,foreground,scrolling,muted,fullscreen,showDetails,showSaveSheet,actionTarget}}
+          onScrollBeginDrag={() => setScrolling(true)}
+          onMomentumScrollEnd={event => { handleViewableChange(event); }}
+          onScrollEndDrag={event => { handleViewableChange(event); }}
           scrollEventThrottle={100}
           getItemLayout={(_, index) => ({ length: cardHeight, offset: cardHeight * index, index })}
           renderItem={({ item, index }) => {
-            const isActive = focused && foreground && !showDetails && !showSaveSheet && !actionTarget && index === activeIndex;
+            const isActive = focused && foreground && !scrolling && !showDetails && !showSaveSheet && !actionTarget && index === activeIndex;
             const backdrop = resolveMediaUrl(item.backdrop_url) ?? resolveMediaUrl(item.poster_url);
             return (
               <View style={[styles.card, { height: cardHeight }]}>
@@ -348,27 +369,27 @@ export default function PreviewsScreen() {
                   />
                 ) : null}
                 <View style={styles.cardShade} />
-                <View style={styles.cardContent}>
+                <View style={[styles.cardContent, compactCard && { gap: 8 }]}>
                   <View style={styles.videoWrap}>
                     <YouTubeEmbed
                       videoKey={item.video.external_key}
                       isActive={isActive}
                       muted={muted}
-                      onMutedFallback={() => setMuted(true)}
+                      onFullScreenChange={setFullscreen}
+                      onMuteChange={setMuted}
                       width={videoWidth}
                       height={videoHeight}
-                      // PRE-01: native YT controls are the fullscreen
-                      // entry point — iOS presents a landscape-capable
-                      // player when the user taps the FS icon.
+                      // The native wrapper exposes a landscape-capable
+                      // Expand action while keeping the video at 16:9.
                       showControls={isActive}
                     />
                   </View>
-                  <View style={styles.meta}>
+                  <View style={[styles.meta, compactCard && { gap: 4 }]}>
                     <Text style={styles.videoBadge}>
                       {item.video.type.toUpperCase()}
                       {item.video.official ? "  ·  OFFICIAL" : ""}
                     </Text>
-                    <Text style={styles.title} numberOfLines={2}>{item.title}</Text>
+                    <Text style={styles.title} numberOfLines={compactCard ? 1 : 2}>{item.title}</Text>
                     {isActive ? <SceneDnaBadge titleId={item.title_id} /> : null}
                     <Text style={styles.subMeta}>
                       {[
@@ -378,7 +399,7 @@ export default function PreviewsScreen() {
                         .filter(Boolean)
                         .join("  ·  ")}
                     </Text>
-                    <Text style={styles.reason} numberOfLines={2}>{item.reason.label}</Text>
+                    <Text style={styles.reason} numberOfLines={compactCard ? 1 : 2}>{item.reason.label}</Text>
                   </View>
                   <View style={styles.actionRow}>
                     {/* Oct-18 §4 OutlineActionRail: no backplates;

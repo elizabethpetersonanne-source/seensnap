@@ -4,7 +4,7 @@ import { restoreDiscovery, saveDiscoverySnapshot } from "@/lib/discovery-storage
 import { SceneDnaBadge } from "@/components/scene-dna-badge";
 import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   ActivityIndicator,
@@ -81,8 +81,8 @@ type PreferencesResponse = {
   connected_streaming_services: string[];
 };
 
-const SWIPE_X_THRESHOLD = 75;
-const SWIPE_UP_THRESHOLD = 80;
+const SWIPE_X_THRESHOLD = 100;
+const SWIPE_UP_THRESHOLD = 110;
 
 export default function SwipeTab() {
   const { sessionToken, user } = useAuth();
@@ -163,8 +163,6 @@ export default function SwipeTab() {
   const emptyPagesRef = useRef(0);
   const pan = useRef(new Animated.ValueXY()).current;
 
-  const nextCardEntry = useRef(new Animated.Value(1)).current;
-
   const cardStartRef = useRef(Date.now());
   const currentIndexRef = useRef(0);
   const nextWatchListIdRef = useRef<string | null>(null);
@@ -229,14 +227,6 @@ export default function SwipeTab() {
   // advances on tab focus, not on swipe, so the header artwork does
   // NOT change with every card commit.
   const headerArtwork = useFallbackBackdrop(3);
-
-  useEffect(() => {
-    currentIndexRef.current = currentIndex;
-    cardStartRef.current = Date.now();
-    pan.setValue({ x: 0, y: 0 });
-    nextCardEntry.setValue(0.96);
-    Animated.timing(nextCardEntry, { toValue: 1, duration: 200, useNativeDriver: false }).start();
-  }, [currentIndex, pan, nextCardEntry]);
 
   type FeedPage = { session_id: string; resume_cursor?: string; items: RecommendationItem[]; next_cursor: string | null; has_more: boolean };
   const loadDeck = useCallback(async (resume = false) => {
@@ -383,6 +373,14 @@ export default function SwipeTab() {
   }, [deck, currentIndex, loading, queueOwner, queueScope, resumeCursor, filterKey, user?.user_id, showFilters]);
 
   const activeCard = queueOwner === queueScope ? deck[currentIndex] ?? null : null;
+  useLayoutEffect(() => {
+    // Reset only when the newly acknowledged title is committed to the view.
+    // Resetting in the request's finally block flashes the outgoing poster.
+    currentIndexRef.current = currentIndex;
+    cardStartRef.current = Date.now();
+    pan.stopAnimation();
+    pan.setValue({ x: 0, y: 0 });
+  }, [activeCard?.title.id, currentIndex, pan]);
   canSwipeRef.current = !!activeCard && !loading && !swipeBusy && !swipeError;
   useEffect(() => {
     setFlipped(false);
@@ -442,6 +440,7 @@ export default function SwipeTab() {
   const rotation = pan.x.interpolate({
     inputRange: [-180, 0, 180],
     outputRange: ["-8deg", "0deg", "8deg"],
+    extrapolate: "clamp",
   });
   const leftLabelOpacity = pan.x.interpolate({
     inputRange: [-80, -20, 0],
@@ -466,21 +465,20 @@ export default function SwipeTab() {
     outputRange: [0, 0.3, 1],
     extrapolate: "clamp",
   });
-  const backdropParallax = pan.x.interpolate({
-    inputRange: [-250, 0, 250],
-    outputRange: [10, 0, -10],
-    extrapolate: "clamp",
-  });
+  const returnCard = () => Animated.spring(pan, {
+    toValue: { x: 0, y: 0 }, friction: 10, tension: 90,
+    useNativeDriver: Platform.OS !== "web",
+  }).start();
 
   const panResponder = useRef(
     PanResponder.create({
       onStartShouldSetPanResponder: () => false,
       // Let taps and child controls respond. Claim deliberate drags only.
       onStartShouldSetPanResponderCapture: () => false,
-      onMoveShouldSetPanResponder: (_, gesture) => canSwipeRef.current && !swipingRef.current && !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8,
+      onMoveShouldSetPanResponder: (_, gesture) => canSwipeRef.current && !swipingRef.current && !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 16,
       onMoveShouldSetPanResponderCapture: (_, gesture) => {
         // The detail face can scroll without triggering a Watched gesture.
-        return canSwipeRef.current && !swipingRef.current && !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 8;
+        return canSwipeRef.current && !swipingRef.current && !flippedRef.current && Math.max(Math.abs(gesture.dx), Math.abs(gesture.dy)) > 16;
       },
       onPanResponderGrant: () => { if (!swipingRef.current) pan.stopAnimation(); },
       onPanResponderTerminationRequest: () => false,
@@ -490,18 +488,13 @@ export default function SwipeTab() {
       },
       onPanResponderTerminate: () => {
         // Safari/OS interruptions do not always deliver a release event.
-        if (!swipingRef.current) { pan.stopAnimation(); pan.setValue({ x: 0, y: 0 }); }
+        if (!swipingRef.current) { pan.stopAnimation(); returnCard(); }
       },
       onPanResponderRelease: (_, gesture) => {
         if (swipingRef.current) return;
         const direction = swipeDirection(gesture.dx, gesture.dy, SWIPE_X_THRESHOLD, SWIPE_UP_THRESHOLD);
         if (direction) { void animateSwipeRef.current(direction); return; }
-        Animated.spring(pan, {
-          toValue: { x: 0, y: 0 },
-          friction: 8,
-          tension: 100,
-          useNativeDriver: false,
-        }).start();
+        returnCard();
       },
     })
   ).current;
@@ -524,12 +517,23 @@ export default function SwipeTab() {
     swipeOperationRef.current = operation;
     swipingRef.current = true;
     setSwipeBusy(true); setSwipeError(null);
-    // Return the dragged poster to its slot while confirmation is in flight.
-    // The visible saving state replaces an apparently frozen, half-dragged card.
-    pan.stopAnimation(); pan.setValue({ x: 0, y: 0 });
+    // Continue from the finger's release position immediately. Saving and the
+    // native exit animation run together; only the acknowledgement commits
+    // the next title. Failed/uncertain saves restore this card for retry.
+    pan.stopAnimation();
     playSwipeSound(direction);
     const generation = generationRef.current;
     const { pauseMs, decisionKey } = attempt;
+    const exit = new Promise<void>((resolve) => {
+      const animation = Animated.timing(pan, {
+        toValue: direction === "left" ? { x: -viewportWidth * 1.4, y: 0 }
+          : direction === "right" ? { x: viewportWidth * 1.4, y: 0 }
+          : { x: 0, y: (direction === "up" ? -1 : 1) * viewportHeight * 1.2 },
+        duration: 180, useNativeDriver: Platform.OS !== "web",
+      });
+      const timer = setTimeout(() => { if (generation === generationRef.current) animation.stop(); resolve(); }, 500);
+      animation.start(() => { clearTimeout(timer); resolve(); });
+    });
     try {
       const res = await apiRequest<{ swipe_id: string; saved?: boolean }>("/titles/swipes", {
         method: "POST", token: sessionToken, signal: operation.signal,
@@ -537,15 +541,7 @@ export default function SwipeTab() {
           session_id: attempt.sessionId, reason: item.reason, source_surface: "swipe", idempotency_key: decisionKey }),
       });
       if (generation !== generationRef.current) return;
-      await new Promise<void>((resolve) => {
-        const animation = Animated.timing(pan, {
-          toValue: direction === "left" ? { x: -420, y: 0 } : direction === "right" ? { x: 420, y: 0 } : { x: 0, y: direction === "up" ? -420 : 420 },
-          duration: 180, useNativeDriver: false,
-        });
-        // A backgrounded/interrupted animation must not retain the input lock.
-        const timer = setTimeout(() => { if (generation === generationRef.current) animation.stop(); resolve(); }, 500);
-        animation.start(() => { clearTimeout(timer); resolve(); });
-      });
+      await exit;
       if (generation !== generationRef.current) return;
       swipeAttemptRef.current = null;
       setSwipes((previous) => [...previous, { item, direction, pauseMs }]);
@@ -560,6 +556,7 @@ export default function SwipeTab() {
       trackEvent(`swipe_${direction}`, { title_id: item.title.id, session_id: sessionId });
     } catch (e) {
       if (generation !== generationRef.current) return;
+      pan.stopAnimation(); returnCard();
       if (e instanceof ApiError && e.status === 409) {
         swipeAttemptRef.current = null;
         setRatingTarget({ titleId: item.title.id, titleName: item.title.title });
@@ -568,7 +565,7 @@ export default function SwipeTab() {
     } finally {
       // An old response must never unlock or recenter a new filter's gesture.
       if (swipeOperationRef.current === operation) {
-        pan.setValue({ x: 0, y: 0 }); swipingRef.current = false;
+        swipingRef.current = false;
         swipeOperationRef.current = null; setSwipeBusy(false);
       }
     }
@@ -710,7 +707,7 @@ export default function SwipeTab() {
   // 1200×580 desktop window needs the compact treatment even though
   // width alone would say "roomy". Bottom nav + safe areas are
   // reserved before deriving the poster's height budget.
-  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
+  const { width: viewportWidth, height: viewportHeight, fontScale = 1 } = useWindowDimensions();
   const safeInsets = useSafeAreaInsets();
   type LayoutMode = "roomy_wide" | "compact_wide" | "narrow_tall" | "narrow_short" | "failsafe";
   const layoutMode: LayoutMode = (() => {
@@ -724,6 +721,7 @@ export default function SwipeTab() {
   })();
   const isNarrow = layoutMode === "narrow_tall" || layoutMode === "narrow_short" || layoutMode === "failsafe";
   const isWide = !isNarrow;
+  const fitPhone = isNarrow && viewportHeight >= 600 && fontScale <= 1.3;
 
   const workspacePadding = viewportWidth < 480 ? 12 : 20;
   const workspaceMaxWidth = 980;
@@ -776,7 +774,7 @@ export default function SwipeTab() {
   // narrow (below the deck) and wide (in the right rail) stay visually
   // identical. Handlers are the SAME references used by the gesture layer —
   // no domain behavior lives in this block per spec §9 action mapping contract.
-  const flippedCard = activeCard ? <View style={{ width: "100%", height: isNarrow ? Math.min(600, Math.max(280, viewportHeight * .6)) : posterColumnWidth * 1.5, backgroundColor: colors.surface }}>
+  const flippedCard = activeCard ? <View style={{ width: "100%", height: isNarrow ? "100%" : posterColumnWidth * 1.5, backgroundColor: colors.surface }}>
     <Pressable accessibilityRole="button" accessibilityLabel="Back to poster" onPress={() => setFlipped(false)} style={{ minHeight: 44, padding: 12, alignItems: "center" }}><Text style={{ color: colors.accent }}>Back to poster</Text></Pressable>
     <ScrollView nestedScrollEnabled contentContainerStyle={{ padding: 16, gap: 14 }}>
       <Text style={{ color: colors.ink, fontFamily: fonts.serifBold, fontSize: 24 }}>{activeCard.title.title}</Text>
@@ -941,7 +939,7 @@ export default function SwipeTab() {
   ) : null;
 
   return (
-    <SafeAreaView style={styles.safeArea} edges={["top"]}>
+    <SafeAreaView style={styles.safeArea} edges={[]}>
       {/* Restore the shared global app header per Swipe v1.1 spec §6.1 —
           same component used on every other primary tab, so navigation
           (logo · search · messages · notifications) stays consistent. Use
@@ -956,10 +954,11 @@ export default function SwipeTab() {
         variant="immersive"
         mode="swipe"
         onModeChange={(next) => {
-          if (next === "preview") router.push("/previews");
+          if (next === "preview") router.navigate("/previews");
         }}
       />
       <ScrollView
+        style={{ flex: 1 }} scrollEnabled={!fitPhone} keyboardShouldPersistTaps="handled"
         contentContainerStyle={[
           styles.workspaceScroll,
           {
@@ -969,14 +968,15 @@ export default function SwipeTab() {
             // safe-area inset. Spec §11: "Provide page/scroller
             // bottom padding equal to the decision-dock height +
             // bottom-navigation height + safe-area inset."
-            paddingBottom: 40 + RESERVED_BOTTOM_NAV + safeInsets.bottom,
+            paddingBottom: fitPhone ? 8 : 40,
+            ...(fitPhone ? { flexGrow: 1, height: "100%" as const } : {}),
           },
         ]}
         showsVerticalScrollIndicator={false}
       >
         {/* Compact feature header per spec §6.2 — replaces the full-viewport
             backdrop hero. Sits inside the max-width workspace container. */}
-        <View style={[styles.workspaceContainer, { maxWidth: workspaceMaxWidth }]}>
+        <View style={[styles.workspaceContainer, { maxWidth: workspaceMaxWidth, ...(fitPhone ? { flex: 1, gap: 8 } : {}) }]}>
           {/* Sep-22 brief §1: shared Swipe|Previews mode toggle at the
               top of the discovery experience. Tapping Previews pushes
               the router to /previews; that screen has the mirror-image
@@ -1002,7 +1002,7 @@ export default function SwipeTab() {
               setDetailCache({});
             }}
           /> : null}
-          <View style={styles.featureHeader}>
+          {!fitPhone ? <View style={styles.featureHeader}>
             <View style={{ flex: 1, gap: 4 }}>
               <Text style={styles.featureTitle}>What&apos;s Next?</Text>
               {/* Hide the secondary line on the shortest narrow mode
@@ -1014,7 +1014,7 @@ export default function SwipeTab() {
             <Text style={styles.featureProgress}>
               {swipes.length} explored
             </Text>
-          </View>
+          </View> : null}
           {/* Oct-27 follow-up: swipe cheat sheet lives on the actual
               Swipe tab (not just What's Next). Compact four-pill legend
               so the directions are discoverable without a tutorial. */}
@@ -1022,7 +1022,7 @@ export default function SwipeTab() {
               gestures so there's an equivalent, screen-reader-friendly
               way to commit every direction. W06: Undo chip appears
               on the right after a swipe lands. */}
-          <View style={styles.swipeLegendRow}>
+          {!fitPhone ? <View style={styles.swipeLegendRow}>
             <Pressable
               onPress={() => activeCard && void animateSwipeRef.current("left")}
               disabled={!activeCard || swipeBusy || !!swipeError}
@@ -1067,7 +1067,7 @@ export default function SwipeTab() {
               <Ionicons name="arrow-down" size={11} color={colors.muted} />
               <Text style={styles.swipeLegendLabel}>Watched · didn't like</Text>
             </Pressable>
-          </View>
+          </View> : null}
 
       {loading ? (
         <View style={styles.loadingState}>
@@ -1121,189 +1121,60 @@ export default function SwipeTab() {
           provider strip. Pan responder wraps the hero area so swipes
           still work. Decision circles sit below the card. */}
       {!loading && isNarrow && activeCard ? (
-        <View style={styles.narrowStack}>
-          <Animated.View
-            style={[
-              styles.unifiedCard,
-              Platform.OS === "web" && { touchAction: flipped ? "pan-y" : "none" },
-              { opacity: swipeBusy ? 0.65 : 1 },
-              {
-                transform: [
-                  ...pan.getTranslateTransform(),
-                  { rotate: rotation },
-                  { scale: nextCardEntry },
-                ],
-              },
-            ]}
-            {...panResponder.panHandlers}
-          >
-            {flipped ? flippedCard : <>
-            {/* Poster tap reveals details without leaving this queue. */}
-            <Pressable accessibilityRole="button" accessibilityLabel={`Flip ${activeCard.title.title} to details`} disabled={swipeBusy || !!swipeError} onPress={() => setFlipped(true)} style={styles.unifiedHero}>
-              {(() => {
-                const heroSource = resolveMediaUrl(
-                  activeCard.title.backdrop_url || activeCard.title.poster_url || null,
-                );
-                return heroSource ? (
-                  <Image source={{ uri: heroSource }} style={StyleSheet.absoluteFillObject} resizeMode="cover" />
-                ) : (
-                  <View style={[StyleSheet.absoluteFillObject, { backgroundColor: colors.surfaceMuted }]} />
-                );
-              })()}
-              <View style={styles.unifiedHeroShade} />
-              <View style={styles.unifiedBadge}>
-                <Text style={styles.unifiedBadgeLabel}>
-                  {activeCard.title.content_type === "movie" ? "MOVIE" : "SERIES"}
-                </Text>
-              </View>
-              <Pressable
-                onPress={(event) => { event.stopPropagation(); void openDetails(activeCard); }}
-                hitSlop={8}
-                style={styles.unifiedPlayTrailer}
-                accessibilityLabel="Open full title details"
-              >
-                <View style={styles.unifiedPlayCircle}>
-                  <Ionicons name="play" size={16} color={colors.ink} />
-                </View>
-                <Text style={styles.unifiedPlayLabel}>Full{"\n"}Details</Text>
+        <View style={[styles.narrowStack, fitPhone && { flex: 1, minHeight: 0, gap: 8, paddingTop: 0 }]}>
+          <View style={fitPhone ? { flex: 1, minHeight: 0 } : { height: Math.max(320, viewportHeight * .55) }}>
+          {/* The next poster is preloaded in place; it stays noninteractive
+              until the outgoing decision is acknowledged. */}
+          {nextCards[0] ? <View pointerEvents="none" accessibilityElementsHidden importantForAccessibility="no-hide-descendants"
+            style={[styles.unifiedCard, StyleSheet.absoluteFillObject]}>
+            <View style={{ flex: 1, minHeight: 60 }}>
+              <Image source={{ uri: resolveMediaUrl(nextCards[0].title.poster_url || detailCache[nextCards[0].title.id]?.posterUrl) ?? undefined }}
+                resizeMode="contain" style={{ width: "100%", height: "100%" }} />
+            </View>
+            <View style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 3 }}>
+              <Text style={{ color: colors.ink, fontFamily: fonts.sansBold, fontSize: 18 }} numberOfLines={1}>{nextCards[0].title.title}</Text>
+              <View style={{ minHeight: 20 }}><Text style={{ color: colors.muted, fontSize: 12 }}>Up next</Text></View>
+              <View style={{ minHeight: 44, justifyContent: "center" }}><Text style={{ color: colors.accent, fontSize: 13 }} numberOfLines={2}>Why it’s here · {humanizeReason(nextCards[0].reason || "Explore something new")}</Text></View>
+            </View>
+          </View> : null}
+          <Animated.View {...panResponder.panHandlers} style={[styles.unifiedCard,
+            { flex: 1, minHeight: 0, transform: [...pan.getTranslateTransform(), { rotate: rotation }] },
+            Platform.OS === "web" && { touchAction: flipped ? "pan-y" : "none" }]}>
+            {flipped ? <View style={{ flex: 1, minHeight: 0 }}>{flippedCard}</View> : <>
+              <Pressable accessibilityRole="button" accessibilityLabel={`Flip ${activeCard.title.title} to details`}
+                disabled={swipeBusy || !!swipeError} onPress={() => setFlipped(true)} style={{ flex: 1, minHeight: 60 }}>
+                {activePoster ? <Image source={{ uri: activePoster }} resizeMode="contain" style={{ width: "100%", height: "100%" }} /> : null}
+                <Text style={{ position: "absolute", bottom: 6, alignSelf: "center", color: colors.ink, backgroundColor: "#101827", padding: 5, fontSize: 12 }}>Tap for details</Text>
               </Pressable>
-            </Pressable>
-
-            {/* Content body */}
-            <View style={styles.unifiedBody}>
-              <Text style={styles.unifiedTitle} numberOfLines={2}>{activeCard.title.title}</Text>
-              <Text style={styles.unifiedMeta}>{buildCardMeta(activeCard, currentDetail)}</Text>
-              <SceneDnaBadge titleId={activeCard.title.id} />
-
-              {activeGenres ? (
-                <View style={styles.unifiedGenreRow}>
-                  {activeGenres.split(",").map((g) => g.trim()).filter(Boolean).slice(0, 4).map((g) => (
-                    <View key={g} style={styles.unifiedGenreChip}>
-                      <Text style={styles.unifiedGenreChipText}>{g}</Text>
-                    </View>
-                  ))}
+              <View style={{ paddingHorizontal: 12, paddingVertical: 8, gap: 3 }}>
+                <Text style={{ color: colors.ink, fontFamily: fonts.sansBold, fontSize: 18 }} numberOfLines={1}>{activeCard.title.title}</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+                  <SceneDnaBadge titleId={activeCard.title.id} />
+                  <Text numberOfLines={1} style={{ flex: 1, color: colors.muted, fontSize: 12 }}>{buildCardMeta(activeCard, currentDetail)}</Text>
                 </View>
-              ) : null}
-
-              {activeSynopsis ? (
-                <Text style={styles.unifiedSynopsis} numberOfLines={2}>{activeSynopsis}</Text>
-              ) : null}
-
-              <View style={styles.unifiedDivider} />
-
-              {activeCard.reason ? (
-                <Pressable style={[styles.unifiedWhyBlock, { minHeight: 44 }]}
-                  accessibilityRole="button" accessibilityLabel={`Why this is for you: ${activeCard.reason}`}
-                  accessibilityHint="Opens the full recommendation explanation"
-                  onPress={() => setShowReason(true)}>
-                  <View style={styles.unifiedWhyRule} />
-                  <View style={{ flex: 1 }}>
-                    <View style={styles.unifiedWhyLabelRow}>
-                      <Ionicons name="albums" size={11} color={colors.accent} />
-                      <Text style={styles.unifiedWhyLabel}>WHY IT'S HERE</Text>
-                      <Ionicons name="chevron-forward" size={12} color={colors.muted} />
-                    </View>
-                    <Text style={styles.unifiedWhyText} numberOfLines={2}>{humanizeReason(activeCard.reason)}</Text>
-                  </View>
+                <Pressable onPress={() => setShowReason(true)} accessibilityRole="button" accessibilityLabel={`Why this is for you: ${activeCard.reason}`} style={{ minHeight: 44, justifyContent: "center" }}>
+                  <Text style={{ color: colors.accent, fontSize: 13 }} numberOfLines={2}>Why it’s here · {humanizeReason(activeCard.reason || "Explore something new")}</Text>
                 </Pressable>
-              ) : null}
-
-              {activeStreaming.length > 0 ? (
-                <View style={styles.unifiedProviderStrip}>
-                  {activeStreaming.slice(0, 4).map((s) => {
-                    const meta = getStreamingServiceMeta(s.service);
-                    const label = (meta?.shortName || s.serviceName || "").toUpperCase();
-                    // Real TMDB-provided logo takes precedence; brand
-                    // short-name text is the fallback when logo_url
-                    // isn't available for a provider.
-                    return (
-                      <Pressable key={s.service} onPress={() => void openProvider(s)} accessibilityLabel={`Watch on ${s.serviceName || s.service}`} disabled={!s.appUrl && !s.webUrl} style={[styles.unifiedProviderLogoWrap, { minHeight: 44, minWidth: 44 }]}>
-                        {s.logoUrl ? (
-                          <Image source={{ uri: s.logoUrl }} style={styles.unifiedProviderLogo} resizeMode="contain" />
-                        ) : (
-                          <View
-                            style={[styles.unifiedProviderPill, meta ? { backgroundColor: meta.color } : null]}
-                          >
-                            <Text
-                              style={[styles.unifiedProviderPillLabel, meta ? { color: meta.textColor } : null]}
-                              numberOfLines={1}
-                            >
-                              {label}
-                            </Text>
-                          </View>
-                        )}
-                      </Pressable>
-                    );
-                  })}
-                  {activeStreaming.length > 4 ? (
-                    <View style={styles.unifiedProviderMore}>
-                      <Text style={styles.unifiedProviderMoreLabel}>+{activeStreaming.length - 4} more</Text>
-                      <Ionicons name="chevron-forward" size={11} color={colors.muted} />
-                    </View>
-                  ) : null}
-                </View>
-              ) : null}
-            </View>
-
+              </View>
             </>}
-            {/* Directional feedback edges — same as before. */}
-            <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipLeft, { opacity: leftLabelOpacity }]}>
-              <Text style={styles.deckEdgeChipTextLeft}>PASS</Text>
-            </Animated.View>
-            <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipRight, { opacity: rightLabelOpacity }]}>
-              <Text style={styles.deckEdgeChipTextRight}>NEXT WATCH</Text>
-            </Animated.View>
-            <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipTop, { opacity: upLabelOpacity }]}>
-              <Text style={styles.deckEdgeChipTextTop}>WATCHED + RATE</Text>
-            </Animated.View>
-            <Animated.View style={[styles.deckEdgeChip, styles.deckEdgeChipBottom, { opacity: downLabelOpacity }]}>
-              <Text style={styles.deckEdgeChipTextBottom}>DIDN'T LIKE</Text>
-            </Animated.View>
+            {([['left', leftLabelOpacity, styles.deckEdgeChipLeft, 'PASS'], ['right', rightLabelOpacity, styles.deckEdgeChipRight, 'NEXT WATCH'], ['up', upLabelOpacity, styles.deckEdgeChipTop, 'WATCHED + RATE'], ['down', downLabelOpacity, styles.deckEdgeChipBottom, "DIDN’T LIKE"]] as const).map(([key, opacity, location, label]) =>
+              <Animated.View key={key} pointerEvents="none" style={[styles.deckEdgeChip, location, { opacity }]}><Text style={{ color: colors.accent }}>{label}</Text></Animated.View>)}
           </Animated.View>
-
-          {/* Decision circles (same primitives, outside the card) */}
-          <View style={styles.decisionDock}>
-            <View style={styles.decisionCell}>
-              <Pressable
-                disabled={swipeBusy || !!swipeError}
-            onPress={() => void animateSwipe("left")}
-                accessibilityRole="button"
-                accessibilityLabel={`Pass on ${activeCard.title.title}`}
-                style={({ pressed }) => [styles.decisionCircle, styles.decisionCircleNeutral, pressed && { opacity: 0.72 }]}
-              >
-                <Ionicons name="close" size={28} color={colors.ink} />
-              </Pressable>
-              <Text style={styles.decisionLabel}>PASS</Text>
-            </View>
-            <View style={styles.decisionCell}>
-              <Pressable
-                disabled={swipeBusy || !!swipeError}
-            onPress={() => void animateSwipe("right")}
-                accessibilityRole="button"
-                accessibilityLabel={`Save ${activeCard.title.title} to My Next Watch`}
-                style={({ pressed }) => [styles.decisionCircle, styles.decisionCirclePrimary, pressed && { opacity: 0.88 }]}
-              >
-                <Ionicons name="heart" size={28} color={colors.background} />
-              </Pressable>
-              <Text style={[styles.decisionLabel, styles.decisionLabelPrimary]}>NEXT WATCH</Text>
-            </View>
-            <View style={styles.decisionCell}>
-              <Pressable
-                onPress={() => {
-                  if (!activeCard) return;
-                  setSaveTitleId(activeCard.title.id);
-                  setShowSaveSheet(true);
-                }}
-                accessibilityRole="button"
-                accessibilityLabel={`Save ${activeCard.title.title}`}
-                style={({ pressed }) => [styles.decisionCircle, styles.decisionCircleNeutral, pressed && { opacity: 0.72 }]}
-              >
-                <Ionicons name="bookmark-outline" size={26} color={colors.ink} />
-              </Pressable>
-              <Text style={styles.decisionLabel}>SAVE</Text>
-            </View>
           </View>
-          {directActions}
+          <View style={{ flexDirection: "row", gap: 4 }}>
+            {([['left', '← Pass'], ['right', '→ Next Watch'], ['up', '↑ Watched + rate'], ['down', '↓ Didn’t like']] as const).map(([direction,label]) =>
+              <Pressable key={direction} accessibilityRole="button" accessibilityLabel={direction === "left" ? "Pass this title" : direction === "right" ? "Next Watch" : direction === "up" ? "Mark watched and rate" : "Mark watched, didn’t like"} disabled={swipeBusy || !!swipeError}
+                onPress={() => void animateSwipe(direction)} style={{ flex: 1, minHeight: 48, alignItems: "center", justifyContent: "center", borderRadius: 8, backgroundColor: colors.surface }}>
+                <Text style={{ color: colors.ink, fontSize: 12, textAlign: "center" }}>{label}</Text>
+              </Pressable>)}
+          </View>
+          <View style={{ flexDirection: "row", gap: 4 }}>
+            {([['save','Save'],['send','Send'],['team','Watch Team']] as const).map(([action,label]) =>
+              <Pressable key={action} accessibilityRole="button" disabled={swipeBusy || !!swipeError} onPress={() => { if(action === "save") { setSaveTitleId(activeCard.title.id); setShowSaveSheet(true); } else setActionTarget({action,id:activeCard.title.id,title:activeCard.title.title,poster:activeCard.title.poster_url}); }}
+                style={{ flex: 1, minHeight: 44, justifyContent: "center", alignItems: "center" }}><Text style={{ color: colors.ink, fontSize: 13 }}>{label}</Text></Pressable>)}
+            <Pressable accessibilityRole="button" accessibilityLabel={lastSwipe ? `Undo last swipe: ${lastSwipe.direction}` : "Undo last swipe"} disabled={!lastSwipe || swipeBusy || !!swipeError}
+              onPress={() => void undoLastSwipe()} style={{ flex: 1, minHeight: 44, justifyContent: "center", alignItems: "center", opacity: lastSwipe ? 1 : .4 }}><Text style={{ color: colors.accent, fontSize: 13 }}>Undo</Text></Pressable>
+          </View>
         </View>
       ) : null}
 
@@ -1372,12 +1243,10 @@ export default function SwipeTab() {
                   style={[
                     styles.deckActiveCard,
                     Platform.OS === "web" && { touchAction: flipped ? "pan-y" : "none" },
-                    { opacity: swipeBusy ? 0.65 : 1 },
                     {
                       transform: [
                         ...pan.getTranslateTransform(),
                         { rotate: rotation },
-                        { scale: nextCardEntry },
                       ],
                     },
                   ]}
@@ -1546,7 +1415,7 @@ export default function SwipeTab() {
       </ScrollView>
       {/* Feedback never participates in the deck's layout. Only Undo captures
           touches; the poster and navigation remain in their original positions. */}
-      {swipeBusy || undoToast || lastSwipe || loadingMore ? (
+      {swipeBusy || undoToast || (!isNarrow && lastSwipe) || loadingMore ? (
         <View pointerEvents="box-none" style={styles.swipeStatus}>
           <View pointerEvents="box-none" style={styles.swipeStatusContent}>
             {swipeBusy ? (
@@ -1559,7 +1428,7 @@ export default function SwipeTab() {
                 {undoToast ?? "Finding more picks…"}
               </Text>
             ) : null}
-            {lastSwipe ? (
+            {!isNarrow && lastSwipe ? (
               <Pressable
                 disabled={swipeBusy || !!swipeError}
                 onPress={() => void undoLastSwipe()}

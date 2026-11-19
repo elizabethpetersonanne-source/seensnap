@@ -16,7 +16,7 @@ const items = (prefix = 'title') => Array.from({ length: 20 }, (_, i) => {
 
 // Render the actual Swipe screen with controllable transport and animation.
 // No live account, title state or remote service is changed by these tests.
-async function mount({ width = 390, holdExitAnimation = false, repeatPage = false } = {}) {
+async function mount({ width = 390, holdExitAnimation = false, repeatPage = false, platform = 'web' } = {}) {
   const patches = [];
   const requests = [], stateListeners = new Set(), hydration = [];
   let filter = { media_type: null, genre: null }, handlers, screen;
@@ -24,6 +24,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
   let undo = () => Promise.resolve({ reversed: ['swipe', 'saved'], partial_reason: null, watched: false, saved: false });
   let rerank = options => Promise.resolve({ items: items().filter(item => JSON.parse(options.body).title_ids.includes(item.title.id)).reverse() });
   const pans = [];
+  const animations = [];
   class Value {
     constructor(value) { this.value = value; }
     setValue(value) { this.value = value; }
@@ -34,11 +35,11 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
     constructor() { super({ x: 0, y: 0 }); this.x = new Value(0); this.y = new Value(0); pans.push(this); }
     getTranslateTransform() { return []; }
   }
-  const animation = (value, config) => ({ start(done) { value?.setValue(config?.toValue); if (!(holdExitAnimation && config?.duration === 180)) done?.({ finished: true }); }, stop() {} });
+  const animation = (value, config) => ({ start(done) { animations.push({ from: value?.value, ...config }); value?.setValue(config?.toValue); if (!(holdExitAnimation && config?.duration === 180)) done?.({ finished: true }); }, stop() {} });
   const rn = {
     ActivityIndicator: 'ActivityIndicator', Alert: {}, Image: 'Image', Linking: {},
     Pressable: 'Pressable', ScrollView: 'ScrollView', Text: 'Text', View: 'View',
-    Platform: { OS: 'web' }, useWindowDimensions: () => ({ width, height: 900 }),
+    Platform: { OS: platform }, useWindowDimensions: () => ({ width, height: 900 }),
     StyleSheet: { create: x => x, absoluteFillObject: {}, hairlineWidth: 1 },
     PanResponder: { create(config) { handlers = config; return { panHandlers: {} }; } },
     Animated: { Value, ValueXY, View: 'AnimatedView', timing: animation, spring: animation, parallel: () => animation() },
@@ -104,7 +105,7 @@ async function mount({ width = 390, holdExitAnimation = false, repeatPage = fals
   await act(async () => { screen = renderer.create(React.createElement(Swipe)); });
   const button = label => screen.root.findAllByType('Pressable').find(node => node.props.accessibilityLabel === label);
   return {
-    screen, requests, hydration, patches, button, api, pan: pans[0], handlers: () => handlers,
+    screen, requests, hydration, patches, button, api, animations, pan: pans[0], handlers: () => handlers,
     sendWith(fn) { send = fn; },
     undoWith(fn) { undo = fn; },
     rerankWith(fn) { rerank = fn; },
@@ -144,6 +145,29 @@ test('a slow swipe shows progress, blocks duplicate gestures, and advances exact
     await act(async () => request.resolve({ swipe_id: 'receipt' }));
     assert.ok(h.button('Flip title 1 to details'));
     assert.equal(h.button('Pass this title').props.disabled, false);
+  } finally { await h.close(); }
+});
+
+test('native exit continues from release before the network responds; failed saves spring back', async () => {
+  const h = await mount({ platform: 'ios' }), request = deferred();
+  h.sendWith(() => request.promise);
+  try {
+    await act(async () => {
+      h.handlers().onPanResponderMove(null, { dx: 130, dy: 12 });
+      h.handlers().onPanResponderRelease(null, { dx: 130, dy: 12 });
+    });
+    const exit = h.animations.find(a => a.duration === 180);
+    assert.equal(exit.from.x, 130, 'Never snap the outgoing poster back to center');
+    assert.equal(exit.from.y, 12);
+    assert.equal(exit.useNativeDriver, true);
+    assert.ok(h.pan.value.x > 390, 'Animate immediately, without waiting for the request');
+    assert.ok(h.button('Flip title 0 to details'), 'No unconfirmed queue advancement');
+    assert.equal(h.button('Next Watch').props.disabled, true);
+    await act(async () => request.reject(new Error('offline')));
+    assert.equal(h.pan.value.x, 0);
+    assert.equal(h.pan.value.y, 0);
+    assert.ok(h.button('Retry this swipe'));
+    assert.equal(h.patches.length, 0, 'No saved/watched state without acknowledgement');
   } finally { await h.close(); }
 });
 
@@ -313,7 +337,8 @@ test('saving and saved feedback stay outside the scrolling deck and Undo remains
     outsideDeck(h.screen.root.findByProps({ accessibilityLabel: 'Saving swipe' }));
     await act(async () => request.resolve({ swipe_id: 'receipt', saved: true }));
     outsideDeck(h.screen.root.findAllByType('Text').find(n => n.props.children === 'Added to My Next Watch'));
-    outsideDeck(h.button('Undo last swipe: right'));
+    assert.equal(h.screen.root.findAllByType('ScrollView')[0].props.scrollEnabled, false);
+    assert.equal(h.button('Undo last swipe: right').props.style.minHeight, 44);
     assert.equal(h.button('Undo last swipe: right').props.disabled, false);
     assert.ok(h.button('Flip title 1 to details'));
     assert.equal(h.screen.root.findByType('SaveToListSheet').props.visible, false);
